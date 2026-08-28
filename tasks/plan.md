@@ -363,7 +363,7 @@ Core invariants:
 13. Every persisted preview/error passes through the redactor first.
 14. Cancellation revokes model access before Runtime termination.
 15. Gateway denial invokes no provider adapter and has no direct-key fallback.
-16. The gateway encrypts provider credentials with authenticated encryption, a unique nonce, key version, and provider-bound associated data; its master key is gateway-only and missing/wrong/corrupt keys fail closed.
+16. The gateway encrypts provider credentials with AES-256-GCM, a cryptographically random unique nonce, key version, and provider ID/revision as associated data; its master key is gateway-only and missing/wrong/corrupt keys fail closed.
 17. Provider and model must be selected as one valid pair. Partial overrides, disabled providers, removed models, and provider/model mismatches fail closed without fallback.
 18. Each orchestration snapshots one override for all stages when supplied; otherwise every stage snapshots its assigned Agent's default at admission.
 19. Disabling or rotating a provider immediately blocks new leases and revokes active leases. Removal is a soft archive/tombstone so historical Runs remain explainable.
