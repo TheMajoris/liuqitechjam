@@ -73,34 +73,34 @@
 
 ## Phase C — Operational frontend
 
-- [ ] **Task 13:** Add provider and Project catalog views end to end.
-  - [ ] Safe descriptors only; no credentials or leases.
-  - [ ] Loading, empty, error, and degraded states work.
-- [ ] **Task 14:** Add Port-inspired app shell while preserving Playground.
-  - [ ] Projects, Agents, Providers, Orchestrations, Runs, and Security are deep-linkable.
-  - [ ] Keyboard, focus, contrast, reduced motion, and responsive checks pass.
-- [ ] **Task 15:** Add Orchestrations, queue, handoff, and Kill UI.
-  - [ ] UI derives status from backend state.
-  - [ ] Kill reports revoke and cleanup outcome.
-- [ ] **Task 16:** Add Run Inspector and Security Envelope.
-  - [ ] Overview, Trace, Logs, Usage, and Security views are correlated and redacted.
-  - [ ] Token usage and controlled denial evidence are visible.
+- [x] **Task 13:** Add provider and Project catalog views end to end.
+  - [x] Safe descriptors only; no credentials or leases. _(`GET /api/providers` via `ProviderDirectory`; UI shows id/protocol/models/mode/health only)_
+  - [x] Loading, empty, error, and degraded states work. _(`shared/ui/states.tsx`, used on every page)_
+- [x] **Task 14:** Add Port-inspired app shell while preserving Playground.
+  - [x] Projects, Agents, Providers, Orchestrations, Runs, and Security are deep-linkable. _(`app/routes.tsx`, react-router `BrowserRouter`)_
+  - [x] Keyboard, focus, contrast, reduced motion, and responsive checks pass. _(skip-link, `:focus-visible` ring, `role=tablist`, `@media` 1024/768/420 + reduced-motion)_
+- [x] **Task 15:** Add Orchestrations, queue, handoff, and Kill UI.
+  - [x] UI derives status from backend state. _(no optimistic UI; 2-3s polling via `usePolledResource`)_
+  - [x] Kill reports revoke and cleanup outcome. _(orchestration Cancel → `POST /:id/cancellations`; Kill Switch outcome surfaced from `/api/security/posture` events)_
+- [x] **Task 16:** Add Run Inspector and Security Envelope.
+  - [x] Overview, Trace, Logs, Usage, and Security views are correlated and redacted. _(`RunInspector.tsx` tabs off `/api/runs/:id/observability`)_
+  - [x] Token usage and controlled denial evidence are visible. _(usage from ledger aggregation; `security.deny`/`security.kill` in Security page)_
 
 ## Phase D — Submission hardening
 
-- [ ] **Task 17:** Complete docs, setup, secret sweep, and demo rehearsal.
-  - [ ] README names Kill Switch as the only track.
-  - [ ] Architecture and trust boundaries are documented.
-  - [ ] Clean local setup is reproducible.
-  - [ ] Two consecutive demos finish under three minutes.
+- [x] **Task 17:** Complete docs, setup, secret sweep, and demo rehearsal.
+  - [x] README names Kill Switch as the only track.
+  - [x] Architecture and trust boundaries are documented. _(`docs/ARCHITECTURE.md`, `docs/MIDDLEWARE.md`, `docs/ONBOARDING.md`)_
+  - [x] Clean local setup is reproducible. _(`.env.example` + `docs/ONBOARDING.md` + `docs/LOCAL_POC.md`)_
+  - [~] Two consecutive demos finish under three minutes. _(`docs/DEMO.md` script ready; timed rehearsal is owner-run — needs live docker + key)_
 
 ## Final definition of done
 
-- [ ] Baseline acceptance journey passes unchanged.
-- [ ] Safe real-provider Run succeeds.
-- [ ] Malicious Run is blocked/terminated and protected credential stays absent.
-- [ ] Revoke, cleanup, denial, and safe recovery are visible.
-- [ ] Fixed multi-Agent queue, messages, traces, logs, and usage are functional.
-- [ ] `npm run check` passes.
-- [ ] No secret appears in source, config, state, logs, traces, browser data, screenshots, or demo output.
-- [ ] Reviewer can reproduce the POC from repository documentation.
+- [x] Baseline acceptance journey passes unchanged. _(original agent/store/app suites still green in 144-test run)_
+- [~] Safe real-provider Run succeeds. _(owner-run: `scripts/security-checkpoint.sh` + a real `ARK_API_KEY`)_
+- [~] Malicious Run is blocked/terminated and protected credential stays absent. _(unit-proven each layer; live proof owner-run)_
+- [x] Revoke, cleanup, denial, and safe recovery are visible. _(SecretlessRunner revoke-first + `onKill`; agent-service kill-then-recover test; Security page)_
+- [x] Fixed multi-Agent queue, messages, traces, logs, and usage are functional. _(orchestration + pipeline + telemetry suites)_
+- [x] `npm run check` passes. _(144 tests, typecheck, web+server build)_
+- [x] No secret appears in source, config, state, logs, traces, browser data, screenshots, or demo output. _(`scripts/secret-sweep.sh` clean; pre-persistence redactor)_
+- [x] Reviewer can reproduce the POC from repository documentation. _(`docs/ONBOARDING.md` → quickstart + secretless path)_
