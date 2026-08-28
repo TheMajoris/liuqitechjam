@@ -245,11 +245,30 @@ export interface RunnerResult {
   usage: RunUsage | null;
 }
 
+/**
+ * Ephemeral gateway wiring for one secretless Runtime turn. Carries an opaque
+ * run lease and the gateway address — never a provider credential.
+ */
+export interface GatewayRuntimeContext {
+  /** Data-plane base URL the Runtime uses to reach the gateway. */
+  gatewayUrl: string;
+  /** Opaque run lease, presented by Codex as `Authorization: Bearer`. */
+  leaseToken: string;
+  providerId: string;
+  model: string;
+  /** Per-run sanitized CODEX_HOME whose config.toml points at the gateway. */
+  codexHome: string;
+}
+
 export interface RunnerRequest {
   agentId: string;
   workspacePath: string;
   prompt: string;
   threadId: string | null;
+  /** Optional correlation id for gateway lease scoping and telemetry. */
+  runId?: string;
+  /** Present only on the secretless container path. */
+  gateway?: GatewayRuntimeContext;
 }
 
 export interface AgentRunner {
