@@ -2,6 +2,13 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const flush = async (): Promise<void> => {
+  for (let i = 0; i < 20; i += 1) {
+    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+};
 import {
   GatewayClientError,
   type GatewayManagementClient,
@@ -141,6 +148,106 @@ describe("SecretlessRunner", () => {
     });
     expect(inner.calls).toHaveLength(0);
     await expect(stat(path.join(root, "runs", "run-1"))).rejects.toThrow();
+  });
+
+  it("revokes the lease BEFORE terminating the Runtime on cancel", async () => {
+    const root = await makeRoot();
+    const order: string[] = [];
+    const gateway = new FakeGateway();
+    gateway.revokeLease = async (leaseId: string) => {
+      order.push("revoke");
+      gateway.revoked.push(leaseId);
+    };
+    const modelAccess = new GatewayModelAccess({
+      client: gateway,
+      gatewayUrl: "http://gateway:4000",
+    });
+
+    let releaseRun: () => void = () => undefined;
+    const runGate = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    const inner: AgentRunner & { calls: RunnerRequest[] } = {
+      calls: [],
+      async run(request) {
+        this.calls.push(request);
+        await runGate;
+        throw Object.assign(new Error("Run cancelled"), {
+          name: "RunCancelledError",
+        });
+      },
+      async cancel() {
+        order.push("cancel");
+        releaseRun();
+        return true;
+      },
+      async isAvailable() {
+        return true;
+      },
+    };
+
+    const kills: unknown[] = [];
+    const runner = new SecretlessRunner({
+      inner,
+      modelAccess,
+      providerId: "ark",
+      model: "ep-live",
+      gatewayUrl: "http://gateway:4000",
+      codexHomeRoot: root,
+      onKill: (outcome) => kills.push(outcome),
+    });
+
+    const runPromise = runner.run(baseRequest).catch(() => "cancelled");
+    // wait until the run is genuinely in flight (lease issued, inner.run entered)
+    await vi.waitFor(() => expect(inner.calls).toHaveLength(1));
+    await flush();
+
+    const removed = await runner.cancel("agent-1");
+    await runPromise;
+
+    expect(removed).toBe(true);
+    expect(order).toEqual(["revoke", "cancel"]);
+    expect(kills).toEqual([
+      {
+        agentId: "agent-1",
+        runId: "run-1",
+        leaseRevoked: true,
+        runtimeRemoved: true,
+      },
+    ]);
+    // idempotent: the withSession finally revoke did not double-call upstream
+    expect(gateway.revoked).toEqual(["lease-1"]);
+  });
+
+  it("cancel is a plain delegate when no run is active for the agent", async () => {
+    const root = await makeRoot();
+    const gateway = new FakeGateway();
+    const modelAccess = new GatewayModelAccess({
+      client: gateway,
+      gatewayUrl: "http://gateway:4000",
+    });
+    let cancelled = false;
+    const inner = makeInner(async () => ({
+      output: "x",
+      threadId: null,
+      usage: null,
+    }));
+    inner.cancel = async () => {
+      cancelled = true;
+      return false;
+    };
+    const runner = new SecretlessRunner({
+      inner,
+      modelAccess,
+      providerId: "ark",
+      model: "ep-live",
+      gatewayUrl: "http://gateway:4000",
+      codexHomeRoot: root,
+    });
+
+    await expect(runner.cancel("unknown-agent")).resolves.toBe(false);
+    expect(cancelled).toBe(true);
+    expect(gateway.revoked).toEqual([]);
   });
 
   it("revokes the lease and cleans up when the inner runner throws", async () => {

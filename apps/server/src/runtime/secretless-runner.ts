@@ -32,9 +32,22 @@ export interface SecretlessRunnerOptions {
   codexHomeRoot: string;
   /** Requested lease lifetime; the gateway clamps it. */
   leaseTtlSeconds?: number;
+  /** Observation hook for a Kill: what was revoked and cleaned up. */
+  onKill?: (outcome: KillOutcome) => void;
+}
+
+export interface KillOutcome {
+  agentId: string;
+  runId: string;
+  /** The run lease was revoked at the gateway before Runtime termination. */
+  leaseRevoked: boolean;
+  /** The inner runner reported it removed a live Runtime container. */
+  runtimeRemoved: boolean;
 }
 
 export class SecretlessRunner implements AgentRunner {
+  private readonly activeByAgent = new Map<string, string>();
+
   constructor(private readonly options: SecretlessRunnerOptions) {}
 
   async isAvailable(): Promise<boolean> {
@@ -42,10 +55,23 @@ export class SecretlessRunner implements AgentRunner {
   }
 
   async cancel(agentId: string): Promise<boolean> {
-    // Terminating the inner container rejects the in-flight `withSession`
-    // callback, whose `finally` revokes the lease. Revoke-first Kill is layered
-    // on in a later task.
-    return this.options.inner.cancel(agentId);
+    const runId = this.activeByAgent.get(agentId);
+    let leaseRevoked = false;
+    if (runId !== undefined) {
+      // Revoke-first: the lease is dead before the container is touched, so a
+      // compromised Runtime cannot race a final provider call during teardown.
+      try {
+        await this.options.modelAccess.revoke(runId);
+        leaseRevoked = true;
+      } catch {
+        leaseRevoked = false;
+      }
+    }
+    const runtimeRemoved = await this.options.inner.cancel(agentId);
+    if (runId !== undefined) {
+      this.emitKill({ agentId, runId, leaseRevoked, runtimeRemoved });
+    }
+    return runtimeRemoved;
   }
 
   async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -53,9 +79,12 @@ export class SecretlessRunner implements AgentRunner {
     const runId = request.runId ?? randomUUID();
     const codexHome = path.join(this.options.codexHomeRoot, "runs", runId);
 
-    await writeCodexGatewayConfig(codexHome, { gatewayUrl, providerId, model });
+    // Register before the first await so a Kill arriving during setup still
+    // finds the run and can revoke its (pending or issued) lease first.
+    this.activeByAgent.set(request.agentId, runId);
 
     try {
+      await writeCodexGatewayConfig(codexHome, { gatewayUrl, providerId, model });
       return await modelAccess.withSession(
         {
           runId,
@@ -80,6 +109,7 @@ export class SecretlessRunner implements AgentRunner {
           }),
       );
     } finally {
+      this.activeByAgent.delete(request.agentId);
       await rm(codexHome, { recursive: true, force: true }).catch(() => undefined);
     }
   }
@@ -89,5 +119,13 @@ export class SecretlessRunner implements AgentRunner {
     await mkdir(path.join(this.options.codexHomeRoot, "runs"), {
       recursive: true,
     });
+  }
+
+  private emitKill(outcome: KillOutcome): void {
+    try {
+      this.options.onKill?.(outcome);
+    } catch {
+      // Observation must never break the Kill path.
+    }
   }
 }
