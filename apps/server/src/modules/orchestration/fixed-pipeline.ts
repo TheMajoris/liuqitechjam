@@ -12,6 +12,12 @@ import {
   type SandboxMode,
 } from "../../types.js";
 import type { OrchestrationControl } from "./orchestration-control.js";
+import { decideRetry } from "./retry-policy.js";
+
+const errorCode = (error: unknown): string | undefined =>
+  typeof (error as { code?: unknown })?.code === "string"
+    ? (error as { code: string }).code
+    : undefined;
 
 const now = (): string => new Date().toISOString();
 
@@ -123,6 +129,9 @@ export class FixedPipeline {
         threadId: null,
         runId,
         sandboxMode: STAGE_SANDBOX[job.stage],
+        orchestrationId: job.orchestrationId,
+        stage: job.stage,
+        attempt: job.attempt,
       });
       await this.completeStage(job, runId, roleAgentId, result.output, result.usage);
       this.onEvent({
@@ -136,7 +145,15 @@ export class FixedPipeline {
     } catch (error) {
       const cancelled = error instanceof RunCancelledError;
       const message = error instanceof Error ? error.message : String(error);
-      await this.failStage(job, runId, roleAgentId, message, cancelled);
+      const decision = cancelled
+        ? { retry: false, backoffMs: 0, reason: "cancelled" }
+        : decideRetry({
+            stage: job.stage,
+            attempt: job.attempt,
+            code: errorCode(error),
+            message,
+          });
+      await this.failStage(job, runId, roleAgentId, message, cancelled, decision.retry);
       this.onEvent({
         kind: "stage.finish",
         orchestrationId: job.orchestrationId,
@@ -298,6 +315,8 @@ export class FixedPipeline {
       const liveJob = database.queueJobs.find((j) => j.id === job.id);
       const agent = database.agents.find((a) => a.id === roleAgentId);
       if (!record || !run || !liveJob) return;
+      // Duplicate completion is a no-op (plan section 9).
+      if (liveJob.status !== "running") return;
 
       run.status = "completed";
       run.output = output;
@@ -397,6 +416,7 @@ export class FixedPipeline {
     roleAgentId: string,
     message: string,
     cancelled: boolean,
+    retry = false,
   ): Promise<void> {
     await this.store.mutate((database) => {
       const timestamp = now();
@@ -418,6 +438,39 @@ export class FixedPipeline {
         liveJob.completedAt = timestamp;
         liveJob.updatedAt = timestamp;
       }
+      if (agent && agent.status === "busy") {
+        agent.status = "ready";
+        agent.lastError = null;
+        agent.updatedAt = timestamp;
+      }
+
+      // Retry path: the failed attempt is recorded, but the stage is re-queued
+      // with an incremented attempt and the orchestration stays in flight.
+      if (retry && record && record.status !== "cancelled" && liveJob) {
+        const stageState = record.stages.find((s) => s.stage === job.stage);
+        if (stageState) {
+          stageState.status = "queued";
+          stageState.runId = null;
+          stageState.error = message;
+        }
+        record.updatedAt = timestamp;
+        database.queueJobs.push({
+          id: randomUUID(),
+          orchestrationId: record.id,
+          stage: job.stage,
+          sequence: record.sequence,
+          status: "queued",
+          attempt: job.attempt + 1,
+          runId: null,
+          lastError: message,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          claimedAt: null,
+          completedAt: null,
+        });
+        return;
+      }
+
       if (record) {
         const stageState = record.stages.find((s) => s.stage === job.stage);
         if (stageState) {
@@ -436,11 +489,6 @@ export class FixedPipeline {
           record.error = message;
         }
         record.updatedAt = timestamp;
-      }
-      if (agent && agent.status === "busy") {
-        agent.status = cancelled ? "ready" : "error";
-        agent.lastError = cancelled ? null : message;
-        agent.updatedAt = timestamp;
       }
     });
   }

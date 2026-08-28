@@ -208,6 +208,55 @@ describe("FixedPipeline", () => {
     ).toBe(true);
   });
 
+  it("retries a transient planner failure once, then succeeds", async () => {
+    const { store, control, runner, pipeline, project } = await setup();
+    let calls = 0;
+    runner.behavior = async (request) => {
+      calls += 1;
+      if (calls === 1) throw new Error("provider returned 503");
+      return { output: `ok ${request.stage}`, threadId: null, usage: null };
+    };
+    const { orchestration } = await control.enqueue({
+      projectId: project.id,
+      prompt: "x",
+      providerId: "mock",
+    });
+
+    await drain(pipeline);
+
+    const db = store.snapshot();
+    const record = db.orchestrations.find((o) => o.id === orchestration.id)!;
+    expect(record.status).toBe("completed");
+    const plannerRuns = db.runs.filter(
+      (r) => r.orchestrationId === record.id && r.stage === "planner",
+    );
+    expect(plannerRuns).toHaveLength(2);
+    expect(plannerRuns.map((r) => r.status).sort()).toEqual(["completed", "failed"]);
+    expect(plannerRuns.find((r) => r.status === "completed")!.attempt).toBe(1);
+  });
+
+  it("does not retry a builder failure after process start", async () => {
+    const { store, control, runner, pipeline, project } = await setup();
+    runner.behavior = async (request) => {
+      if (request.stage === "builder") {
+        throw new Error("container exited with code 1");
+      }
+      return { output: "ok", threadId: null, usage: null };
+    };
+    const { orchestration } = await control.enqueue({
+      projectId: project.id,
+      prompt: "x",
+      providerId: "mock",
+    });
+
+    await drain(pipeline);
+
+    const db = store.snapshot();
+    const record = db.orchestrations.find((o) => o.id === orchestration.id)!;
+    expect(record.status).toBe("failed");
+    expect(db.runs.filter((r) => r.stage === "builder")).toHaveLength(1);
+  });
+
   it("marks a cancelled stage run without failing the whole record twice", async () => {
     const { store, control, runner, pipeline, project } = await setup();
     runner.behavior = async () => {
