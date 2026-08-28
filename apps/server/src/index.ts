@@ -6,6 +6,8 @@ import { FixedPipeline } from "./modules/orchestration/fixed-pipeline.js";
 import { OrchestrationControl } from "./modules/orchestration/orchestration-control.js";
 import { ProjectService } from "./modules/projects/project-service.js";
 import { ProjectWorkspaceManager } from "./modules/projects/project-workspace.js";
+import { ProviderDirectory } from "./modules/providers/provider-directory.js";
+import { TelemetryLedger } from "./modules/telemetry/telemetry-ledger.js";
 import { createRunner } from "./runner-factory.js";
 import { JsonStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -15,7 +17,17 @@ await writeCodexConfig(config);
 
 const store = new JsonStore(path.join(config.dataDirectory, "launchpad.json"));
 const workspaces = new WorkspaceManager(config.workspaceRoot);
-const runner = createRunner(config);
+
+const ledger = new TelemetryLedger({
+  store,
+  secretValues: () =>
+    [config.arkApiKey, config.gatewayAdminToken, config.authToken].filter(
+      (value) => value.length > 0,
+    ),
+});
+const providers = new ProviderDirectory(config);
+
+const runner = createRunner(config, { telemetry: ledger });
 const service = new AgentService(config, store, workspaces, runner);
 await service.initialize();
 
@@ -29,10 +41,20 @@ const orchestration = new OrchestrationControl(store, {
   queueLimit: config.orchestrationQueueLimit,
 });
 await orchestration.reconcileAfterRestart();
-const pipeline = new FixedPipeline({ store, control: orchestration, runner });
+
+const pipeline = new FixedPipeline({
+  store,
+  control: orchestration,
+  runner,
+  telemetry: ledger,
+});
 pipeline.start();
 
-const app = await createApp(config, service, { projects, orchestration });
+const app = await createApp(config, service, {
+  projects,
+  orchestration,
+  telemetry: { config, store, ledger, providers },
+});
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");

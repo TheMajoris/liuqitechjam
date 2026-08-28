@@ -11,11 +11,16 @@ import type { ProjectService } from "./modules/projects/project-service.js";
 import { registerProjectRoutes } from "./modules/projects/project-routes.js";
 import type { OrchestrationControl } from "./modules/orchestration/orchestration-control.js";
 import { registerOrchestrationRoutes } from "./modules/orchestration/orchestration-routes.js";
+import {
+  registerTelemetryRoutes,
+  type TelemetryRouteDeps,
+} from "./modules/telemetry/telemetry-routes.js";
 
 /** Optional domain modules wired in by the composition root. */
 export interface AppModules {
   projects?: ProjectService;
   orchestration?: OrchestrationControl;
+  telemetry?: TelemetryRouteDeps;
 }
 
 const agentIdParams = z.object({ id: z.string().uuid() });
@@ -144,6 +149,9 @@ export async function createApp(
   }
   if (modules.orchestration) {
     registerOrchestrationRoutes(app, modules.orchestration);
+  }
+  if (modules.telemetry) {
+    registerTelemetryRoutes(app, modules.telemetry);
   }
 
   if (config.nodeEnv === "production") {
