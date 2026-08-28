@@ -67,3 +67,13 @@ implementation environment. Coverage delivered instead:
 The end-to-end "Runtime reaches the mock gateway but not a direct external
 endpoint" check is folded into the owner-run security checkpoint (plan
 "Security checkpoint: Tasks 0–7").
+
+### Task 7 — live provider smoke test deferred to the security checkpoint
+
+The `responses-http` adapter, multi-provider catalog, and configuration-ready
+descriptors (`GATEWAY_PROVIDERS` + `PROVIDER_<ID>_*`) are implemented and covered
+by mocked-`fetch` contract tests (`responses-http-provider.test.ts`, including
+status→safe-code mapping with no body/key leak). The plan's "one manual live
+smoke test through Codex → gateway → provider" needs a real provider credential
+and a running Runtime container, so it is part of the owner-run security
+checkpoint, not the automated suite.

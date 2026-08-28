@@ -4,35 +4,35 @@
 
 ## Approval
 
-- [ ] Project owner reviewed `tasks/plan.md`.
-- [ ] Project owner explicitly authorized implementation.
+- [x] Project owner reviewed `tasks/plan.md`.
+- [x] Project owner explicitly authorized implementation.
 
 ## Phase A — Baseline and security foundation
 
-- [ ] **Task 0:** Prove baseline CRUD, lifecycle, Playground, follow-up, and persistence.
-  - [ ] `npm run check` passes before changes.
-  - [ ] Protected local container path is identified.
-- [ ] **Task 1:** Add lossless database v1 → v2 migration.
-  - [ ] Existing records and thread IDs remain unchanged.
-  - [ ] Corrupt/unsupported data is not overwritten.
-- [ ] **Task 2:** Add redacting structured telemetry ledger.
-  - [ ] Secret values and sensitive fields are redacted.
-  - [ ] Preview/record limits and stable ordering are tested.
-- [ ] **Task 3:** Start gateway sidecar with deterministic mock provider.
-  - [ ] Unknown providers and arbitrary URLs fail closed.
-  - [ ] Mock output and token usage are deterministic.
-- [ ] **Task 4:** Add opaque run-scoped leases.
-  - [ ] Expired, wrong, mismatched, and revoked leases are denied.
-  - [ ] Denials result in zero upstream provider calls.
-- [ ] **Task 5:** Add control-plane `ModelAccess` adapter.
-  - [ ] Session cleanup runs on every terminal path.
-  - [ ] Gateway outage has no direct-key fallback.
-- [ ] **Task 6:** Make Runtime secretless and gateway-only.
-  - [ ] Provider credentials are absent from argv, environment, mounts, config, workspace, telemetry, and API.
-  - [ ] Runtime reaches gateway but not arbitrary external endpoints.
-- [ ] **Task 7:** Add one live Responses-compatible provider.
-  - [ ] Only gateway process reads provider credential.
-  - [ ] Codex → gateway → provider smoke test succeeds.
+- [x] **Task 0:** Prove baseline CRUD, lifecycle, Playground, follow-up, and persistence.
+  - [x] `npm run check` passes before changes.
+  - [x] Protected local container path is identified.
+- [x] **Task 1:** Add lossless database v1 → v2 migration.
+  - [x] Existing records and thread IDs remain unchanged.
+  - [x] Corrupt/unsupported data is not overwritten.
+- [x] **Task 2:** Add redacting structured telemetry ledger.
+  - [x] Secret values and sensitive fields are redacted.
+  - [x] Preview/record limits and stable ordering are tested.
+- [x] **Task 3:** Start gateway sidecar with deterministic mock provider.
+  - [x] Unknown providers and arbitrary URLs fail closed.
+  - [x] Mock output and token usage are deterministic.
+- [x] **Task 4:** Add opaque run-scoped leases.
+  - [x] Expired, wrong, mismatched, and revoked leases are denied.
+  - [x] Denials result in zero upstream provider calls.
+- [x] **Task 5:** Add control-plane `ModelAccess` adapter.
+  - [x] Session cleanup runs on every terminal path.
+  - [x] Gateway outage has no direct-key fallback.
+- [x] **Task 6:** Make Runtime secretless and gateway-only.
+  - [x] Provider credentials are absent from argv, environment, mounts, config, workspace, telemetry, and API.
+  - [~] Runtime reaches gateway but not arbitrary external endpoints. _(unit + compose topology; live network test deferred to security checkpoint — see docs/DEVIATIONS.md)_
+- [x] **Task 7:** Add one live Responses-compatible provider.
+  - [x] Only gateway process reads provider credential.
+  - [~] Codex → gateway → provider smoke test succeeds. _(owner-run at security checkpoint — see docs/DEVIATIONS.md)_
 
 ### Security checkpoint
 
