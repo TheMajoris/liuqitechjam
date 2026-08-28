@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
+import { OrchestrationWorkspace } from "./components/orchestration/OrchestrationWorkspace";
+import { useOrchestration } from "./components/orchestration/use-orchestration";
+import {
+  formatDateTime,
+  isOrchestrationActive,
+  statusLabel,
+} from "./components/orchestration/orchestration-utils";
 import type { Agent, AgentRun, Message, SystemInfo } from "./types";
 
 const starterPrompts = [
@@ -7,6 +14,13 @@ const starterPrompts = [
   "Inspect this workspace and explain what you would improve first.",
   "Build a responsive single-page todo app with tests.",
 ];
+
+const SIDEBAR_KEY = "launchpad.sidebar";
+
+function readSidebarPreference(): boolean {
+  if (typeof window === "undefined") return true;
+  return window.localStorage.getItem(SIDEBAR_KEY) !== "collapsed";
+}
 
 const emptyForm = {
   name: "",
@@ -49,6 +63,10 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
+  const [workspace, setWorkspace] = useState<"playground" | "orchestration">("playground");
+  const [sidebarOpen, setSidebarOpen] = useState(readSidebarPreference);
+  const [composerOpen, setComposerOpen] = useState(false);
+  const orchestration = useOrchestration();
   const messageEnd = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
@@ -59,6 +77,19 @@ export default function App() {
     () => agents.find((agent) => agent.id === selectedId) ?? null,
     [agents, selectedId],
   );
+
+  useEffect(() => {
+    window.localStorage.setItem(SIDEBAR_KEY, sidebarOpen ? "open" : "collapsed");
+  }, [sidebarOpen]);
+
+  const startNew = useCallback(() => {
+    if (workspace === "orchestration") {
+      setComposerOpen(true);
+      return;
+    }
+    setForm(emptyForm);
+    setShowCreate(true);
+  }, [workspace]);
 
   const refreshAgents = useCallback(async () => {
     const { agents: next } = await api.listAgents();
@@ -307,92 +338,205 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark">A</div>
-          <div>
-            <strong>Agent Launchpad</strong>
+    <div className={"app-shell " + (sidebarOpen ? "" : "is-collapsed")}>
+      {sidebarOpen && (
+        <aside className="sidebar" id="app-sidebar">
+          <div className="sidebar-top">
+            <div className="brand">
+              <div className="brand-mark">A</div>
+              <div>
+                <strong>Agent Launchpad</strong>
+                <span>
+                  {system?.runtimeProvider === "container"
+                    ? "Local container · Codex CLI"
+                    : "ECS / Docker · Codex CLI"}
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="rail-button"
+              aria-label="Hide sidebar"
+              aria-expanded
+              aria-controls="app-sidebar"
+              onClick={() => setSidebarOpen(false)}
+            >
+              <span aria-hidden="true">⟨</span>
+            </button>
+          </div>
+
+          <button className="button button-primary create-button" onClick={startNew}>
+            <span aria-hidden="true">＋</span>
+            {workspace === "orchestration" ? "New conversation" : "Create Agent"}
+          </button>
+
+          <nav className="sidebar-nav" aria-label="Workspace">
+            <button
+              type="button"
+              className={workspace === "playground" ? "is-active" : ""}
+              aria-current={workspace === "playground" ? "page" : undefined}
+              onClick={() => setWorkspace("playground")}
+            >
+              <span aria-hidden="true">◑</span> Playground
+            </button>
+            <button
+              type="button"
+              className={workspace === "orchestration" ? "is-active" : ""}
+              aria-current={workspace === "orchestration" ? "page" : undefined}
+              onClick={() => setWorkspace("orchestration")}
+            >
+              <span aria-hidden="true">◎</span> Team
+            </button>
+          </nav>
+
+          <div className="sidebar-scroll">
+            {workspace === "orchestration" && (
+              <>
+                <div className="sidebar-label">
+                  <span>Conversations</span>
+                  <span>{orchestration.sessions.length}</span>
+                </div>
+                <nav className="thread-list" aria-label="Conversations">
+                  {orchestration.sessions.map((session) => (
+                    <div className="thread-card-row" key={session.id}>
+                      <button
+                        className={
+                          "thread-card " +
+                          (session.id === orchestration.selectedSessionId ? "selected" : "")
+                        }
+                        aria-current={
+                          session.id === orchestration.selectedSessionId ? "true" : undefined
+                        }
+                        onClick={() => orchestration.selectSession(session.id)}
+                      >
+                        <span className="thread-card-copy">
+                          <strong>{session.name}</strong>
+                          <span>{formatDateTime(session.updatedAt)}</span>
+                        </span>
+                        <span className={"thread-state thread-state-" + session.status}>
+                          {statusLabel(session.status)}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="thread-delete"
+                        aria-label={`Delete ${session.name}`}
+                        title={isOrchestrationActive(session.status) ? "Stop before deleting" : "Delete conversation"}
+                        disabled={isOrchestrationActive(session.status) || orchestration.action !== null}
+                        onClick={() => {
+                          if (window.confirm(`Delete "${session.name}" and its Team chat history?`)) {
+                            void orchestration.deleteSession(session.id).catch(() => undefined);
+                          }
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                  {orchestration.sessions.length === 0 && (
+                    <div className="empty-sidebar">
+                      <span aria-hidden="true">◇</span>
+                      {orchestration.loading
+                        ? "Loading conversations…"
+                        : "Start your first multi-Agent conversation."}
+                    </div>
+                  )}
+                </nav>
+              </>
+            )}
+
+            <div className="sidebar-label">
+              <span>Your Agents</span>
+              <span>{agents.length}</span>
+            </div>
+            <nav className="agent-list" aria-label="Agents">
+              {agents.map((agent) => (
+                <button
+                  className={"agent-card " + (agent.id === selectedId ? "selected" : "")}
+                  key={agent.id}
+                  aria-current={
+                    workspace === "playground" && agent.id === selectedId ? "true" : undefined
+                  }
+                  onClick={() => {
+                    setSelectedId(agent.id);
+                    setWorkspace("playground");
+                  }}
+                >
+                  <div className="agent-avatar">{agent.name.slice(0, 1).toUpperCase()}</div>
+                  <div className="agent-card-copy">
+                    <strong>{agent.name}</strong>
+                    <span>{agent.description || "Coding Agent"}</span>
+                  </div>
+                  <span className={"mini-dot mini-" + agent.status} />
+                </button>
+              ))}
+              {agents.length === 0 && (
+                <div className="empty-sidebar">
+                  <span aria-hidden="true">◇</span>
+                  Create your first coding Agent.
+                </div>
+              )}
+            </nav>
+          </div>
+
+          <div className="runtime-card">
+            <span className="eyebrow">Runtime</span>
+            <strong>{system?.runtime ?? "Checking…"}</strong>
             <span>
-              {system?.runtimeProvider === "container"
-                ? "Local container · Codex CLI"
-                : "ECS / Docker · Codex CLI"}
+              {system?.arkModel ?? "Ark model not configured"}
+              {system?.containerEngine ? " · " + system.containerEngine : ""}
             </span>
           </div>
-        </div>
+        </aside>
+      )}
 
-        <button
-          className="button button-primary create-button"
-          onClick={() => {
-            setForm(emptyForm);
-            setShowCreate(true);
-          }}
-        >
-          <span>＋</span> Create Agent
-        </button>
-
-        <div className="sidebar-label">
-          <span>Your Agents</span>
-          <span>{agents.length}</span>
-        </div>
-        <nav className="agent-list">
-          {agents.map((agent) => (
-            <button
-              className={"agent-card " + (agent.id === selectedId ? "selected" : "")}
-              key={agent.id}
-              onClick={() => setSelectedId(agent.id)}
-            >
-              <div className="agent-avatar">{agent.name.slice(0, 1).toUpperCase()}</div>
-              <div className="agent-card-copy">
-                <strong>{agent.name}</strong>
-                <span>{agent.description || "Coding Agent"}</span>
-              </div>
-              <span className={"mini-dot mini-" + agent.status} />
-            </button>
-          ))}
-          {agents.length === 0 && (
-            <div className="empty-sidebar">
-              <span>◇</span>
-              Create your first coding Agent.
-            </div>
-          )}
-        </nav>
-
-        <div className="runtime-card">
-          <span className="eyebrow">Runtime</span>
-          <strong>{system?.runtime ?? "Checking…"}</strong>
-          <span>
-            {system?.arkModel ?? "Ark model not configured"}
-            {system?.containerEngine ? " · " + system.containerEngine : ""}
-          </span>
-        </div>
-      </aside>
-
-      <main className="main">
-        {!system?.arkConfigured || !system?.codexAvailable ? (
-          <div className="config-banner">
-            <span>!</span>
-            <div>
-              <strong>Runtime configuration needed</strong>
-              <p>
-                {!system?.arkConfigured
-                  ? "Set ARK_API_KEY and ARK_MODEL in .env before using the Playground."
-                  : system.runtimeProvider === "container"
-                    ? "The local container engine or Agent Runtime image is unavailable. Rerun npm run poc."
-                    : "Codex CLI was not found. Use the Docker image or install @openai/codex."}
-              </p>
-            </div>
-          </div>
-        ) : null}
-
-        {error && (
-          <div className="error-banner" role="alert">
-            <span>{error}</span>
-            <button onClick={() => setError(null)}>×</button>
-          </div>
+      <main className={"main " + (workspace === "orchestration" ? "main-chat" : "")}>
+        {!sidebarOpen && (
+          <button
+            type="button"
+            className="rail-button sidebar-reveal"
+            aria-label="Show sidebar"
+            aria-expanded={false}
+            aria-controls="app-sidebar"
+            onClick={() => setSidebarOpen(true)}
+          >
+            <span aria-hidden="true">⟩</span>
+          </button>
         )}
 
-        {selected ? (
+        {workspace === "orchestration" ? (
+          <OrchestrationWorkspace
+            agents={agents}
+            orchestration={orchestration}
+            composerOpen={composerOpen}
+            onComposerOpenChange={setComposerOpen}
+          />
+        ) : (
+          <>
+            {!system?.arkConfigured || !system?.codexAvailable ? (
+              <div className="config-banner">
+                <span>!</span>
+                <div>
+                  <strong>Runtime configuration needed</strong>
+                  <p>
+                    {!system?.arkConfigured
+                      ? "Set ARK_API_KEY and ARK_MODEL in .env before using the Playground."
+                      : system.runtimeProvider === "container"
+                        ? "The local container engine or Agent Runtime image is unavailable. Rerun npm run poc."
+                        : "Codex CLI was not found. Use the Docker image or install @openai/codex."}
+                  </p>
+                </div>
+              </div>
+            ) : null}
+
+            {error && (
+              <div className="error-banner" role="alert">
+                <span>{error}</span>
+                <button onClick={() => setError(null)}>×</button>
+              </div>
+            )}
+
+            {selected ? (
           <>
             <header className="agent-header">
               <div>
@@ -583,22 +727,24 @@ export default function App() {
               </form>
             </section>
           </>
-        ) : (
-          <div className="no-agent">
-            <div className="no-agent-art">A</div>
-            <span className="eyebrow">Agent Launchpad</span>
-            <h1>Your runtime is ready for an Agent.</h1>
-            <p>Create a workspace, give Codex a job, and continue the conversation here.</p>
-            <button
-              className="button button-primary"
-              onClick={() => {
-                setForm(emptyForm);
-                setShowCreate(true);
-              }}
-            >
-              Create your first Agent
-            </button>
-          </div>
+            ) : (
+              <div className="no-agent">
+                <div className="no-agent-art">A</div>
+                <span className="eyebrow">Agent Launchpad</span>
+                <h1>Your runtime is ready for an Agent.</h1>
+                <p>Create a workspace, give Codex a job, and continue the conversation here.</p>
+                <button
+                  className="button button-primary"
+                  onClick={() => {
+                    setForm(emptyForm);
+                    setShowCreate(true);
+                  }}
+                >
+                  Create your first Agent
+                </button>
+              </div>
+            )}
+          </>
         )}
       </main>
 

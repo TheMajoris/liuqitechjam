@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
 import { loadConfig } from "./config.js";
+import { RunCancelledError } from "./errors.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -19,6 +20,37 @@ class FakeRunner implements AgentRunner {
   async cancel(): Promise<boolean> {
     return false;
   }
+  async isAvailable(): Promise<boolean> {
+    return true;
+  }
+}
+
+class DeferredRunner implements AgentRunner {
+  private resolveRun: ((result: RunnerResult) => void) | null = null;
+  private rejectRun: ((error: unknown) => void) | null = null;
+  cancelCalls = 0;
+
+  run(): Promise<RunnerResult> {
+    return new Promise<RunnerResult>((resolve, reject) => {
+      this.resolveRun = resolve;
+      this.rejectRun = reject;
+    });
+  }
+
+  resolve(result: RunnerResult): void {
+    this.resolveRun?.(result);
+  }
+
+  reject(error: unknown): void {
+    this.rejectRun?.(error);
+  }
+
+  async cancel(): Promise<boolean> {
+    this.cancelCalls += 1;
+    this.reject(new RunCancelledError());
+    return true;
+  }
+
   async isAvailable(): Promise<boolean> {
     return true;
   }
@@ -129,5 +161,101 @@ describe("Agent lifecycle", () => {
 
     finish({ output: "done", threadId: "thread", usage: null });
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+  });
+
+  it("waits for a Run to reach a terminal state and returns its final output", async () => {
+    const runner = new DeferredRunner();
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Waiter" });
+    const { run } = await service.sendMessage(agent.id, "wait for me");
+
+    await expect.poll(() => service.getRun(run.id).status).toBe("running");
+    const waiting = service.waitForRun(run.id, { timeoutMs: 1_000 });
+    runner.resolve({ output: "finished", threadId: "thread", usage: null });
+
+    await expect(waiting).resolves.toMatchObject({
+      id: run.id,
+      status: "completed",
+      output: "finished",
+    });
+  });
+
+  it("resolves failed and cancelled terminal Runs instead of hiding their status", async () => {
+    const failedService = await makeService({
+      run: async () => {
+        throw new Error("runner failed");
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const failedAgent = await failedService.createAgent({ name: "Failure" });
+    const failed = await failedService.sendMessage(failedAgent.id, "fail");
+    await expect
+      .poll(() => failedService.getRun(failed.run.id).status)
+      .toBe("failed");
+    await expect(failedService.waitForRun(failed.run.id, { timeoutMs: 1_000 })).resolves.toMatchObject({
+      status: "failed",
+      error: "runner failed",
+    });
+
+    const cancelledRunner = new DeferredRunner();
+    const cancelledService = await makeService(cancelledRunner);
+    const cancelledAgent = await cancelledService.createAgent({ name: "Cancelled" });
+    const cancelled = await cancelledService.sendMessage(cancelledAgent.id, "cancel");
+    await expect.poll(() => cancelledService.getRun(cancelled.run.id).status).toBe("running");
+    await cancelledService.cancelRun(cancelled.run.id);
+    await expect(cancelledService.waitForRun(cancelled.run.id, { timeoutMs: 1_000 })).resolves.toMatchObject({
+      status: "cancelled",
+    });
+  });
+
+  it("rejects a wait on timeout and abort while cleaning up the poll", async () => {
+    const runner = new DeferredRunner();
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Wait controls" });
+    const { run } = await service.sendMessage(agent.id, "keep waiting");
+    await expect.poll(() => service.getRun(run.id).status).toBe("running");
+
+    await expect(service.waitForRun(run.id, { timeoutMs: 20 })).rejects.toMatchObject({
+      name: "TimeoutError",
+    });
+
+    const controller = new AbortController();
+    const aborted = service.waitForRun(run.id, {
+      timeoutMs: 1_000,
+      signal: controller.signal,
+    });
+    controller.abort();
+    await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
+
+    await service.cancelRun(run.id);
+  });
+
+  it("cancels only the selected Run, leaves the Agent ready, and is idempotent", async () => {
+    const runner = new DeferredRunner();
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Cancelable" });
+    const { run } = await service.sendMessage(agent.id, "cancel this");
+    await expect.poll(() => service.getRun(run.id).status).toBe("running");
+
+    const cancelled = await service.cancelRun(run.id);
+    expect(cancelled).toMatchObject({ id: run.id, status: "cancelled" });
+    expect(service.getAgent(agent.id).status).toBe("ready");
+    expect(runner.cancelCalls).toBe(1);
+
+    const repeated = await service.cancelRun(run.id);
+    expect(repeated).toMatchObject({ id: run.id, status: "cancelled" });
+    expect(runner.cancelCalls).toBe(1);
+  });
+
+  it("does not turn a naturally completed Run into a cancellation", async () => {
+    const runner = new FakeRunner();
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Race" });
+    const { run } = await service.sendMessage(agent.id, "finish first");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const result = await service.cancelRun(run.id);
+    expect(result).toMatchObject({ id: run.id, status: "completed" });
   });
 });

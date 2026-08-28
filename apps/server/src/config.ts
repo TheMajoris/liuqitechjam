@@ -40,6 +40,8 @@ const envSchema = z.object({
     .optional(),
   ARK_API_KEY: z.string().optional(),
   ARK_MODEL: z.string().optional(),
+  SUPERVISOR_MODEL: z.string().optional(),
+  SUPERVISOR_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(120_000),
   ARK_BASE_URL: z
     .string()
     .url()
@@ -86,6 +88,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     authToken,
     arkApiKey: env.ARK_API_KEY?.trim() ?? "",
     arkModel: env.ARK_MODEL?.trim() ?? "",
+    supervisorModel: env.SUPERVISOR_MODEL?.trim() || env.ARK_MODEL?.trim() || "",
+    supervisorTimeoutMs: env.SUPERVISOR_TIMEOUT_MS,
     arkBaseUrl: env.ARK_BASE_URL.replace(/\/+$/, ""),
     nodeEnv: env.NODE_ENV,
   };
@@ -97,6 +101,16 @@ export function isArkConfigured(config: AppConfig): boolean {
     !config.arkApiKey.startsWith("replace-") &&
     config.arkModel.length > 0 &&
     !config.arkModel.includes("replace-")
+  );
+}
+
+/** Whether the shared Ark credentials and resolved supervisor model are usable. */
+export function isSupervisorConfigured(config: AppConfig): boolean {
+  return (
+    config.arkApiKey.length > 0 &&
+    !config.arkApiKey.startsWith("replace-") &&
+    config.supervisorModel.length > 0 &&
+    !config.supervisorModel.includes("replace-")
   );
 }
 

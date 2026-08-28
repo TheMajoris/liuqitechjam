@@ -1,4 +1,12 @@
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import type {
+  Agent,
+  AgentRun,
+  CreateOrchestrationInput,
+  Message,
+  OrchestrationSession,
+  OrchestrationSessionDetail,
+  SystemInfo,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -78,4 +86,32 @@ export const api = {
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
+  listOrchestrations: () =>
+    request<{ sessions: OrchestrationSession[] }>("/api/orchestrations"),
+  createOrchestration: (body: CreateOrchestrationInput) =>
+    request<{ session: OrchestrationSession }>("/api/orchestrations", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  continueOrchestration: (id: string, body: { prompt: string }) =>
+    request<{ session: OrchestrationSession }>(
+      "/api/orchestrations/" + id + "/continue",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  deleteOrchestration: (id: string) =>
+    request<{ deleted: boolean }>("/api/orchestrations/" + id, {
+      method: "DELETE",
+    }),
+  getOrchestration: (id: string) =>
+    request<OrchestrationSessionDetail>("/api/orchestrations/" + id),
+  startOrchestration: (id: string) =>
+    request<{ session: OrchestrationSession }>(
+      "/api/orchestrations/" + id + "/start",
+      { method: "POST" },
+    ),
+  stopOrchestration: (id: string) =>
+    request<{ session: OrchestrationSession }>(
+      "/api/orchestrations/" + id + "/stop",
+      { method: "POST" },
+    ),
 };

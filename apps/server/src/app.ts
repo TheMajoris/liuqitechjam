@@ -7,6 +7,33 @@ import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
+import {
+  ContinueOrchestrationSchema,
+  CreateOrchestrationSchema,
+  OrchestrationRouteParamsSchema,
+} from "./orchestration/schemas.js";
+import type {
+  CreateOrchestrationInput,
+  OrchestrationSession,
+  OrchestrationSessionDetail,
+} from "./orchestration/types.js";
+
+/**
+ * Narrow HTTP-facing seam for the orchestration module.
+ *
+ * Keeping this structural lets the app boundary remain usable while the
+ * service is assembled elsewhere (and makes route tests independent of its
+ * runtime dependencies).
+ */
+export interface OrchestrationServiceContract {
+  createSession(input: CreateOrchestrationInput): Promise<OrchestrationSession>;
+  listSessions(): Promise<OrchestrationSession[]>;
+  getSession(id: string): Promise<OrchestrationSessionDetail>;
+  startSession(id: string): Promise<OrchestrationSession>;
+  stopSession(id: string): Promise<OrchestrationSession>;
+  continueSession(id: string, prompt: string): Promise<OrchestrationSession>;
+  deleteSession(id: string): Promise<{ deleted: boolean }>;
+}
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -23,9 +50,63 @@ const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
 });
 
+/** Validation details that are safe to expose at the HTTP boundary. */
+class OrchestrationValidationError extends HttpError {
+  constructor(
+    message: string,
+    readonly details: readonly unknown[],
+  ) {
+    super(422, message);
+    this.name = "OrchestrationValidationError";
+  }
+}
+
+function requireOrchestrationService(
+  service: OrchestrationServiceContract | undefined,
+): OrchestrationServiceContract {
+  if (!service) {
+    throw new HttpError(503, "Orchestration is not configured");
+  }
+  return service;
+}
+
+function parseOrchestrationInput(value: unknown): CreateOrchestrationInput {
+  const parsed = CreateOrchestrationSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new OrchestrationValidationError(
+      "Invalid orchestration request",
+      parsed.error.issues,
+    );
+  }
+  return parsed.data;
+}
+
+function parseOrchestrationParams(value: unknown): { id: string } {
+  const parsed = OrchestrationRouteParamsSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new OrchestrationValidationError(
+      "Invalid orchestration route parameters",
+      parsed.error.issues,
+    );
+  }
+  return parsed.data;
+}
+
+function parseContinuationInput(value: unknown): { prompt: string } {
+  const parsed = ContinueOrchestrationSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new OrchestrationValidationError(
+      "Invalid continuation request",
+      parsed.error.issues,
+    );
+  }
+  return parsed.data;
+}
+
 export async function createApp(
   config: AppConfig,
   service: AgentService,
+  orchestrationService?: OrchestrationServiceContract,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -69,6 +150,56 @@ export async function createApp(
   }));
 
   app.get("/api/auth", async () => ({ required: config.authToken.length > 0 }));
+
+  app.post("/api/orchestrations", async (request, reply) => {
+    const input = parseOrchestrationInput(request.body);
+    const session = await requireOrchestrationService(
+      orchestrationService,
+    ).createSession(input);
+    return reply.code(201).send({ session });
+  });
+
+  app.get("/api/orchestrations", async () => {
+    const sessions = await requireOrchestrationService(
+      orchestrationService,
+    ).listSessions();
+    return { sessions };
+  });
+
+  app.get("/api/orchestrations/:id", async (request) => {
+    const { id } = parseOrchestrationParams(request.params);
+    return requireOrchestrationService(orchestrationService).getSession(id);
+  });
+
+  app.post("/api/orchestrations/:id/start", async (request, reply) => {
+    const { id } = parseOrchestrationParams(request.params);
+    const session = await requireOrchestrationService(
+      orchestrationService,
+    ).startSession(id);
+    return reply.code(202).send({ session });
+  });
+
+  app.post("/api/orchestrations/:id/stop", async (request, reply) => {
+    const { id } = parseOrchestrationParams(request.params);
+    const session = await requireOrchestrationService(
+      orchestrationService,
+    ).stopSession(id);
+    return reply.code(202).send({ session });
+  });
+
+  app.post("/api/orchestrations/:id/continue", async (request, reply) => {
+    const { id } = parseOrchestrationParams(request.params);
+    const { prompt } = parseContinuationInput(request.body);
+    const session = await requireOrchestrationService(
+      orchestrationService,
+    ).continueSession(id, prompt);
+    return reply.code(202).send({ session });
+  });
+
+  app.delete("/api/orchestrations/:id", async (request) => {
+    const { id } = parseOrchestrationParams(request.params);
+    return requireOrchestrationService(orchestrationService).deleteSession(id);
+  });
 
   app.get("/api/system", async () => service.systemInfo());
 
@@ -145,6 +276,11 @@ export async function createApp(
   app.setErrorHandler((error, request, reply) => {
     const appError = error instanceof Error ? error : new Error(String(error));
     const validationError = error instanceof z.ZodError;
+    const details = validationError
+      ? error.issues
+      : error instanceof OrchestrationValidationError
+        ? error.details
+        : undefined;
     const frameworkStatus =
       typeof (error as { statusCode?: unknown }).statusCode === "number"
         ? (error as { statusCode: number }).statusCode
@@ -162,7 +298,7 @@ export async function createApp(
     }
     return reply.code(statusCode).send({
       error: appError.message,
-      ...(validationError ? { details: error.issues } : {}),
+      ...(details !== undefined ? { details } : {}),
     });
   });
 

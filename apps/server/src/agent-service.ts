@@ -14,10 +14,30 @@ import type {
 import { WorkspaceManager } from "./workspace.js";
 
 const now = () => new Date().toISOString();
+const RUN_POLL_INTERVAL_MS = 50;
+
+function isTerminalRun(run: AgentRun): boolean {
+  return (
+    run.status === "completed" ||
+    run.status === "failed" ||
+    run.status === "cancelled"
+  );
+}
+
+function waitError(name: "AbortError" | "TimeoutError", message: string): Error {
+  const error = new Error(message);
+  error.name = name;
+  return error;
+}
 
 export class AgentService {
-  private readonly activeExecutions = new Map<string, Promise<void>>();
+  private readonly activeExecutions = new Map<
+    string,
+    { runId: string; execution: Promise<void> }
+  >();
   private readonly cancellationRequests = new Set<string>();
+  private readonly runCancellations = new Map<string, Promise<AgentRun>>();
+  private readonly agentCancellationLocks = new Set<string>();
 
   constructor(
     private readonly config: AppConfig,
@@ -142,6 +162,89 @@ export class AgentService {
     return run;
   }
 
+  async waitForRun(
+    runId: string,
+    options: { timeoutMs: number; signal?: AbortSignal },
+  ): Promise<AgentRun> {
+    const timeoutMs = options.timeoutMs;
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+      throw new TypeError("timeoutMs must be a non-negative finite number");
+    }
+
+    const initial = this.getRun(runId);
+    if (isTerminalRun(initial)) return initial;
+    if (options.signal?.aborted) {
+      throw waitError("AbortError", "Waiting for Run " + runId + " was aborted");
+    }
+
+    return new Promise<AgentRun>((resolve, reject) => {
+      let settled = false;
+      let interval: NodeJS.Timeout | null = null;
+      let timeout: NodeJS.Timeout | null = null;
+
+      const cleanup = () => {
+        if (interval) clearInterval(interval);
+        if (timeout) clearTimeout(timeout);
+        options.signal?.removeEventListener("abort", onAbort);
+      };
+
+      const settle = (settler: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        settler();
+      };
+
+      const poll = () => {
+        try {
+          const current = this.getRun(runId);
+          if (isTerminalRun(current)) {
+            settle(() => resolve(current));
+          }
+        } catch (error) {
+          settle(() => reject(error));
+        }
+      };
+
+      const onAbort = () => {
+        settle(() =>
+          reject(waitError("AbortError", "Waiting for Run " + runId + " was aborted")),
+        );
+      };
+
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+      interval = setInterval(poll, RUN_POLL_INTERVAL_MS);
+      interval.unref();
+      timeout = setTimeout(() => {
+        settle(() =>
+          reject(
+            waitError(
+              "TimeoutError",
+              "Run " + runId + " did not finish within " + timeoutMs + " ms",
+            ),
+          ),
+        );
+      }, timeoutMs);
+      timeout.unref();
+      poll();
+    });
+  }
+
+  async cancelRun(runId: string): Promise<AgentRun> {
+    const existing = this.runCancellations.get(runId);
+    if (existing) return existing;
+
+    const cancellation = this.cancelRunInternal(runId);
+    this.runCancellations.set(runId, cancellation);
+    try {
+      return await cancellation;
+    } finally {
+      if (this.runCancellations.get(runId) === cancellation) {
+        this.runCancellations.delete(runId);
+      }
+    }
+  }
+
   getRuns(agentId: string): AgentRun[] {
     this.getAgent(agentId);
     return this.store
@@ -159,6 +262,9 @@ export class AgentService {
         503,
         "Ark is not configured. Set ARK_API_KEY and ARK_MODEL, then restart.",
       );
+    }
+    if (this.agentCancellationLocks.has(agentId)) {
+      throw new HttpError(409, "This Agent is currently being cancelled");
     }
     const timestamp = now();
     const runId = randomUUID();
@@ -202,10 +308,10 @@ export class AgentService {
       return snapshot;
     });
     const execution = this.executeRun(agentAtStart, run);
-    this.activeExecutions.set(agentId, execution);
+    this.activeExecutions.set(agentId, { runId, execution });
     void execution
       .finally(() => {
-        if (this.activeExecutions.get(agentId) === execution) {
+        if (this.activeExecutions.get(agentId)?.runId === runId) {
           this.activeExecutions.delete(agentId);
         }
       })
@@ -241,7 +347,7 @@ export class AgentService {
       }
     });
     try {
-      if (this.cancellationRequests.has(agentAtStart.id)) {
+      if (this.cancellationRequests.has(run.id)) {
         throw new RunCancelledError();
       }
       const result = await this.runner.run({
@@ -255,6 +361,16 @@ export class AgentService {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
         if (!storedRun || !agent) return;
+        if (isTerminalRun(storedRun)) return;
+        if (this.cancellationRequests.has(run.id)) {
+          storedRun.status = "cancelled";
+          storedRun.error = "Run cancelled";
+          storedRun.completedAt = completedAt;
+          if (agent.status !== "stopped") agent.status = "ready";
+          agent.lastError = null;
+          agent.updatedAt = completedAt;
+          return;
+        }
         storedRun.status = "completed";
         storedRun.output = result.output;
         storedRun.usage = result.usage;
@@ -274,14 +390,22 @@ export class AgentService {
       });
     } catch (error) {
       const completedAt = now();
-      const cancelled = error instanceof RunCancelledError;
+      const cancelled =
+        error instanceof RunCancelledError || this.cancellationRequests.has(run.id);
       const message = error instanceof Error ? error.message : String(error);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
+        if (storedRun && isTerminalRun(storedRun)) {
+          if (agent) {
+            if (agent.status !== "stopped") agent.status = "ready";
+            agent.updatedAt = completedAt;
+          }
+          return;
+        }
         if (storedRun) {
           storedRun.status = cancelled ? "cancelled" : "failed";
-          storedRun.error = message;
+          storedRun.error = cancelled ? "Run cancelled" : message;
           storedRun.completedAt = completedAt;
         }
         if (agent) {
@@ -312,15 +436,43 @@ export class AgentService {
   }
 
   private async cancelExecution(agentId: string): Promise<void> {
-    this.cancellationRequests.add(agentId);
+    const active = this.activeExecutions.get(agentId);
+    if (!active) {
+      await this.runner.cancel(agentId);
+      return;
+    }
+
+    this.agentCancellationLocks.add(agentId);
+    this.cancellationRequests.add(active.runId);
     try {
       await this.runner.cancel(agentId);
-      const execution = this.activeExecutions.get(agentId);
-      if (execution) {
-        await execution;
-      }
+      await active.execution;
     } finally {
-      this.cancellationRequests.delete(agentId);
+      this.cancellationRequests.delete(active.runId);
+      this.agentCancellationLocks.delete(agentId);
+    }
+  }
+
+  private async cancelRunInternal(runId: string): Promise<AgentRun> {
+    const initial = this.getRun(runId);
+    if (isTerminalRun(initial)) return initial;
+
+    const active = this.activeExecutions.get(initial.agentId);
+    if (!active || active.runId !== runId) {
+      const current = this.getRun(runId);
+      if (isTerminalRun(current)) return current;
+      throw new HttpError(409, "Run is not currently active");
+    }
+
+    this.agentCancellationLocks.add(initial.agentId);
+    this.cancellationRequests.add(runId);
+    try {
+      await this.runner.cancel(initial.agentId);
+      await active.execution;
+      return this.getRun(runId);
+    } finally {
+      this.cancellationRequests.delete(runId);
+      this.agentCancellationLocks.delete(initial.agentId);
     }
   }
 }
