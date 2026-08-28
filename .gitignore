@@ -6,3 +6,10 @@ data/
 outputs/
 .agent_worktrees/
 *.py[cod]
+
+# Build output
+apps/*/dist/
+apps/*/tsconfig.tsbuildinfo
+.data/
+workspaces/
+codex-home/
