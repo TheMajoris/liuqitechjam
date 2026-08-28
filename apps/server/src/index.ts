@@ -2,6 +2,7 @@ import path from "node:path";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
 import { loadConfig, writeCodexConfig } from "./config.js";
+import { OrchestrationControl } from "./modules/orchestration/orchestration-control.js";
 import { ProjectService } from "./modules/projects/project-service.js";
 import { ProjectWorkspaceManager } from "./modules/projects/project-workspace.js";
 import { createRunner } from "./runner-factory.js";
@@ -23,7 +24,11 @@ const projects = new ProjectService(
 );
 await projects.initialize();
 
-const app = await createApp(config, service, { projects });
+const orchestration = new OrchestrationControl(store, {
+  queueLimit: config.orchestrationQueueLimit,
+});
+
+const app = await createApp(config, service, { projects, orchestration });
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");
