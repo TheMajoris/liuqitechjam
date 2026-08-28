@@ -2,6 +2,8 @@ import path from "node:path";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
 import { loadConfig, writeCodexConfig } from "./config.js";
+import { ProjectService } from "./modules/projects/project-service.js";
+import { ProjectWorkspaceManager } from "./modules/projects/project-workspace.js";
 import { createRunner } from "./runner-factory.js";
 import { JsonStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -15,7 +17,13 @@ const runner = createRunner(config);
 const service = new AgentService(config, store, workspaces, runner);
 await service.initialize();
 
-const app = await createApp(config, service);
+const projects = new ProjectService(
+  store,
+  new ProjectWorkspaceManager(config.projectWorkspaceRoot),
+);
+await projects.initialize();
+
+const app = await createApp(config, service, { projects });
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");

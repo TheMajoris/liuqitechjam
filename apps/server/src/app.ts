@@ -7,6 +7,13 @@ import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
+import type { ProjectService } from "./modules/projects/project-service.js";
+import { registerProjectRoutes } from "./modules/projects/project-routes.js";
+
+/** Optional domain modules wired in by the composition root. */
+export interface AppModules {
+  projects?: ProjectService;
+}
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -26,6 +33,7 @@ const messageBody = z.object({
 export async function createApp(
   config: AppConfig,
   service: AgentService,
+  modules: AppModules = {},
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -127,6 +135,10 @@ export async function createApp(
     const { id } = runIdParams.parse(request.params);
     return { run: service.getRun(id) };
   });
+
+  if (modules.projects) {
+    registerProjectRoutes(app, modules.projects);
+  }
 
   if (config.nodeEnv === "production") {
     const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
