@@ -249,6 +249,7 @@ export class AgentService {
         workspacePath: agentAtStart.workspacePath,
         prompt: run.prompt,
         threadId: agentAtStart.codexThreadId,
+        runId: run.id,
       });
       const completedAt = now();
       await this.store.mutate((database) => {

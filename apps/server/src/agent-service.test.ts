@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
 import { loadConfig } from "./config.js";
+import { RunCancelledError } from "./errors.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -107,6 +108,49 @@ describe("Agent lifecycle", () => {
     if (accepted?.status === "fulfilled") {
       await expect.poll(() => service.getRun(accepted.value.run.id).status).toBe("completed");
     }
+  });
+
+  it("kills an active run, then recovers on a later run", async () => {
+    let releaseFirst!: () => void;
+    const firstStarted = Promise.withResolvers<void>();
+    const cancelCalls: string[] = [];
+    let call = 0;
+    const runner: AgentRunner = {
+      run: (request) => {
+        call += 1;
+        if (call === 1) {
+          firstStarted.resolve();
+          return new Promise<RunnerResult>((_resolve, reject) => {
+            releaseFirst = () => reject(new RunCancelledError());
+          });
+        }
+        return Promise.resolve({
+          output: "recovered: " + request.prompt,
+          threadId: "thread-2",
+          usage: null,
+        });
+      },
+      cancel: async (agentId: string) => {
+        cancelCalls.push(agentId);
+        releaseFirst();
+        return true;
+      },
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Killable" });
+
+    const { run: firstRun } = await service.sendMessage(agent.id, "long task");
+    await firstStarted.promise;
+
+    expect((await service.stopAgent(agent.id)).status).toBe("stopped");
+    expect(cancelCalls).toEqual([agent.id]);
+    await expect.poll(() => service.getRun(firstRun.id).status).toBe("cancelled");
+
+    await service.startAgent(agent.id);
+    const { run: secondRun } = await service.sendMessage(agent.id, "retry task");
+    await expect.poll(() => service.getRun(secondRun.id).status).toBe("completed");
+    expect(service.getRun(secondRun.id).output).toContain("recovered: retry task");
   });
 
   it("does not let start reset a busy Agent and admit a second run", async () => {
