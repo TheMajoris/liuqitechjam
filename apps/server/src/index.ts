@@ -28,6 +28,7 @@ await projects.initialize();
 const orchestration = new OrchestrationControl(store, {
   queueLimit: config.orchestrationQueueLimit,
 });
+await orchestration.reconcileAfterRestart();
 const pipeline = new FixedPipeline({ store, control: orchestration, runner });
 pipeline.start();
 

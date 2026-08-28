@@ -212,6 +212,62 @@ export class OrchestrationControl {
   }
 
   /**
+   * Restart reconciliation (plan section 7 / invariant): queued work stays
+   * queued; any job that was `running` when the process died is failed with
+   * `interrupted_by_restart`, its stage and orchestration go terminal, and the
+   * role Agent is returned to a safe non-busy state. Old gateway leases are
+   * already invalid because the registry is in-memory.
+   */
+  async reconcileAfterRestart(): Promise<number> {
+    return this.store.mutate((database) => {
+      const timestamp = now();
+      let reconciled = 0;
+      for (const job of database.queueJobs) {
+        if (job.status !== "running") continue;
+        reconciled += 1;
+        job.status = "failed";
+        job.lastError = "interrupted_by_restart";
+        job.completedAt = timestamp;
+        job.updatedAt = timestamp;
+
+        const record = database.orchestrations.find(
+          (o) => o.id === job.orchestrationId,
+        );
+        if (record && !isTerminal(record.status)) {
+          record.status = "failed";
+          record.error = "interrupted_by_restart";
+          record.updatedAt = timestamp;
+          for (const stage of record.stages) {
+            if (stage.status === "running") {
+              stage.status = "failed";
+              stage.error = "interrupted_by_restart";
+              stage.completedAt = timestamp;
+            } else if (stage.status === "pending" || stage.status === "queued") {
+              stage.status = "blocked";
+              stage.completedAt = timestamp;
+            }
+          }
+        }
+        if (job.runId) {
+          const run = database.runs.find((r) => r.id === job.runId);
+          if (run && (run.status === "running" || run.status === "queued")) {
+            run.status = "failed";
+            run.error = "interrupted_by_restart";
+            run.completedAt = timestamp;
+          }
+        }
+      }
+      for (const agent of database.agents) {
+        if (agent.status === "busy") {
+          agent.status = "ready";
+          agent.updatedAt = timestamp;
+        }
+      }
+      return reconciled;
+    });
+  }
+
+  /**
    * Atomically claim the lowest-sequence queued job, but only when no job is
    * running anywhere. Returns the claimed job, or `null` when nothing is
    * eligible. Invariant 4: one running queue job globally.

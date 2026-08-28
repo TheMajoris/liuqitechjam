@@ -115,6 +115,64 @@ describe("OrchestrationControl.claimNext", () => {
   });
 });
 
+describe("OrchestrationControl.reconcileAfterRestart", () => {
+  it("fails an interrupted running job and frees its Agent, leaving queued work alone", async () => {
+    const { store, control, projectId } = await setup();
+    await control.enqueue(enqueueInput(projectId));
+    await control.enqueue(enqueueInput(projectId));
+    const claimed = await control.claimNext();
+    await store.mutate((db) => {
+      db.agents.push({
+        id: "agent-x",
+        name: "Planner",
+        description: "",
+        instructions: "",
+        status: "busy",
+        workspacePath: "/w/planner",
+        codexThreadId: null,
+        lastError: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+      const agent = db.agents[0]!;
+      const job = db.queueJobs.find((j) => j.id === claimed!.id)!;
+      job.runId = "run-x";
+      db.runs.push({
+        id: "run-x",
+        agentId: agent.id,
+        status: "running",
+        prompt: "p",
+        output: null,
+        error: null,
+        usage: null,
+        startedAt: "2026-01-01T00:00:00.000Z",
+        completedAt: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+    });
+
+    const count = await control.reconcileAfterRestart();
+    expect(count).toBe(1);
+
+    const db = store.snapshot();
+    expect(db.queueJobs.find((j) => j.id === claimed!.id)!.status).toBe("failed");
+    expect(db.queueJobs.filter((j) => j.status === "queued")).toHaveLength(1);
+    expect(db.orchestrations.find((o) => o.id === claimed!.orchestrationId)!.status).toBe(
+      "failed",
+    );
+    expect(db.runs.find((r) => r.id === "run-x")!.error).toBe("interrupted_by_restart");
+    expect(db.agents.every((a) => a.status !== "busy")).toBe(true);
+    // a fresh claim can still proceed on the remaining queued job
+    expect(await control.claimNext()).not.toBeNull();
+  });
+
+  it("is a no-op when nothing was running", async () => {
+    const { control, projectId } = await setup();
+    await control.enqueue(enqueueInput(projectId));
+    expect(await control.reconcileAfterRestart()).toBe(0);
+  });
+});
+
 describe("OrchestrationControl.cancel", () => {
   it("moves a queued orchestration and its jobs to a terminal state", async () => {
     const { store, control, projectId } = await setup();
