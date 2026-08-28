@@ -272,6 +272,8 @@ export interface GatewayRuntimeContext {
   codexHome: string;
 }
 
+export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
+
 export interface RunnerRequest {
   agentId: string;
   workspacePath: string;
@@ -279,6 +281,8 @@ export interface RunnerRequest {
   threadId: string | null;
   /** Optional correlation id for gateway lease scoping and telemetry. */
   runId?: string;
+  /** Per-run sandbox override. Falls back to the configured default. */
+  sandboxMode?: SandboxMode;
   /** Present only on the secretless container path. */
   gateway?: GatewayRuntimeContext;
 }
