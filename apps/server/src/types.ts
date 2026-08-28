@@ -225,6 +225,18 @@ export interface DatabaseV2 {
 /** Current database shape. */
 export type Database = DatabaseV2;
 
+export const ORCHESTRATION_STAGES: readonly OrchestrationStage[] = [
+  "planner",
+  "builder",
+  "reviewer",
+];
+
+export const TERMINAL_ORCHESTRATION_STATUSES: readonly OrchestrationStatus[] = [
+  "completed",
+  "failed",
+  "cancelled",
+];
+
 export const CURRENT_DB_VERSION = 2 as const;
 
 export interface CreateAgentInput {
