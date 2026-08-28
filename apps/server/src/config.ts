@@ -44,6 +44,8 @@ const envSchema = z.object({
     .string()
     .url()
     .default("https://ark.cn-beijing.volces.com/api/v3"),
+  MODEL_GATEWAY_URL: z.string().url().default("http://127.0.0.1:4000"),
+  RUNTIME_GATEWAY_NETWORK: z.string().min(1).default("bridge"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 
@@ -87,6 +89,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     arkApiKey: env.ARK_API_KEY?.trim() ?? "",
     arkModel: env.ARK_MODEL?.trim() ?? "",
     arkBaseUrl: env.ARK_BASE_URL.replace(/\/+$/, ""),
+    modelGatewayUrl: env.MODEL_GATEWAY_URL.replace(/\/+$/, ""),
+    runtimeGatewayNetwork: env.RUNTIME_GATEWAY_NETWORK,
     nodeEnv: env.NODE_ENV,
   };
 }
@@ -119,4 +123,52 @@ export async function writeCodexConfig(config: AppConfig): Promise<void> {
     encoding: "utf8",
     mode: 0o600,
   });
+}
+
+export interface CodexGatewayConfigInput {
+  /** Data-plane base URL of the model gateway. */
+  gatewayUrl: string;
+  /** Allowlisted provider id the lease is bound to. */
+  providerId: string;
+  /** Model id the lease is bound to. */
+  model: string;
+}
+
+/**
+ * Render a Codex `config.toml` that routes every model call through the gateway
+ * data plane. The only credential Codex ever sees is `MODEL_GATEWAY_TOKEN` — the
+ * opaque run lease injected per turn. No provider key is referenced.
+ */
+export function codexGatewayConfigToml(input: CodexGatewayConfigInput): string {
+  const base = input.gatewayUrl.replace(/\/+$/, "");
+  return [
+    "# Generated per run by SecretlessRunner. Do not edit.",
+    "model = " + JSON.stringify(input.model),
+    'model_provider = "model_gateway"',
+    "",
+    "[model_providers.model_gateway]",
+    'name = "Secretless Model Gateway"',
+    "base_url = " +
+      JSON.stringify(base + "/p/" + input.providerId + "/v1"),
+    'env_key = "MODEL_GATEWAY_TOKEN"',
+    'wire_api = "responses"',
+    "requires_openai_auth = false",
+    "",
+  ].join("\n");
+}
+
+/**
+ * Write a sanitized per-run CODEX_HOME containing only the gateway-pointing
+ * `config.toml`. `codexHome` must be a fresh, run-scoped directory.
+ */
+export async function writeCodexGatewayConfig(
+  codexHome: string,
+  input: CodexGatewayConfigInput,
+): Promise<void> {
+  await mkdir(codexHome, { recursive: true });
+  await writeFile(
+    path.join(codexHome, "config.toml"),
+    codexGatewayConfigToml(input),
+    { encoding: "utf8", mode: 0o600 },
+  );
 }
