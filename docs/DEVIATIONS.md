@@ -50,4 +50,20 @@ any change to them is recorded below before dependent work continues.
 
 ## Recorded deviations
 
-_None yet._
+### Task 6 — live protected-network integration test deferred to the security checkpoint
+
+The plan's Task 6 verification names "a local protected-network integration
+test" alongside the container-argument unit tests. That test requires a running
+container engine and a real `docker network`, which is not available in the
+implementation environment. Coverage delivered instead:
+
+- `container-codex-runner.test.ts` asserts the secretless argv/env: no provider
+  key, gateway env vars present, gateway-only `--network`, run-scoped Codex home.
+- `runtime/secretless-runner.test.ts` asserts lease issue → wire → revoke →
+  cleanup, and fail-closed (inner runner never starts) when no lease is issued.
+- `docker-compose.yml` expresses the two-network topology (`control-plane` +
+  internal-only `runtime-gateway`).
+
+The end-to-end "Runtime reaches the mock gateway but not a direct external
+endpoint" check is folded into the owner-run security checkpoint (plan
+"Security checkpoint: Tasks 0–7").
