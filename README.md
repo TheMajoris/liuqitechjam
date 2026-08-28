@@ -8,28 +8,46 @@ Run it locally with Docker, Colima, or rootless Podman, or deploy it to
 Volcengine ECS.
 
 > [!WARNING]
-> This is a single-user proof of concept. It intentionally has no identity,
-> tracing, audit, or hardened sandbox middleware. Do not use production data or
-> credentials. See [SECURITY.md](SECURITY.md).
+> This is a single-user proof of concept. It is not a hardened multi-tenant
+> sandbox. Do not use production data. See [SECURITY.md](SECURITY.md).
 
-## Screenshots
+## This fork: the Kill Switch track
 
-### Agent Playground
+This fork extends the starter into a Port-inspired Agent control plane that
+enters the hackathon under **exactly one track: Kill Switch**. It protects the
+long-lived model-provider credential from a compromised Agent Runtime. Provider
+keys live only in a trusted model-gateway sidecar process; each Agent turn runs
+in a disposable Runtime that holds only an opaque, short-lived, run-scoped lease
+and can reach the gateway and nothing else. When an operator invokes Kill, the
+control plane revokes the lease first, then terminates and removes the Runtime,
+and a later safe Run proves recovery. Queue orchestration, Agent-to-Agent
+handoffs, redacted traces, and token usage are supporting evidence for that
+boundary, not separate tracks.
 
-![Agent Playground showing lifecycle controls, starter prompts, and the Codex Runtime](docs/assets/playground.jpg)
+Start here:
 
-### Create an Agent
-
-![Create Agent form with name, description, and workspace instructions](docs/assets/create-agent.jpg)
+- [docs/ONBOARDING.md](docs/ONBOARDING.md) - new developer setup, repo map, dev loop.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - components, trust zones, data flow.
+- [docs/MIDDLEWARE.md](docs/MIDDLEWARE.md) - platform/middleware requirement mapping.
+- [docs/DEMO.md](docs/DEMO.md) - the three-minute operator demo.
+- [docs/DEVIATIONS.md](docs/DEVIATIONS.md) - frozen baseline record and deviations.
 
 ## Features
 
-- React and TypeScript Web UI
+- React and TypeScript Web UI (operator console; rework in progress)
 - Agent create, edit, start, stop, delete, and multi-turn chat
 - Fastify control plane with asynchronous Run state
 - Persistent Agent workspaces and Codex sessions
 - Disposable Docker, Colima, or Podman container for each local turn
-- Docker and Terraform deployment paths for Volcengine ECS
+- Trusted model-gateway sidecar: the only holder of provider keys, issuing
+  opaque run-scoped leases (`npm run gateway`)
+- Fixed Planner -> Builder -> Reviewer orchestration over a persisted FIFO queue,
+  with correlated Agent-to-Agent handoffs
+- Redacting telemetry ledger and read surfaces: `/api/providers`,
+  `/api/runs/:id/observability`, `/api/security/posture`
+- Revoke-first Kill with observable cleanup, and safe recovery on a later Run
+- Inherited Docker and Terraform deployment paths for Volcengine ECS (out of
+  scope for the Kill Switch MVP - see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md))
 
 ## Requirements
 
@@ -166,7 +184,8 @@ npm run dev
 - Web UI: <http://localhost:5173>
 - API: <http://localhost:3000>
 
-Use local paths in `.env` when running outside Docker:
+`npm run dev` runs the control plane with the host-process Codex runner - no
+containers, no gateway. Use local paths in `.env` when running outside Docker:
 
 ```dotenv
 APP_DATA_DIR=.data
@@ -174,41 +193,78 @@ AGENT_WORKSPACE_ROOT=workspaces
 CODEX_HOME=codex-home
 ```
 
+### The container / secretless path
+
+The Kill Switch story runs with the model-gateway sidecar and disposable
+Runtime containers, in two terminals:
+
+```bash
+# terminal 1 - trusted model-gateway sidecar (only holder of provider keys)
+set -a; . ./.env; set +a
+npm run gateway -w @launchpad/server
+
+# terminal 2 - control plane + disposable Runtime containers
+ARK_API_KEY=your-ark-api-key ARK_MODEL=ep-your-endpoint-id npm run poc
+```
+
+`npm run gateway` is defined in `apps/server/package.json`, so run it with
+`-w @launchpad/server` (or from `apps/server/`). Full walkthrough:
+[docs/ONBOARDING.md](docs/ONBOARDING.md) and [docs/LOCAL_POC.md](docs/LOCAL_POC.md).
+
 ## Deployment
 
-- [Existing Linux ECS with Docker](docs/DEPLOYMENT.md#existing-linux-ecs)
-- [Complete Volcengine environment with Terraform](docs/DEPLOYMENT.md#terraform-deployment)
-- [Local Docker, Colima, and Podman details](docs/LOCAL_POC.md)
+Local Docker, Colima, or rootless Podman is the supported path for this fork.
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and
+[docs/LOCAL_POC.md](docs/LOCAL_POC.md).
 
-The existing-ECS script deploys from the current source tree:
-
-```bash
-cp .env.example .env.production
-./scripts/deploy-existing-ecs.sh .env.production
-```
-
-The Terraform path provisions VPC, subnet, security group, ECS, and EIP:
-
-```bash
-cp deploy/volcengine/terraform.tfvars.example \
-  deploy/volcengine/terraform.tfvars
-./scripts/deploy-volcengine.sh
-```
+The starter's Volcengine ECS paths - `scripts/deploy-existing-ecs.sh` and the
+Terraform in `deploy/volcengine/` - are inherited unchanged and are **out of
+scope for the Kill Switch MVP** ([tasks/plan.md](tasks/plan.md) section 3). They
+have not been validated against the secretless gateway topology.
 
 ## Configuration
 
+### Control plane (`apps/server/src/config.ts`)
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `ARK_API_KEY` | Required | Ark model API key. |
-| `ARK_MODEL` | Required | Responses-capable endpoint or model ID. |
+| `ARK_API_KEY` | Required for a live turn | Ark model API key. In the secretless profile it is read only by the gateway process. |
+| `ARK_MODEL` | Required for a live turn | Responses-capable endpoint or model ID. |
 | `ARK_BASE_URL` | Beijing v3 endpoint | Ark OpenAI-compatible API URL. |
-| `APP_AUTH_TOKEN` | Empty on loopback | Shared demo token; use 24+ random characters remotely. |
+| `APP_AUTH_TOKEN` | Empty on loopback | Shared demo token; use 24+ URL-safe characters remotely. |
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable local Runtime containers. |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
+| `PROJECT_WORKSPACE_ROOT` | `project-workspaces` | Root for Project-owned shared workspaces. |
+| `ORCHESTRATION_QUEUE_LIMIT` | `50` | Max pending orchestrations before `429`. |
 | `LOCAL_POC_DATA_ROOT` | Platform-specific | Local metadata, workspace, and session directory. |
 
-See [.env.example](.env.example) for all Runtime and resource-limit options.
+### Secretless profile (control plane -> gateway)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MODEL_GATEWAY_URL` | `http://127.0.0.1:4000` | Base URL the control plane uses to reach the gateway management API. |
+| `MODEL_GATEWAY_ADMIN_TOKEN` | Empty | Gateway-admin capability. **Setting it (with `RUNTIME_PROVIDER=container`) activates the secretless profile.** Never injected into a Runtime. |
+| `RUNTIME_PROVIDER_ID` | `mock` | Which allowlisted gateway provider id run leases bind to. |
+| `MODEL_ID` | Falls back to `ARK_MODEL` | Model id bound to the lease and injected into the Runtime per run. |
+| `RUNTIME_GATEWAY_NETWORK` | `bridge` | Name of the internal Docker/Podman network that connects the Runtime to the gateway only. |
+
+### Gateway sidecar process (`apps/server/src/gateway/config.ts`)
+
+Read **only** by `npm run gateway`. The control plane never reads these.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MODEL_GATEWAY_HOST` | `127.0.0.1` | Gateway bind host. |
+| `MODEL_GATEWAY_PORT` | `4000` | Gateway bind port. |
+| `MODEL_GATEWAY_ADMIN_TOKEN` | Required (>= 24 chars) | Admin capability the `/internal/*` management API requires. |
+| `GATEWAY_PROVIDERS` | `mock` only | Comma-separated allowlisted provider ids. |
+| `PROVIDER_<ID>_PROTOCOL` | - | `mock` or `responses-http`. |
+| `PROVIDER_<ID>_MODELS` | - | Comma-separated allowlisted model ids (>= 1). |
+| `PROVIDER_<ID>_BASE_URL` | - | Upstream base URL (`responses-http` only). |
+| `PROVIDER_<ID>_KEY_ENV` | - | Name of the env var holding this provider's key (`responses-http` only); the value stays in the gateway process. |
+
+See [.env.example](.env.example) for every variable, grouped and commented.
 
 ## How it works
 
@@ -226,25 +282,40 @@ flowchart LR
 The first turn uses `codex exec`; later turns resume the stored Codex thread.
 Deleting an Agent archives its workspace under `workspaces/.deleted/`.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for component and extension
-boundaries.
+The diagram above is the baseline starter flow. Under the **Kill Switch
+profile** the Runtime no longer talks to Ark directly: it reaches the
+model-gateway sidecar with a run-scoped lease, and the gateway is the only
+process that holds the provider key. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the target design, trust zones,
+and data flow.
 
 ## Validation
 
 ```bash
-npm run check
+npm run check                          # typecheck + test + build
+bash scripts/secret-sweep.sh           # must print "secret-sweep: clean"
 terraform fmt -check -recursive deploy/volcengine
 docker compose config
 ```
 
+When a container engine is available, run the live Kill Switch boundary proof:
+
+```bash
+bash scripts/security-checkpoint.sh
+```
+
 ## Documentation
 
+- [Onboarding](docs/ONBOARDING.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Middleware requirement mapping](docs/MIDDLEWARE.md)
+- [Three-minute demo](docs/DEMO.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)
-- [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)
+- [Deviations and baseline record](docs/DEVIATIONS.md)
 - [Security policy](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
+- `docs/HACKATHON_EXTENSION_GUIDE.md` - planned; not yet in the repository.
 
 ## License
 
