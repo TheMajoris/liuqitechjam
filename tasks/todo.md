@@ -48,28 +48,28 @@
   - [x] Revoked lease cannot invoke provider. _(gateway denies revoked lease — Task 4 tests; SecretlessRunner revoke-first — secretless-runner.test.ts)_
   - [x] Runtime is removed and cleanup is visible. _(SecretlessRunner `onKill` reports `leaseRevoked` + `runtimeRemoved`)_
   - [x] Later safe Run succeeds. _(agent-service.test.ts "kills an active run, then recovers")_
-- [ ] **Task 9:** Add Project CRUD, three role assignments, and Project-owned workspace.
-  - [ ] Planner/Builder/Reviewer Agent IDs are distinct.
-  - [ ] Project path containment and archive ownership are tested.
-- [ ] **Task 10:** Add persisted FIFO orchestration admission.
-  - [ ] `202` occurs only after durable admission.
-  - [ ] Sequence, idempotency, concurrency, and queue-limit tests pass.
-- [ ] **Task 11:** Execute fixed Planner → Builder → Reviewer pipeline.
-  - [ ] Planner/Reviewer are read-only; Builder is workspace-write.
-  - [ ] Runs and handoff messages share correlation IDs.
-  - [ ] Failure/block/cancel prevents later stages.
-- [ ] **Task 12:** Add locked retry matrix and restart reconciliation.
-  - [ ] Only transient side-effect-safe failures retry once.
-  - [ ] Builder never retries after process start.
-  - [ ] Restart produces no duplicate stage completion.
+- [x] **Task 9:** Add Project CRUD, three role assignments, and Project-owned workspace.
+  - [x] Planner/Builder/Reviewer Agent IDs are distinct. _(project-service.test.ts, 422 on non-distinct/unknown)_
+  - [x] Project path containment and archive ownership are tested. _(resolveWithin traversal + archive tests)_
+- [x] **Task 10:** Add persisted FIFO orchestration admission.
+  - [x] `202` occurs only after durable admission. _(route returns 202 after one atomic store.mutate)_
+  - [x] Sequence, idempotency, concurrency, and queue-limit tests pass. _(orchestration-control.test.ts)_
+- [x] **Task 11:** Execute fixed Planner → Builder → Reviewer pipeline.
+  - [x] Planner/Reviewer are read-only; Builder is workspace-write. _(sandboxMode assertion in fixed-pipeline.test.ts)_
+  - [x] Runs and handoff messages share correlation IDs. _(traceId shared across stage runs + handoffs)_
+  - [x] Failure/block/cancel prevents later stages. _(blocked-stages + cancel tests)_
+- [x] **Task 12:** Add locked retry matrix and restart reconciliation.
+  - [x] Only transient side-effect-safe failures retry once. _(retry-policy.test.ts table)_
+  - [x] Builder never retries after process start. _(POST_START classification test)_
+  - [x] Restart produces no duplicate stage completion. _(reconcileAfterRestart + duplicate-completion guard)_
 
 ### Orchestration checkpoint
 
-- [ ] Two orchestrations execute in strict FIFO order.
-- [ ] Three assigned Agents collaborate against one Project workspace.
-- [ ] Messages, Runs, attempts, and spans correlate correctly.
-- [ ] Cancellation/retry/restart match the documented semantics.
-- [ ] `npm run check` passes.
+- [x] Two orchestrations execute in strict FIFO order. _(fixed-pipeline.test.ts FIFO test)_
+- [~] Three assigned Agents collaborate against one Project workspace. _(unit-proven with a fake runner; live multi-agent run is owner-run)_
+- [x] Messages, Runs, attempts, and spans correlate correctly. _(shared traceId; attempt on stage runs)_
+- [x] Cancellation/retry/restart match the documented semantics.
+- [x] `npm run check` passes. _(140 tests)_
 
 ## Phase C — Operational frontend
 
