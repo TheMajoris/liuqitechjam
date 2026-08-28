@@ -60,4 +60,52 @@ describe("Container Codex runner", () => {
     expect(args.slice(-3)).toEqual(["resume", "thread-123", "continue"]);
     expect(args).not.toContain("keep-id");
   });
+
+  it("omits the provider key and stays gateway-only on a secretless turn", () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      ARK_API_KEY: "provider-key-must-never-appear",
+      ARK_MODEL: "ep-test",
+      CODEX_HOME: "/tmp/codex-home",
+      RUNTIME_PROVIDER: "container",
+      RUNTIME_GATEWAY_NETWORK: "launchpad-gateway-internal",
+    });
+    const args = buildContainerRunArgs(
+      {
+        agentId: "agent",
+        workspacePath: "/tmp/workspace",
+        prompt: "do work",
+        threadId: null,
+        runId: "run-77",
+        gateway: {
+          gatewayUrl: "http://gateway:4000",
+          leaseToken: "glease_super_secret_lease_value",
+          providerId: "ark",
+          model: "ep-live",
+          codexHome: "/tmp/codex-home/runs/run-77",
+        },
+      },
+      config,
+    );
+
+    const joined = args.join(" ");
+    expect(joined).not.toContain("provider-key-must-never-appear");
+    expect(joined).not.toContain("glease_super_secret_lease_value");
+    expect(args).not.toContain("ARK_API_KEY");
+    expect(args).toContain("MODEL_GATEWAY_URL");
+    expect(args).toContain("MODEL_GATEWAY_TOKEN");
+    expect(args).toContain("MODEL_ID");
+    // gateway-only network, run-scoped Codex home
+    const networkIndex = args.indexOf("--network");
+    expect(args[networkIndex + 1]).toBe("launchpad-gateway-internal");
+    expect(args).toContain(
+      "type=bind,src=/tmp/codex-home/runs/run-77,dst=/codex-home",
+    );
+    expect(args).not.toContain(
+      "type=bind,src=/tmp/codex-home,dst=/codex-home",
+    );
+    // baseline hardening still present
+    expect(args).toContain("no-new-privileges");
+    expect(args).toContain("ALL");
+  });
 });

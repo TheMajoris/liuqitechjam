@@ -41,6 +41,22 @@ export function buildContainerRunArgs(
 ): string[] {
   const name = containerName(request.agentId, config.runtimeInstanceId);
   const engineName = config.containerEngine.split(/[\\/]/).at(-1)?.toLowerCase();
+  const secretless = request.gateway;
+  // Secretless turns receive only the opaque run lease and the gateway address,
+  // on the gateway-only network, with a run-scoped Codex home. The provider key
+  // is never named in argv, env, or a mount.
+  const providerEnv = secretless
+    ? [
+        "--env",
+        "MODEL_GATEWAY_URL",
+        "--env",
+        "MODEL_GATEWAY_TOKEN",
+        "--env",
+        "MODEL_ID",
+      ]
+    : ["--env", "ARK_API_KEY"];
+  const network = secretless ? config.runtimeGatewayNetwork : "bridge";
+  const codexHomeSource = secretless ? secretless.codexHome : config.codexHome;
   return [
     "run",
     "--rm",
@@ -55,7 +71,7 @@ export function buildContainerRunArgs(
     "io.codejam.instance-id=" + config.runtimeInstanceId,
     ...(engineName === "podman" ? ["--userns", "keep-id"] : []),
     "--network",
-    "bridge",
+    network,
     "--security-opt",
     "no-new-privileges",
     "--cap-drop",
@@ -68,8 +84,7 @@ export function buildContainerRunArgs(
     String(config.containerPidsLimit),
     "--user",
     config.containerUser,
-    "--env",
-    "ARK_API_KEY",
+    ...providerEnv,
     "--env",
     "CODEX_HOME=/codex-home",
     "--env",
@@ -79,7 +94,7 @@ export function buildContainerRunArgs(
     "--mount",
     "type=bind,src=" + request.workspacePath + ",dst=/workspace",
     "--mount",
-    "type=bind,src=" + config.codexHome + ",dst=/codex-home",
+    "type=bind,src=" + codexHomeSource + ",dst=/codex-home",
     "--workdir",
     "/workspace",
     config.containerRuntimeImage,
@@ -147,7 +162,7 @@ export class ContainerCodexRunner implements AgentRunner {
       buildContainerRunArgs(request, this.config),
       {
         cwd: request.workspacePath,
-        env: this.childEnvironment(),
+        env: this.childEnvironment(request),
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -235,11 +250,16 @@ export class ContainerCodexRunner implements AgentRunner {
     }
   }
 
-  private childEnvironment(): NodeJS.ProcessEnv {
-    const environment: NodeJS.ProcessEnv = {
-      ARK_API_KEY: this.config.arkApiKey,
-      NO_COLOR: "1",
-    };
+  private childEnvironment(request?: RunnerRequest): NodeJS.ProcessEnv {
+    const environment: NodeJS.ProcessEnv = { NO_COLOR: "1" };
+    if (request?.gateway) {
+      // Only the opaque lease and gateway coordinates cross into the container.
+      environment.MODEL_GATEWAY_URL = request.gateway.gatewayUrl;
+      environment.MODEL_GATEWAY_TOKEN = request.gateway.leaseToken;
+      environment.MODEL_ID = request.gateway.model;
+    } else {
+      environment.ARK_API_KEY = this.config.arkApiKey;
+    }
     for (const name of [
       "PATH",
       "HOME",
