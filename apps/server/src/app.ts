@@ -139,6 +139,21 @@ export async function createApp(
     return reply.code(202).send(result);
   });
 
+  const runsQuery = z.object({
+    agentId: z.string().uuid().optional(),
+    projectId: z.string().uuid().optional(),
+    orchestrationId: z.string().uuid().optional(),
+    status: z
+      .enum(["queued", "running", "completed", "failed", "cancelled"])
+      .optional(),
+    cursor: z.string().uuid().optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+  });
+
+  app.get("/api/runs", async (request) => {
+    return service.listRuns(runsQuery.parse(request.query));
+  });
+
   app.get("/api/runs/:id", async (request) => {
     const { id } = runIdParams.parse(request.params);
     return { run: service.getRun(id) };

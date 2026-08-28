@@ -150,6 +150,36 @@ export class AgentService {
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
+  /** Filterable, cursor-paginated run list for the Run Inspector table. */
+  listRuns(query: {
+    agentId?: string | undefined;
+    projectId?: string | undefined;
+    orchestrationId?: string | undefined;
+    status?: AgentRun["status"] | undefined;
+    cursor?: string | undefined;
+    limit?: number | undefined;
+  }): { items: AgentRun[]; nextCursor: string | null } {
+    const limit = Math.min(Math.max(query.limit ?? 25, 1), 100);
+    const ordered = this.store
+      .snapshot()
+      .runs.filter(
+        (run) =>
+          (!query.agentId || run.agentId === query.agentId) &&
+          (!query.projectId || run.projectId === query.projectId) &&
+          (!query.orchestrationId ||
+            run.orchestrationId === query.orchestrationId) &&
+          (!query.status || run.status === query.status),
+      )
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    const start = query.cursor
+      ? ordered.findIndex((run) => run.id === query.cursor) + 1
+      : 0;
+    const items = ordered.slice(start, start + limit);
+    const nextCursor =
+      start + limit < ordered.length ? (items.at(-1)?.id ?? null) : null;
+    return { items, nextCursor };
+  }
+
   async sendMessage(
     agentId: string,
     prompt: string,
