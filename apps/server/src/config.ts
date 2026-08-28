@@ -46,6 +46,14 @@ const envSchema = z.object({
     .default("https://ark.cn-beijing.volces.com/api/v3"),
   MODEL_GATEWAY_URL: z.string().url().default("http://127.0.0.1:4000"),
   RUNTIME_GATEWAY_NETWORK: z.string().min(1).default("bridge"),
+  MODEL_GATEWAY_ADMIN_TOKEN: z
+    .string()
+    .trim()
+    .max(256)
+    .regex(/^[A-Za-z0-9._~-]*$/, "MODEL_GATEWAY_ADMIN_TOKEN must use URL-safe characters")
+    .optional(),
+  RUNTIME_PROVIDER_ID: z.string().trim().min(1).default("mock"),
+  MODEL_ID: z.string().trim().min(1).optional(),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 
@@ -91,8 +99,23 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     arkBaseUrl: env.ARK_BASE_URL.replace(/\/+$/, ""),
     modelGatewayUrl: env.MODEL_GATEWAY_URL.replace(/\/+$/, ""),
     runtimeGatewayNetwork: env.RUNTIME_GATEWAY_NETWORK,
+    gatewayAdminToken: env.MODEL_GATEWAY_ADMIN_TOKEN?.trim() ?? "",
+    runtimeProviderId: env.RUNTIME_PROVIDER_ID,
+    runtimeModelId: env.MODEL_ID?.trim() ?? env.ARK_MODEL?.trim() ?? "",
     nodeEnv: env.NODE_ENV,
   };
+}
+
+/**
+ * The protected "secretless" profile is active when the container Runtime is
+ * selected and the control plane has been given a gateway-admin capability. In
+ * that profile every model call is brokered through the gateway and the Runtime
+ * never receives a provider credential.
+ */
+export function isSecretlessProfile(config: AppConfig): boolean {
+  return (
+    config.runtimeProvider === "container" && config.gatewayAdminToken.length > 0
+  );
 }
 
 export function isArkConfigured(config: AppConfig): boolean {
