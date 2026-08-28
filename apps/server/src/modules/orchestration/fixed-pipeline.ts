@@ -11,6 +11,7 @@ import {
   type QueueJob,
   type SandboxMode,
 } from "../../types.js";
+import type { TelemetryLedger } from "../telemetry/telemetry-ledger.js";
 import type { OrchestrationControl } from "./orchestration-control.js";
 import { decideRetry } from "./retry-policy.js";
 
@@ -44,6 +45,8 @@ export interface FixedPipelineDeps {
   store: JsonStore;
   control: OrchestrationControl;
   runner: AgentRunner;
+  /** Redacting telemetry ledger. Optional; when absent no spans are recorded. */
+  telemetry?: Pick<TelemetryLedger, "append">;
   /** Structured observation hook (stage start/finish). Optional. */
   onEvent?: (event: {
     kind: "stage.start" | "stage.finish";
@@ -67,6 +70,7 @@ export class FixedPipeline {
   private readonly store: JsonStore;
   private readonly control: OrchestrationControl;
   private readonly runner: AgentRunner;
+  private readonly telemetry: Pick<TelemetryLedger, "append"> | undefined;
   private readonly onEvent: NonNullable<FixedPipelineDeps["onEvent"]>;
   private timer: NodeJS.Timeout | null = null;
   private running = false;
@@ -75,7 +79,44 @@ export class FixedPipeline {
     this.store = deps.store;
     this.control = deps.control;
     this.runner = deps.runner;
+    this.telemetry = deps.telemetry;
     this.onEvent = deps.onEvent ?? (() => undefined);
+  }
+
+  private async span(record: {
+    traceId: string;
+    kind: "stage.planner" | "stage.builder" | "stage.reviewer" | "provider.responses" | "orchestration";
+    name: string;
+    status: "ok" | "error";
+    startedAt: string;
+    orchestrationId: string;
+    runId?: string;
+    stage?: OrchestrationStage;
+    attempt?: number;
+    code?: string;
+    preview?: unknown;
+    usage?: AgentRun["usage"];
+  }): Promise<void> {
+    if (!this.telemetry) return;
+    const endedAt = now();
+    await this.telemetry.append({
+      traceId: record.traceId,
+      spanId: randomUUID(),
+      parentSpanId: null,
+      kind: record.kind,
+      name: record.name,
+      status: record.status,
+      startedAt: record.startedAt,
+      endedAt,
+      durationMs: Date.parse(endedAt) - Date.parse(record.startedAt),
+      orchestrationId: record.orchestrationId,
+      ...(record.runId ? { runId: record.runId } : {}),
+      ...(record.stage ? { stage: record.stage } : {}),
+      ...(record.attempt !== undefined ? { attempt: record.attempt } : {}),
+      ...(record.code ? { code: record.code } : {}),
+      ...(record.preview !== undefined ? { preview: record.preview } : {}),
+      ...(record.usage ? { usage: record.usage } : {}),
+    });
   }
 
   start(intervalMs = 250): void {
@@ -112,7 +153,8 @@ export class FixedPipeline {
 
     const prepared = await this.prepareStage(job);
     if (!prepared) return "skipped";
-    const { runId, prompt, roleAgentId, workspacePath } = prepared;
+    const { runId, prompt, roleAgentId, workspacePath, traceId } = prepared;
+    const startedAt = now();
 
     this.onEvent({
       kind: "stage.start",
@@ -134,6 +176,40 @@ export class FixedPipeline {
         attempt: job.attempt,
       });
       await this.completeStage(job, runId, roleAgentId, result.output, result.usage);
+      await this.span({
+        traceId,
+        kind: `stage.${job.stage}`,
+        name: `stage.${job.stage}`,
+        status: "ok",
+        startedAt,
+        orchestrationId: job.orchestrationId,
+        runId,
+        stage: job.stage,
+        attempt: job.attempt,
+        preview: result.output,
+      });
+      await this.span({
+        traceId,
+        kind: "provider.responses",
+        name: `provider.responses (${job.stage})`,
+        status: "ok",
+        startedAt,
+        orchestrationId: job.orchestrationId,
+        runId,
+        stage: job.stage,
+        attempt: job.attempt,
+        ...(result.usage ? { usage: result.usage } : {}),
+      });
+      if (await this.isOrchestrationComplete(job.orchestrationId)) {
+        await this.span({
+          traceId,
+          kind: "orchestration",
+          name: "orchestration",
+          status: "ok",
+          startedAt,
+          orchestrationId: job.orchestrationId,
+        });
+      }
       this.onEvent({
         kind: "stage.finish",
         orchestrationId: job.orchestrationId,
@@ -154,6 +230,21 @@ export class FixedPipeline {
             message,
           });
       await this.failStage(job, runId, roleAgentId, message, cancelled, decision.retry);
+      await this.span({
+        traceId,
+        kind: `stage.${job.stage}`,
+        name: `stage.${job.stage}`,
+        status: "error",
+        startedAt,
+        orchestrationId: job.orchestrationId,
+        runId,
+        stage: job.stage,
+        attempt: job.attempt,
+        code: cancelled
+          ? "RUN_CANCELLED"
+          : (errorCode(error) ?? (decision.retry ? "RETRYING" : "STAGE_FAILED")),
+        preview: message,
+      });
       this.onEvent({
         kind: "stage.finish",
         orchestrationId: job.orchestrationId,
@@ -165,8 +256,21 @@ export class FixedPipeline {
     }
   }
 
+  private async isOrchestrationComplete(id: string): Promise<boolean> {
+    return (
+      this.store.snapshot().orchestrations.find((o) => o.id === id)?.status ===
+      "completed"
+    );
+  }
+
   private async prepareStage(job: QueueJob): Promise<
-    | { runId: string; prompt: string; roleAgentId: string; workspacePath: string }
+    | {
+        runId: string;
+        prompt: string;
+        roleAgentId: string;
+        workspacePath: string;
+        traceId: string;
+      }
     | null
   > {
     return this.store.mutate((database) => {
@@ -243,6 +347,7 @@ export class FixedPipeline {
         prompt,
         roleAgentId,
         workspacePath: project.workspacePath,
+        traceId: record.traceId,
       };
     });
   }

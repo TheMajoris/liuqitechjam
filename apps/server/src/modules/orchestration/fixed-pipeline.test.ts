@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { RunCancelledError } from "../../errors.js";
 import { JsonStore } from "../../store.js";
 import type { Agent, AgentRunner, Project, RunnerRequest, RunnerResult } from "../../types.js";
+import { TelemetryLedger } from "../telemetry/telemetry-ledger.js";
 import { FixedPipeline } from "./fixed-pipeline.js";
 import { OrchestrationControl } from "./orchestration-control.js";
 
@@ -255,6 +256,37 @@ describe("FixedPipeline", () => {
     const record = db.orchestrations.find((o) => o.id === orchestration.id)!;
     expect(record.status).toBe("failed");
     expect(db.runs.filter((r) => r.stage === "builder")).toHaveLength(1);
+  });
+
+  it("records correlated, redacted telemetry spans for each stage", async () => {
+    const { store, control, runner, project } = await setup();
+    runner.behavior = async (request) => ({
+      output: `stage output ${request.stage}`,
+      threadId: null,
+      usage: { inputTokens: 10, outputTokens: 20 },
+    });
+    const ledger = new TelemetryLedger({ store, secretValues: () => [] });
+    const pipeline = new FixedPipeline({ store, control, runner, telemetry: ledger });
+    const { orchestration } = await control.enqueue({
+      projectId: project.id,
+      prompt: "x",
+      providerId: "mock",
+    });
+
+    await drain(pipeline);
+
+    const db = store.snapshot();
+    const record = db.orchestrations.find((o) => o.id === orchestration.id)!;
+    const spans = db.telemetry.filter((t) => t.traceId === record.traceId);
+    expect(spans.some((s) => s.kind === "stage.planner")).toBe(true);
+    expect(spans.some((s) => s.kind === "stage.builder")).toBe(true);
+    expect(spans.some((s) => s.kind === "stage.reviewer")).toBe(true);
+    expect(spans.some((s) => s.kind === "orchestration")).toBe(true);
+
+    const plannerRun = db.runs.find((r) => r.stage === "planner")!;
+    const view = await ledger.inspectRun(plannerRun.id);
+    expect(view.usage).toEqual({ inputTokens: 10, outputTokens: 20 });
+    expect(view.counts.total).toBeGreaterThanOrEqual(2);
   });
 
   it("marks a cancelled stage run without failing the whole record twice", async () => {
