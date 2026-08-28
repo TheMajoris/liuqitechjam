@@ -44,10 +44,10 @@
 
 ## Phase B — Kill Switch and orchestration
 
-- [ ] **Task 8:** Integrate revoke-first Kill, Runtime termination, cleanup, and recovery.
-  - [ ] Revoked lease cannot invoke provider.
-  - [ ] Runtime is removed and cleanup is visible.
-  - [ ] Later safe Run succeeds.
+- [x] **Task 8:** Integrate revoke-first Kill, Runtime termination, cleanup, and recovery.
+  - [x] Revoked lease cannot invoke provider. _(gateway denies revoked lease — Task 4 tests; SecretlessRunner revoke-first — secretless-runner.test.ts)_
+  - [x] Runtime is removed and cleanup is visible. _(SecretlessRunner `onKill` reports `leaseRevoked` + `runtimeRemoved`)_
+  - [x] Later safe Run succeeds. _(agent-service.test.ts "kills an active run, then recovers")_
 - [ ] **Task 9:** Add Project CRUD, three role assignments, and Project-owned workspace.
   - [ ] Planner/Builder/Reviewer Agent IDs are distinct.
   - [ ] Project path containment and archive ownership are tested.
