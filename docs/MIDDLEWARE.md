@@ -20,9 +20,12 @@ Queue orchestration, Agent-to-Agent handoff messages, structured logs, traces,
 and token usage are **supporting evidence** for that boundary - they are not
 separate tracks.
 
-> **Status.** Only Task 0 (baseline freeze) and Task 1 (store v1 -> v2
-> migration) are implemented. Every "will" / "planned" below tracks a task in
-> [tasks/plan.md](../tasks/plan.md) section 14.
+> **Status.** Backend Tasks 0-16 are implemented and committed; the operator UI
+> (Tasks 13-16, `apps/web/`) is being reworked. Per-requirement status lines
+> below have been updated to point at the shipped code; the remaining "planned"
+> notes are the live provider smoke test and the UI surfaces, both gated on the
+> owner-run security checkpoint / the frontend rework
+> ([docs/DEVIATIONS.md](DEVIATIONS.md)).
 
 ## Requirement-by-requirement
 
@@ -46,8 +49,8 @@ separate tracks.
   `apps/server/src/modules/**` deep modules with their own interface tests.
 - **Where it lives:** `modules/projects/`, `modules/orchestration/`,
   `modules/model-access/`, `modules/telemetry/` plus `*.test.ts` beside each;
-  route adapters in `app.ts`.
-- **Status:** planned (Tasks 2, 5, 9-12, 16).
+  route adapters in `app.ts` (`AppModules`), plus `modules/providers/`.
+- **Status:** implemented (Tasks 2, 5, 9-12, 13, 16). 144 server tests pass.
 
 ### Real Runtime behavior
 
@@ -55,12 +58,14 @@ separate tracks.
   env, and mounts contain **no** provider key; a local integration test shows
   the Runtime can reach the mock gateway but cannot reach a direct external
   endpoint; the Kill path actually stops and removes the container.
-- **Where it lives:** `runtime/secretless-runner.ts`,
-  `apps/server/src/container-codex-runner.ts` and its test; protected-network
-  integration test; `docker-compose.yml` network definitions.
-- **Status:** planned (Tasks 6, 8). Current gap recorded in
-  [docs/DEVIATIONS.md](DEVIATIONS.md): the baseline runner passes
-  `--env ARK_API_KEY` and uses `--network bridge`.
+- **Where it lives:** `apps/server/src/runtime/secretless-runner.ts`,
+  `apps/server/src/container-codex-runner.ts` and its test,
+  `apps/server/src/runner-factory.ts`; `docker-compose.yml` network definitions.
+- **Status:** implemented (Tasks 6, 8). The secretless container branch omits
+  `ARK_API_KEY` and uses `RUNTIME_GATEWAY_NETWORK`; the baseline branch still
+  passes `--env ARK_API_KEY` when the profile is off
+  ([docs/DEVIATIONS.md](DEVIATIONS.md)). The live protected-network egress check
+  runs via `bash scripts/security-checkpoint.sh` (needs a container engine).
 
 ### Real data behavior
 
@@ -69,9 +74,10 @@ separate tracks.
   from the JSON store (Database v2); migration tests prove v1 fixtures upgrade
   losslessly.
 - **Where it lives:** `apps/server/src/store.ts`, `apps/server/src/types.ts`,
-  `store.test.ts` (Task 1, done); populated by
-  `modules/orchestration/**` and `modules/telemetry/**`.
-- **Status:** schema + migration done; population planned (Tasks 2, 10-12).
+  `store.test.ts`; populated by `modules/orchestration/**` and
+  `modules/telemetry/**`.
+- **Status:** implemented. Schema + migration (Task 1) and population
+  (Tasks 2, 10-12) are done and tested.
 
 ### Real infrastructure behavior
 
@@ -82,7 +88,8 @@ separate tracks.
   `gateway/config.ts` (only reader of provider keys), `docker-compose.yml` /
   [docs/LOCAL_POC.md](LOCAL_POC.md) network topology, `.env` split documented in
   [.env.example](../.env.example) (Gateway section).
-- **Status:** planned (Tasks 3-4, 6-7).
+- **Status:** implemented (Tasks 3-4, 6-7). `npm run gateway` runs the sidecar;
+  `gateway/config.ts` is the only module that reads a provider key value.
 
 ### Defined ownership
 
@@ -99,10 +106,15 @@ separate tracks.
   through the gateway and records a complete correlated trace
   (`orchestration` -> `queue.wait` -> `stage.*` -> `runtime.*` -> `gateway.*`
   -> `provider.responses`) with duration and token usage.
-- **Where it lives:** Run Inspector tabs (Overview / Trace / Logs / Usage /
-  Security) in `apps/web/src/features/runs/`; `GET /api/runs/:id/observability`;
-  one manual live smoke test (Task 7).
-- **Status:** planned (Tasks 7, 11, 16).
+- **Where it lives:** `GET /api/runs/:id/observability`
+  (`modules/telemetry/telemetry-routes.ts`) and the pipeline spans from
+  `modules/orchestration/fixed-pipeline.ts`; Run Inspector tabs in
+  `apps/web/src/features/runs/`.
+- **Status:** backend implemented (Tasks 11, 16). The one manual live
+  Codex -> gateway -> provider smoke test (Task 7) and the Run Inspector UI are
+  still outstanding - the smoke test needs a real credential and is part of the
+  owner-run security checkpoint ([docs/DEVIATIONS.md](DEVIATIONS.md)); the UI is
+  in the frontend rework.
 
 ### Abuse evidence
 
@@ -110,28 +122,35 @@ separate tracks.
   and tries to contact the provider directly; the key is absent from env and
   workspace, direct egress fails, and the attempt is recorded as a
   `security.deny` span.
-- **Where it lives:** negative integration test; `security.deny` / `security.kill`
-  telemetry; Security page "controlled-demo guide" in
-  `apps/web/src/features/security/`.
-- **Status:** planned (Task 8).
+- **Where it lives:** `runtime/secretless-runner.test.ts`,
+  `agent-service.test.ts` (kill-then-recover), `gateway/app.test.ts` (every deny
+  path with zero provider calls); `security.deny` / `security.kill` /
+  `gateway.revoke` telemetry surfaced by `GET /api/security/posture`;
+  [docs/DEMO.md](DEMO.md) Step 4.
+- **Status:** backend implemented (Task 8). The Security page UI is in the
+  frontend rework.
 
 ### Recovery evidence
 
 - **What proves it:** after Kill + cleanup, a new safe Run obtains a fresh lease
   and completes successfully; the revoked lease still cannot invoke a provider.
-- **Where it lives:** negative integration test + the controlled
-  malicious/recovery demo ([docs/DEMO.md](DEMO.md) steps 5-6); Security page.
-- **Status:** planned (Task 8).
+- **Where it lives:** `agent-service.test.ts` "kills an active run, then recovers
+  on a later run"; the controlled malicious/recovery demo
+  ([docs/DEMO.md](DEMO.md) steps 5-6).
+- **Status:** backend implemented (Task 8).
 
 ### Automated verification
 
 - **What proves it:** interface, integration, negative, cleanup, migration, and
   secret-sweep tests all run under `npm run check`; `scripts/secret-sweep.sh`
   scans the tree and generated telemetry for credential-shaped values.
-- **Where it lives:** `*.test.ts` across server modules; `scripts/secret-sweep.sh`
-  with `scripts/secret-sweep.allow`; [tasks/plan.md](../tasks/plan.md) section 15.
-- **Status:** store/migration tests done; module tests + secret sweep in
-  progress (sweep script added by Task 17 docs lane).
+- **Where it lives:** `*.test.ts` across server modules (144 tests);
+  `scripts/secret-sweep.sh` with `scripts/secret-sweep.allow`;
+  `scripts/security-checkpoint.sh` for the live boundary;
+  [tasks/plan.md](../tasks/plan.md) section 15.
+- **Status:** implemented. `npm run check` and `bash scripts/secret-sweep.sh`
+  are the per-commit gate; the security checkpoint is run when a container
+  engine is available.
 
 ### Keep secrets out
 
@@ -141,11 +160,12 @@ separate tracks.
   (`PROVIDER_*`, `MODEL_GATEWAY_ADMIN_TOKEN`); redaction before every persist and
   before logger output; repeated secret sweeps of source, config, and generated
   telemetry.
-- **Where it lives:** `runtime/secretless-runner.ts` (allowlist),
-  `gateway/config.ts`, `modules/telemetry/redactor.ts`,
-  `scripts/secret-sweep.sh`, [.env.example](../.env.example),
-  [SECURITY.md](../SECURITY.md).
-- **Status:** planned (Tasks 2, 6); sweep script present.
+- **Where it lives:** `container-codex-runner.ts` (env allowlist),
+  `runtime/secretless-runner.ts`, `gateway/config.ts`,
+  `modules/telemetry/redactor.ts`, `scripts/secret-sweep.sh`,
+  [.env.example](../.env.example), [SECURITY.md](../SECURITY.md).
+- **Status:** implemented (Tasks 2, 6). Redaction runs before every persist and
+  before logger output; the sweep is part of the per-commit gate.
 
 ### Small infrastructure
 

@@ -6,9 +6,9 @@ is the recommended development and judging path
 section 3).
 
 This page describes what [`scripts/start-local-poc.sh`](../scripts/start-local-poc.sh)
-(invoked by `npm run poc`) actually does today, plus the **planned** separate
-model-gateway process from [tasks/plan.md](../tasks/plan.md). Sections that
-depend on unlanded tasks are marked **[planned]**.
+(invoked by `npm run poc`) does, plus the separate model-gateway process
+(`npm run gateway`, implemented) that the secretless Kill Switch profile
+requires. New developers: start at [docs/ONBOARDING.md](ONBOARDING.md).
 
 ## Prerequisites
 
@@ -44,14 +44,19 @@ ARK_MODEL=ep-<your-endpoint-id>
 # Optional shared control-plane token; may stay empty on a loopback host
 APP_AUTH_TOKEN=
 
-# [planned] gateway profile - required once the sidecar lands (Tasks 3-7)
+# Secretless gateway profile - set these to run the Kill Switch path.
+# Setting MODEL_GATEWAY_ADMIN_TOKEN (with RUNTIME_PROVIDER=container, which
+# `npm run poc` forces) activates the secretless profile.
 MODEL_GATEWAY_URL=http://127.0.0.1:4000
-MODEL_GATEWAY_ADMIN_TOKEN=<long-random-admin-token>
+MODEL_GATEWAY_ADMIN_TOKEN=<long-random-admin-token, 24+ URL-safe chars>
 GATEWAY_PROVIDERS=ark,mock
-PROVIDER_ARK_PROTOCOL=responses
+PROVIDER_ARK_PROTOCOL=responses-http
 PROVIDER_ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 PROVIDER_ARK_MODELS=ep-<your-endpoint-id>
 PROVIDER_ARK_KEY_ENV=ARK_API_KEY
+PROVIDER_MOCK_PROTOCOL=mock
+PROVIDER_MOCK_MODELS=mock-responses-1
+RUNTIME_PROVIDER_ID=ark
 ```
 
 See [.env.example](../.env.example) for every variable, grouped and commented.
@@ -113,30 +118,33 @@ workspaces and Codex conversations under the state root are kept for next time.
 
 ## The gateway process
 
-**[planned - Tasks 3-7]**
-
-In the secretless target the model-gateway is a **separate process** from the
+In the secretless profile the model-gateway is a **separate process** from the
 control plane. It is the only process that reads provider keys
 (`apps/server/src/gateway/config.ts`), and the Runtime containers are placed on
 an internal network that can reach the gateway and nothing else.
 
-Planned commands (names finalized when the gateway lands):
-
 ```bash
-# terminal 1 - control plane + Runtime image
-npm run poc
-
-# terminal 2 - model-gateway sidecar
+# terminal 1 - model-gateway sidecar
 set -a; . ./.env; set +a
-npm run gateway            # serves MODEL_GATEWAY_HOST:MODEL_GATEWAY_PORT
+npm run gateway -w @launchpad/server   # serves MODEL_GATEWAY_HOST:MODEL_GATEWAY_PORT (default 127.0.0.1:4000)
+
+# terminal 2 - control plane + Runtime image
+set -a; . ./.env; set +a
+ARK_API_KEY=$ARK_API_KEY ARK_MODEL=$ARK_MODEL npm run poc
 
 # health
 curl -fsS "$MODEL_GATEWAY_URL/internal/health"
 ```
 
-Until this task lands, the platform runs exactly as the starter kit does: the
-control plane and the Runtime container both receive `ARK_API_KEY` (see
-[docs/DEVIATIONS.md](DEVIATIONS.md)).
+`npm run gateway` is defined in `apps/server/package.json`, so invoke it with
+`-w @launchpad/server` from the repo root (or run `npm run gateway` inside
+`apps/server/`). `gateway:dev` adds file-watch reload.
+
+If `MODEL_GATEWAY_ADMIN_TOKEN` is **not** set, the platform runs as the starter
+kit does: the control plane and the Runtime container both receive `ARK_API_KEY`
+(see [docs/DEVIATIONS.md](DEVIATIONS.md)). Confirm which profile is active with
+`curl -fsS http://localhost:3000/api/security/posture` - look for
+`"profile":"secretless-gateway"`.
 
 ## State directories
 

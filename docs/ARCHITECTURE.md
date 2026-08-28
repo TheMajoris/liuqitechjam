@@ -5,30 +5,37 @@ challenge track is **Kill Switch** (see [tasks/plan.md](../tasks/plan.md)
 section 2): protect the long-lived model-provider credential from a compromised
 Agent Runtime, and prove that a Run can be killed, contained, and recovered.
 
-> **Implementation status.** Only **Task 0** (baseline freeze,
-> [docs/DEVIATIONS.md](DEVIATIONS.md)) and **Task 1** (lossless JSON store
-> v1 -> v2 migration, `apps/server/src/store.ts` + `apps/server/src/types.ts`)
-> are done. Everything else on this page is **planned / in progress** and is
-> labelled below. This document describes the *target*, not current behavior.
+> **Implementation status.** The **backend Tasks 0-16 are implemented and
+> committed**: the store v1 -> v2 migration, the redacting telemetry ledger, the
+> gateway sidecar with opaque leases, the `ModelAccess` adapter, the secretless
+> container Runtime, the revoke-first Kill path, Projects and shared workspaces,
+> the persisted FIFO orchestration queue, the Planner -> Builder -> Reviewer
+> pipeline with retries and restart reconciliation, and the redacted read
+> surfaces (`/api/providers`, `/api/runs/:id/observability`,
+> `/api/security/posture`). The **operator UI** (Tasks 13-16, `apps/web/`) is
+> **in progress** - a rework is underway. File paths and status are labelled per
+> row below.
 
 ## Component overview
 
 | Component | Where | Status | Responsibility |
 | --- | --- | --- | --- |
-| React control-plane UI | `apps/web/` | baseline (shell rework planned, Tasks 13-16) | Resource catalog, Run Inspector, Security Envelope. Renders only safe descriptors and redacted telemetry. |
-| Fastify control plane | `apps/server/src/app.ts`, `index.ts` | baseline (new routes planned, Tasks 9-16) | Transport validation only; delegates to domain modules. Keeps all existing routes compatible. |
-| `AgentService` | `apps/server/src/agent-service.ts` | baseline | Agent CRUD, lifecycle, Playground `sendMessage`, Run persistence. Preserved. |
-| JSON store | `apps/server/src/store.ts` | **Task 1 done** | `JsonStore` with one atomic `mutate()` path. `Database.version = 2`; v1 files upgrade losslessly. |
-| Domain types | `apps/server/src/types.ts` | **Task 1 done** | Additive v2 record types + `Correlation` fields. |
-| `OrchestrationControl` | `modules/orchestration/` | planned (Tasks 10-12) | Hides FIFO queue, atomic claim, fixed 3-stage state machine, retry matrix, restart reconciliation, handoff messages, trace correlation. |
-| `ModelAccess` | `modules/model-access/` | planned (Task 5) | `withSession(scope, use)` owns lease issue/use/revoke and `finally` cleanup. Callback never sees a provider key. |
-| `TelemetryLedger` + redactor | `modules/telemetry/` | planned (Task 2) | Structured append/query, pre-persistence redaction, preview + record caps, trace ordering, usage aggregation. |
-| Project module | `modules/projects/` | planned (Task 9) | Project CRUD, three role assignments, Project-owned shared workspace, path containment. |
-| `SecretlessRunner` | `runtime/secretless-runner.ts` | planned (Task 6) | Wraps the existing container runner + `ModelAccess`; env allowlist; gateway-only network. |
-| Container runner | `apps/server/src/container-codex-runner.ts` | baseline (secretless rework planned, Task 6) | Disposable per-turn container. Today injects `ARK_API_KEY` and uses `--network bridge` - the gap this MVP closes. |
-| Model gateway sidecar | `apps/server/src/gateway/` | planned (Tasks 3-4, 7) | **Separate process.** Only holder of provider keys. Issues opaque hashed leases, validates them, injects the real credential, forwards to the provider, returns a sanitized response. |
-| Provider catalog | `gateway/provider-catalog.ts`, `gateway/providers/` | planned (Tasks 3, 7) | Allowlisted Responses-compatible HTTP adapter + deterministic mock adapter. |
-| Responses-compatible provider | external (BytePlus / Volcengine Ark) | baseline via Codex | One live provider; additional providers are config-only. |
+| React control-plane UI | `apps/web/` | **in progress** (Tasks 13-16, rework underway) | Resource catalog, Run Inspector, Security Envelope. Renders only safe descriptors and redacted telemetry. |
+| Fastify control plane | `apps/server/src/app.ts`, `index.ts` | **implemented** | Transport validation only; delegates to domain modules. `AppModules` wires in projects / orchestration / telemetry routes. All existing routes stay compatible. |
+| `AgentService` | `apps/server/src/agent-service.ts` | baseline (preserved) | Agent CRUD, lifecycle, Playground `sendMessage`, Run persistence. Kill routes through `runner.cancel`. |
+| JSON store | `apps/server/src/store.ts` | **implemented (Task 1)** | `JsonStore` with one atomic `mutate()` path. `Database.version = 2`; v1 files upgrade losslessly. |
+| Domain types | `apps/server/src/types.ts` | **implemented (Task 1)** | Additive v2 record types + correlation fields. |
+| `OrchestrationControl` + `FixedPipeline` | `apps/server/src/modules/orchestration/` | **implemented (Tasks 10-12)** | FIFO queue, atomic claim, fixed 3-stage state machine, retry matrix (`retry-policy.ts`), restart reconciliation, handoff messages, trace correlation. |
+| `ModelAccess` | `apps/server/src/modules/model-access/` | **implemented (Task 5)** | `withSession(scope, use)` owns lease issue/use/revoke and `finally` cleanup; `HttpGatewayManagementClient` maps failures fail-closed. Callback never sees a provider key. |
+| `TelemetryLedger` + redactor | `apps/server/src/modules/telemetry/` | **implemented (Tasks 2, 16)** | Structured append/query, pre-persistence redaction, 2 KiB preview + 500-record caps, trace ordering, usage aggregation. Routes: `/api/providers`, `/api/runs/:id/observability`, `/api/security/posture`. |
+| Project module | `apps/server/src/modules/projects/` | **implemented (Task 9)** | Project CRUD, three role assignments, Project-owned shared workspace (`project-workspace.ts`), path containment, archive. |
+| Provider directory | `apps/server/src/modules/providers/provider-directory.ts` | **implemented (Task 13)** | Config-derived safe provider descriptors for `GET /api/providers`. No base URL, key-env name, or credential. |
+| `SecretlessRunner` | `apps/server/src/runtime/secretless-runner.ts` | **implemented (Tasks 6, 8)** | Wraps the container runner + `ModelAccess`; run-scoped gateway Codex home; revoke-first Kill with `onKill` outcome; fails closed. |
+| Runner factory | `apps/server/src/runner-factory.ts` | **implemented (Task 8)** | Selects host-process / plain container / `SecretlessRunner` per `isSecretlessProfile`. |
+| Container runner | `apps/server/src/container-codex-runner.ts` | **implemented (Task 6)** | Disposable per-turn container. Secretless branch omits `ARK_API_KEY`, sets the `MODEL_GATEWAY_*` env allowlist, and uses `RUNTIME_GATEWAY_NETWORK`. Baseline branch still injects `ARK_API_KEY` when the profile is off. |
+| Model gateway sidecar | `apps/server/src/gateway/` | **implemented (Tasks 3-4, 7)** | **Separate process** (`npm run gateway`). Only holder of provider keys. Issues opaque hashed leases, validates them, injects the real credential, forwards to the provider, returns a sanitized response. |
+| Provider catalog | `apps/server/src/gateway/provider-catalog.ts`, `gateway/providers/` | **implemented (Tasks 3, 7)** | Allowlisted `responses-http` adapter + deterministic mock adapter. |
+| Responses-compatible provider | external (BytePlus / Volcengine Ark) | live via the gateway | One live provider; additional providers are config-only (`GATEWAY_PROVIDERS` + `PROVIDER_<ID>_*`). |
 
 ## Data flow (target)
 
@@ -58,7 +65,7 @@ flowchart LR
     Telemetry --> Store
 ```
 
-### Primary request flow (planned)
+### Primary request flow (implemented)
 
 1. Browser submits a direct Playground Run or a fixed Project orchestration.
 2. Fastify validates and calls a domain module; routes never touch queue rows.
@@ -69,7 +76,7 @@ flowchart LR
 7. Runtime, gateway, queue, and model activity append correlated redacted records under one `traceId`.
 8. Completion, failure, cancellation, or timeout revokes the lease in `finally`; cancellation revokes *before* terminating the Runtime.
 
-### Malicious and recovery flow (planned)
+### Malicious and recovery flow (implemented)
 
 1. A controlled malicious Run tries to read a provider key and reach the provider directly.
 2. The key is absent from the environment and workspace; direct egress is unavailable.
@@ -89,7 +96,8 @@ From [tasks/plan.md](../tasks/plan.md) section 4.
 | Agent Runtime | Compromisable | Prompt, project mount, sanitized Codex home, run lease | Provider key, control-plane token, gateway admin token, unrelated host environment |
 | Data layer | Trusted local state | Domain records and redacted telemetry | Raw leases, provider keys, raw authorization headers |
 
-Network layout (planned, [tasks/plan.md](../tasks/plan.md) section 8):
+Network layout ([tasks/plan.md](../tasks/plan.md) section 8; expressed in
+`docker-compose.yml` and via `RUNTIME_GATEWAY_NETWORK`):
 
 ```text
 Runtime -- internal network -- Gateway -- egress network -- Provider
@@ -100,25 +108,31 @@ Runtime -- internal network -- Gateway -- egress network -- Provider
 
 Summarized from [tasks/plan.md](../tasks/plan.md) section 5. Each module exposes a
 small use-case interface; HTTP routes and React code never edit queue state.
+All of the following are implemented; paths are under `apps/server/src/`.
 
-- **`OrchestrationControl`** (planned) - `enqueue` / `list` / `inspect` /
-  `cancel`. Hides queue sequencing, atomic claims, the fixed
-  Planner -> Builder -> Reviewer state machine, Run creation, the retry matrix,
-  restart reconciliation, handoff messages, and trace correlation.
-- **`ModelAccess`** (planned) - `withSession<T>(scope, use)` and `revoke(runId)`.
-  Owns issue/use/revoke ordering and guaranteed `finally` cleanup. Production
-  adapter talks to the gateway management API; tests use an in-memory adapter.
-  The callback receives an ephemeral Runtime config, never a provider key.
-- **`ProviderCatalog` / `ResponsesProvider`** (planned) - owned by the gateway.
-  Parameterized HTTP adapter for allowlisted Responses-compatible providers plus
-  a deterministic mock. Provider ids, base URLs, model ids, and key env-var
-  names come from trusted config, never browser input.
-- **`TelemetryLedger`** (planned) - `append(draft)` / `inspectRun(runId)`. Owns
-  redaction, preview limits (2 KiB), record caps (500 per Run), ordering, trace
-  correlation, usage aggregation, and persistence. Callers submit structured
-  fields, not preformatted log strings.
-- **Existing `AgentRunner`** (baseline seam) - kept as-is. `SecretlessRunner`
-  adapts it additively with run context + `ModelAccess`. Host-process execution
+- **`OrchestrationControl` / `FixedPipeline`** (`modules/orchestration/`) -
+  `enqueue` / `list` / `inspect` / `cancel` plus the pipeline worker. Hides
+  queue sequencing, atomic claims, the fixed Planner -> Builder -> Reviewer
+  state machine, Run creation, the retry matrix (`retry-policy.ts`), restart
+  reconciliation, handoff messages, and trace correlation.
+- **`ModelAccess`** (`modules/model-access/`) - `withSession<T>(scope, use)` and
+  `revoke(runId)`. Owns issue/use/revoke ordering and guaranteed `finally`
+  cleanup. `GatewayModelAccess` talks to the gateway management API via
+  `HttpGatewayManagementClient`; tests use an in-memory adapter. The callback
+  receives an ephemeral Runtime session, never a provider key.
+- **`ProviderCatalog` / `ResponsesProvider`** (`gateway/provider-catalog.ts`,
+  `gateway/providers/`) - owned by the gateway. `responses-http` adapter for
+  allowlisted providers plus a deterministic mock. Provider ids, base URLs,
+  model ids, and key env-var names come from `gateway/config.ts`, never browser
+  input. The control plane's redacted projection is
+  `modules/providers/provider-directory.ts`.
+- **`TelemetryLedger`** (`modules/telemetry/`) - `append(draft)` /
+  `inspectRun(runId)`. Owns redaction (`redactor.ts`), preview limits (2 KiB),
+  record caps (500 per Run), ordering, trace correlation, usage aggregation, and
+  persistence. Callers submit structured fields, not preformatted log strings.
+- **`AgentRunner` seam** - `SecretlessRunner` (`runtime/secretless-runner.ts`)
+  adapts the container runner additively with run context + `ModelAccess`;
+  `runner-factory.ts` selects it. Host-process execution (`codex-runner.ts`)
   stays an explicitly ungoverned developer fallback, excluded from security
   claims.
 
@@ -130,27 +144,31 @@ one normalized contract; production and in-memory gateway clients satisfy one
 `ModelAccess` interface. Composition roots pick adapters; modules never read
 `process.env` directly.
 
-## Folder structure (target)
+## Folder structure
 
 From [tasks/plan.md](../tasks/plan.md) section 6. New code is feature-first;
 baseline files move only when a focused task takes over their responsibility.
+Everything below exists on disk today.
 
 ```text
 apps/server/src/
 ├── app.ts                         # Fastify composition and compatibility routes
 ├── index.ts                       # process composition root
 ├── agent-service.ts               # baseline Agent CRUD/Playground facade
-├── types.ts                       # additive baseline/domain types            [Task 1 done]
-├── store.ts                       # JSON store v2                             [Task 1 done]
+├── config.ts                      # control-plane env + isSecretlessProfile + Codex config writers
+├── runner-factory.ts              # host-process / plain container / SecretlessRunner selection
+├── types.ts                       # additive baseline/domain types            [implemented]
+├── store.ts                       # JSON store v2                             [implemented]
 ├── modules/
-│   ├── projects/                  # project-service / project-workspace / project-routes   [planned]
-│   ├── orchestration/             # orchestration-control / fixed-pipeline / retry-policy / routes [planned]
-│   ├── model-access/              # model-access / gateway-client             [planned]
-│   └── telemetry/                 # redactor / telemetry-ledger / telemetry-routes         [planned]
+│   ├── projects/                  # project-service / project-workspace / project-routes   [implemented]
+│   ├── orchestration/             # orchestration-control / fixed-pipeline / retry-policy / routes [implemented]
+│   ├── model-access/              # model-access / gateway-client             [implemented]
+│   ├── providers/                 # provider-directory (safe GET /api/providers projection) [implemented]
+│   └── telemetry/                 # redactor / telemetry-ledger / telemetry-routes         [implemented]
 ├── runtime/
-│   └── secretless-runner.ts       # [planned]
-└── gateway/                       # separate sidecar process                  [planned]
-    ├── main.ts                    # entry point
+│   └── secretless-runner.ts       # [implemented]
+└── gateway/                       # separate sidecar process                  [implemented]
+    ├── main.ts                    # entry point (npm run gateway)
     ├── app.ts
     ├── config.ts                  # ONLY process allowed to read provider keys
     ├── lease-registry.ts
@@ -169,15 +187,17 @@ apps/web/src/
 
 Folder rules: a feature owns its views, hooks, types, and tests; `shared/` holds
 only code used by at least two features; server modules import Fastify only in
-their route adapters; the gateway never imports Project, orchestration, or
-browser modules; the web app never imports server persistence types; composition
-roots construct concrete adapters.
+their route adapters; the gateway never imports Project, orchestration,
+telemetry, or browser modules; the web app never imports server persistence
+types; composition roots construct concrete adapters. The `apps/web/src/`
+layout above is the target the in-progress rework is moving toward.
 
 ## Data model and invariants
 
 The JSON database is migrated explicitly from version 1 to version 2 with no loss
 of Agents, messages, Runs, thread ids, or workspaces
-(`apps/server/src/store.ts`, **Task 1 done**).
+(`apps/server/src/store.ts`, **implemented**). Every collection below is now
+populated by its owning module.
 
 ```ts
 interface DatabaseV2 {
@@ -185,22 +205,24 @@ interface DatabaseV2 {
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
-  projects: Project[];                       // planned population (Task 9)
-  orchestrations: OrchestrationRecord[];     // planned population (Task 10)
-  queueJobs: QueueJob[];                     // planned population (Task 10)
-  handoffMessages: HandoffMessage[];         // planned population (Task 11)
-  telemetry: TelemetryRecord[];              // planned population (Task 2)
+  projects: Project[];                       // ProjectService (Task 9)
+  orchestrations: OrchestrationRecord[];     // OrchestrationControl (Task 10)
+  queueJobs: QueueJob[];                     // OrchestrationControl (Task 10)
+  handoffMessages: HandoffMessage[];         // FixedPipeline (Task 11)
+  telemetry: TelemetryRecord[];              // TelemetryLedger (Tasks 2, 16)
   nextQueueSequence: number;
 }
 ```
 
-Additive correlation fields on existing records (present in `types.ts` today,
-populated by later tasks): `projectId?`, `orchestrationId?`, `traceId?`,
-`stage?` (`"planner" | "builder" | "reviewer"`), `attempt?`.
+Additive correlation fields on existing records (in `types.ts`, populated by the
+orchestration and telemetry modules): `projectId?`, `orchestrationId?`,
+`traceId?`, `stage?` (`"planner" | "builder" | "reviewer"`), `attempt?`.
 
 ### Core invariants (from plan section 7)
 
-1. Existing baseline records load unchanged through the v1 -> v2 migrator. **(enforced today)**
+All fifteen are enforced by the implemented modules and covered by tests.
+
+1. Existing baseline records load unchanged through the v1 -> v2 migrator.
 2. Project workspaces are owned and archived by Projects, never by an assigned Agent.
 3. Planner, Builder, and Reviewer Agent ids must exist and be distinct.
 4. Only one queue job is `running` globally.
@@ -216,11 +238,14 @@ populated by later tasks): `projectId?`, `orchestrationId?`, `traceId?`,
 14. Cancellation revokes model access before Runtime termination.
 15. Gateway denial invokes no provider adapter and has no direct-key fallback.
 
-Restart reconciliation (planned): queued jobs stay queued; a `running` job
-becomes `failed` with `interrupted_by_restart`; its Agent returns to a safe
-non-busy state; all in-memory leases are already invalid.
+Restart reconciliation (`OrchestrationControl.reconcileAfterRestart`, called from
+`index.ts`): queued jobs stay queued; a `running` job becomes `failed` with
+`interrupted_by_restart`; its Agent returns to a safe non-busy state; all
+in-memory leases are already invalid.
 
 ### Retry matrix (from plan section 7)
+
+Encoded in `apps/server/src/modules/orchestration/retry-policy.ts`.
 
 | Failure | Automatic retry | Reason |
 | --- | ---: | --- |
@@ -234,10 +259,12 @@ non-busy state; all in-memory leases are already invalid.
 
 ## Related documents
 
+- [docs/ONBOARDING.md](ONBOARDING.md) - developer setup, repo map, dev loop.
 - [docs/DEVIATIONS.md](DEVIATIONS.md) - frozen baseline record (Task 0).
 - [docs/MIDDLEWARE.md](MIDDLEWARE.md) - platform/middleware requirement mapping.
-- [docs/DEMO.md](DEMO.md) - three-minute operator demo (draft).
+- [docs/DEMO.md](DEMO.md) - three-minute operator demo.
 - [docs/LOCAL_POC.md](LOCAL_POC.md) - local run instructions.
+- [docs/DEPLOYMENT.md](DEPLOYMENT.md) - supported deployment path.
 - [.env.example](../.env.example) - every environment variable, grouped.
 - Diagram source artifacts referenced by the plan
   (`docs/agent-control-plane-architecture.excalidraw` / `.svg` / `.png`) are
