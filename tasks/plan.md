@@ -1,6 +1,6 @@
 # Implementation Plan: Secretless Multi-Agent Control Plane MVP
 
-> **Status:** design locked; implementation not authorized yet.
+> **Status:** design revised and locked; implementation not authorized yet.
 >
 > **Approval rule:** creating or approving this document does not authorize product-code changes. Before Task 0 starts, the project owner must explicitly say to begin implementation.
 >
@@ -12,7 +12,7 @@ Extend the Volc Agent Launchpad starter into a Port-inspired Agent control plane
 
 The MVP protects the long-lived model-provider credential from a compromised Agent Runtime. Provider credentials live only in a trusted gateway sidecar. A disposable Runtime receives a short-lived, run-scoped gateway lease, can reach only that gateway, and is terminated and cleaned up when a Run is killed. Queue orchestration, Agent-to-Agent communication, structured logs, traces, and token usage support and demonstrate that security boundary; they are not separate challenge tracks.
 
-The finished MVP must preserve Agent CRUD, lifecycle operations, Playground chat, persistence, model execution, and session continuation.
+The finished MVP must preserve Agent CRUD, lifecycle operations, Playground chat, persistence, model execution, and session continuation. An authenticated operator can onboard a Responses-compatible provider without editing environment files, let the gateway discover or validate its models, and bind a default provider/model to each Agent. The workflow remains usable by developers and non-developers through one guided setup path.
 
 ## 2. Locked product decisions
 
@@ -20,11 +20,15 @@ The finished MVP must preserve Agent CRUD, lifecycle operations, Playground chat
 | --- | --- | --- |
 | Challenge track | Kill Switch only | The official extension guide requires one primary track. |
 | Explicit threat | A compromised Runtime reads or exfiltrates the long-lived provider API key | Concrete protected asset and demonstrable abuse case. |
-| Protected asset | Long-lived provider credential | It must never enter a workspace, Runtime environment, browser response, log, trace, or screenshot. |
+| Protected asset | Long-lived provider credential | It may exist transiently in the write-only setup form and authenticated relay request, but must never be returned, retained in browser storage, persisted by the control plane, mounted into a Runtime, logged, traced, or shown in screenshots. |
 | Primary enforcement | Dedicated model-gateway sidecar plus gateway-only Runtime network | Enforcement sits below Agent prompts and outside the untrusted Runtime. |
 | Runtime credential | Opaque, short-lived lease bound to Run, Agent, provider, model, scope, and expiry | Compromise exposes a revocable capability, not the provider credential. |
 | Failure policy | Fail closed; never fall back to a direct provider key | Gateway denial or outage cannot weaken the security boundary. |
-| Providers | One live Responses-compatible provider, deterministic mock, and configuration-ready additional Responses-compatible providers | Proves multiple-provider architecture without native adapters for every vendor. |
+| Providers | Operator-managed Responses-compatible providers, one live provider, and a deterministic mock | Presets make onboarding approachable; a guarded custom HTTPS option proves extensibility without native adapters for every vendor. |
+| Provider administration | One authenticated operator capability; no per-user RBAC claim | The MVP remains single-operator while provider mutations fail when control-plane authentication is disabled. |
+| Credential persistence | Authenticated encryption in a gateway-owned store; gateway-only master key | Providers survive restarts without putting plaintext or encryption keys in control-plane state. |
+| Model discovery | Capability-based gateway discovery with explicit manual/unverified fallback | `/models` is not universal across Responses-compatible providers; unsupported discovery must remain usable without pretending verification occurred. |
+| Model assignment | Optional Agent default plus an atomic orchestration-wide override | Each Run snapshots the effective provider/model; no stage silently changes models or falls back. |
 | Project model | A Project groups three role-assigned Agents and owns one shared working directory | Agents can collaborate on the same files without cross-project access. |
 | Write permissions | Planner and Reviewer are read-only; Builder is workspace-write | Only one role mutates project files. |
 | Orchestration | Fixed persisted FIFO: Planner → Builder → Reviewer | Coherent and demonstrable; no general DAG engine. |
@@ -37,6 +41,7 @@ The finished MVP must preserve Agent CRUD, lifecycle operations, Playground chat
 | Authentication | Preserve the starter's optional shared control-plane bearer token | SSO and human RBAC are not required to prove credential containment. |
 | Agent internet access | No role receives arbitrary egress in the governed profile | Role-based internet exceptions would undermine the chosen threat boundary. |
 | Deployment | Local Docker/Colima/Podman is the supported protected path | Matches the judging path and three-day scope. |
+| Agent framework | No full framework in the MVP; keep `AgentRunner`/`AgentExecutor` as an adapter seam | A framework does not solve credential containment, discovery, leases, networking, or Kill and would obscure the fixed workflow. |
 
 ## 3. Explicit non-goals
 
@@ -44,7 +49,10 @@ The finished MVP must preserve Agent CRUD, lifecycle operations, Playground chat
 - No arbitrary workflow editor, DAG engine, dynamic fan-out, or distributed scheduler.
 - No BullMQ, Redis, Temporal, Kafka, RabbitMQ, Postgres, or Kubernetes in the MVP.
 - No native Anthropic, Bedrock, Gemini, or provider-specific protocol implementations; additional providers must be Responses-compatible.
-- No direct browser configuration of provider URLs or credentials.
+- No anonymous provider mutation, direct browser-to-provider traffic, credential read-back/export, arbitrary authentication headers, or unrestricted provider endpoints.
+- No real multi-user identity, per-user RBAC, or audit attribution; “developer/non-developer” describes setup usability, not separate permissions.
+- No automatic billable inference during provider discovery; model testing is an explicit operator action.
+- No full agent framework, dynamic agent graph, framework-managed memory, or framework-controlled retry loop.
 - No arbitrary Agent internet access or role-based egress exceptions.
 - No raw chain-of-thought, authorization headers, provider bodies, environment dumps, or unredacted secrets in telemetry.
 - No claim that ordinary containers provide hardened hostile multi-tenant isolation.
@@ -60,6 +68,7 @@ flowchart LR
     API --> Projects[Project module]
     API --> Orchestration[OrchestrationControl]
     API --> Query[Telemetry query module]
+    API --> ProviderAdmin[Provider administration]
 
     Projects --> Store[(JSON store v2)]
     Orchestration --> Store
@@ -68,6 +77,8 @@ flowchart LR
     Orchestration --> Runner[Secretless AgentRunner]
     Runner --> Lease[ModelAccess client]
     Lease --> Gateway[Trusted model gateway sidecar]
+    ProviderAdmin -->|write-only enrollment| Gateway
+    Gateway --> Secrets[(Encrypted provider store)]
     Runner --> Runtime[Disposable Agent Runtime]
     Runtime -->|opaque run lease only| Gateway
     Gateway -->|long-lived credential| Provider[Responses-compatible provider]
@@ -82,22 +93,24 @@ flowchart LR
 
 | Zone | Trust | Contains | Must not contain |
 | --- | --- | --- | --- |
-| Browser | Untrusted | Safe descriptors, redacted telemetry, control-plane token when configured | Provider keys, gateway leases, gateway admin token |
-| Control plane | Trusted coordinator | Domain state, queue, project paths, gateway management client | Provider keys in the protected profile |
-| Gateway sidecar | Trusted credential broker | Provider allowlist, provider keys, in-memory lease hashes | Project files, raw Agent history |
+| Browser | Untrusted ingress | Safe descriptors, redacted telemetry, control-plane token, transient write-only credential input | Retained/prefilled provider keys, ciphertext export, gateway leases, gateway admin token |
+| Control plane | Trusted coordinator and transient relay | Domain state, queue, project paths, gateway management client, transient enrollment body | Persisted provider keys/ciphertext, provider keys in logs/telemetry, gateway master key |
+| Gateway sidecar | Trusted credential broker | Provider registry, decrypted credentials in bounded process memory, encrypted credential store, master key, in-memory lease hashes | Project files, raw Agent history |
 | Agent Runtime | Compromisable | Prompt, project mount, sanitized Codex home, run lease | Provider key, control-plane token, gateway admin token, unrelated host environment |
-| Data layer | Trusted local state | Domain records and redacted telemetry | Raw leases, provider keys, raw authorization headers |
+| Control-plane data layer | Trusted local state | Safe provider/model summaries, Agent bindings, domain records, redacted telemetry | Raw leases, provider keys/ciphertext, master key, raw authorization headers |
 
 ### Primary request flow
 
-1. The browser submits a direct Playground Run or fixed Project orchestration.
-2. Fastify validates the request and calls a domain module; routes do not manipulate queue rows directly.
-3. The control plane atomically persists the Run/message/job before returning `202 Accepted`.
-4. `ModelAccess.withSession(...)` requests a run-scoped lease from the gateway management interface.
-5. `SecretlessRunner` starts the Runtime on an internal network and passes only the gateway URL, selected model, and ephemeral lease.
-6. Codex sends Responses-compatible calls to the gateway. The gateway validates the lease, injects the selected provider credential, forwards the request, and returns a sanitized response.
-7. Runtime, gateway, queue, and model activity append correlated redacted records with one `traceId`.
-8. Completion, failure, cancellation, or timeout revokes the lease in `finally`; cancellation revokes before terminating the Runtime.
+1. An authenticated operator first uses the setup wizard to select a provider preset or guarded custom HTTPS endpoint and submit a write-only credential. Fastify validates and relays it without persistence; the gateway encrypts it and discovers models or records an explicit manual/unverified model.
+2. The operator binds an optional default provider/model pair to each Agent. A later orchestration may supply one complete override pair for all stages.
+3. The browser submits a direct Playground Run or fixed Project orchestration.
+4. Fastify validates the request and calls a domain module; routes do not manipulate queue rows directly.
+5. The control plane resolves and snapshots the effective provider/model, then atomically persists the Run/message/job before returning `202 Accepted`.
+6. `ModelAccess.withSession(...)` requests a run-scoped lease from the gateway management interface.
+7. `SecretlessRunner` starts the Runtime on an internal network and passes only the gateway URL, selected model, and ephemeral lease.
+8. Codex sends Responses-compatible calls to the gateway. The gateway validates the lease, forces the leased provider/model, injects the selected provider credential, forwards the request, and returns a sanitized response.
+9. Runtime, gateway, queue, and model activity append correlated redacted records with one `traceId`.
+10. Completion, failure, cancellation, timeout, provider disable, or credential rotation revokes affected leases; cancellation revokes before terminating the Runtime.
 
 ### Malicious and recovery flow
 
@@ -136,20 +149,31 @@ interface ModelAccess {
 
 `withSession` owns issue/use/revoke sequencing and `finally` cleanup. Its production adapter uses the gateway management interface; tests use an in-memory adapter. The callback receives an ephemeral Runtime configuration, never a provider key.
 
-### `ProviderCatalog`
+### `ProviderRegistry`
 
 ```ts
-interface ProviderCatalog {
-  list(): readonly ProviderSummary[];
-  resolve(id: string): ResponsesProvider;
+interface ProviderRegistry {
+  list(): Promise<readonly ProviderSummary[]>;
+  register(input: ProviderEnrollment): Promise<ProviderSummary>;
+  rotate(id: string, credential: WriteOnlyCredential): Promise<ProviderSummary>;
+  disable(id: string): Promise<ProviderSummary>;
+  refreshModels(id: string): Promise<ModelCatalogSnapshot>;
+  resolve(id: string, modelId: string): Promise<ResponsesProvider>;
 }
 
 interface ResponsesProvider {
+  listModels?(signal: AbortSignal): Promise<readonly DiscoveredModel[]>;
   respond(request: ResponsesRequest, signal: AbortSignal): Promise<ResponsesReply>;
 }
 ```
 
-The gateway owns this interface. A parameterized HTTP adapter supports allowlisted Responses-compatible providers; a deterministic mock adapter provides reproducible tests and demos. Provider IDs, base URLs, model IDs, and credential environment-variable names come from trusted configuration, never browser input.
+The gateway owns this interface and the encrypted provider store. A parameterized HTTP adapter supports preset and guarded custom Responses-compatible providers; a deterministic mock adapter provides reproducible tests and demos. The control plane and browser receive safe summaries only. Provider URLs and credentials are accepted only through authenticated enrollment, are validated gateway-side, and never come from Runtime requests.
+
+Discovery is capability-based. The gateway attempts a bounded supported model-list operation, records independent connection and discovery states, and permits an operator-entered model ID only when it is explicitly marked `manual` and `unverified`. Discovery does not make a billable inference request. A separate explicit “Test model” action may do so after warning the operator.
+
+### `AgentExecutor` seam
+
+The existing `AgentRunner` remains the MVP implementation of a small `AgentExecutor` seam. Codex CLI continues to own workspace execution and resumable sessions. A future agent framework may be added as another adapter, but it must use `ModelAccess`, accept the fixed orchestration contract, and may not receive provider credentials or introduce hidden retries/concurrency.
 
 ### `TelemetryLedger`
 
@@ -197,6 +221,9 @@ apps/server/src/
 │   ├── model-access/
 │   │   ├── model-access.ts
 │   │   └── gateway-client.ts
+│   ├── providers/
+│   │   ├── provider-admin-service.ts
+│   │   └── provider-routes.ts
 │   └── telemetry/
 │       ├── redactor.ts
 │       ├── telemetry-ledger.ts
@@ -208,7 +235,9 @@ apps/server/src/
     ├── app.ts
     ├── config.ts                  # only process allowed to read provider keys
     ├── lease-registry.ts
-    ├── provider-catalog.ts
+    ├── provider-registry.ts
+    ├── encrypted-provider-store.ts
+    ├── model-discovery.ts
     └── providers/
         ├── responses-http-provider.ts
         └── deterministic-mock-provider.ts
@@ -256,6 +285,8 @@ interface DatabaseV2 {
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
+  providerSummaries: ProviderSummary[];
+  providerModels: ProviderModel[];
   projects: Project[];
   orchestrations: OrchestrationRecord[];
   queueJobs: QueueJob[];
@@ -273,7 +304,47 @@ orchestrationId?: string;
 traceId?: string;
 stage?: "planner" | "builder" | "reviewer";
 attempt?: number;
+providerId?: string;
+modelId?: string;
+providerRevision?: number;
 ```
+
+Agent defaults and safe provider catalog records are stored without credentials:
+
+```ts
+interface AgentModelBinding {
+  providerId: string;
+  modelId: string;
+}
+
+interface ProviderSummary {
+  id: string;
+  displayName: string;
+  protocol: "responses";
+  endpointHost: string;
+  credentialState: "configured" | "invalid" | "rotating";
+  connectionStatus:
+    | "unknown"
+    | "healthy"
+    | "auth_failed"
+    | "unreachable"
+    | "rate_limited"
+    | "upstream_error"
+    | "disabled";
+  discoveryStatus: "never" | "fresh" | "stale" | "unsupported" | "failed";
+  revision: number;
+  lastCheckedAt: string | null;
+}
+
+interface ProviderModel {
+  providerId: string;
+  modelId: string;
+  source: "discovered" | "manual";
+  status: "available" | "stale" | "removed" | "unverified";
+}
+```
+
+`Agent.modelSelection` is `AgentModelBinding | null`. Every admitted Run stores the effective provider/model and provider revision. A Codex thread also records its model binding; changing the binding starts a new session instead of silently resuming against another provider/model.
 
 Core invariants:
 
@@ -288,10 +359,16 @@ Core invariants:
 9. Later stages never execute after failure, block, or cancellation.
 10. A terminal orchestration cannot return to an active state.
 11. A raw lease is never persisted; the gateway stores only a hash and metadata in memory.
-12. Provider credentials never enter control-plane state in the protected profile.
+12. Provider credentials may pass transiently through an authenticated, `no-store` control-plane request but never enter control-plane persistence, logs, telemetry, responses, Runtime configuration, or screenshots.
 13. Every persisted preview/error passes through the redactor first.
 14. Cancellation revokes model access before Runtime termination.
 15. Gateway denial invokes no provider adapter and has no direct-key fallback.
+16. The gateway encrypts provider credentials with authenticated encryption, a unique nonce, key version, and provider-bound associated data; its master key is gateway-only and missing/wrong/corrupt keys fail closed.
+17. Provider and model must be selected as one valid pair. Partial overrides, disabled providers, removed models, and provider/model mismatches fail closed without fallback.
+18. Each orchestration snapshots one override for all stages when supplied; otherwise every stage snapshots its assigned Agent's default at admission.
+19. Disabling or rotating a provider immediately blocks new leases and revokes active leases. Removal is a soft archive/tombstone so historical Runs remain explainable.
+20. A model absent from a newer discovery snapshot is marked removed, not deleted; manual IDs remain visibly unverified.
+21. Provider mutation is unavailable when shared control-plane authentication is disabled. The MVP describes the token holder as the operator and makes no per-user RBAC claim.
 
 ### Retry matrix
 
@@ -314,6 +391,13 @@ On process restart, queued jobs remain queued. Any running job becomes failed wi
 Private management interface, reachable only by the control plane:
 
 ```text
+POST /internal/providers
+PATCH /internal/providers/:id
+POST /internal/providers/:id/credential-rotations
+POST /internal/providers/:id/disables
+POST /internal/providers/:id/models/refresh
+POST /internal/providers/:id/models
+POST /internal/providers/:id/tests
 POST /internal/leases
 POST /internal/leases/:id/revocations
 GET  /internal/health
@@ -326,7 +410,11 @@ POST /p/:providerId/v1/responses
 Authorization: Bearer <opaque run lease>
 ```
 
-The management interface requires a distinct gateway-admin capability. That capability is never supplied to the Runtime. The provider key exists only in the gateway process environment.
+The management interface requires a distinct gateway-admin capability. That capability is never supplied to the Runtime or browser. Enrollment credentials are relayed once over the private interface, encrypted immediately in a gateway-owned store, cleared from request objects as soon as practical, and never returned. The gateway master key is supplied through a deployment secret or restricted file mounted only into the gateway; it is absent from the control-plane environment, JSON database, Runtime, workspace, and infrastructure state committed to the repository.
+
+For the MVP, credentials are bearer tokens only. Custom endpoints require HTTPS, no URL userinfo/query/fragment, no redirects, bounded DNS/connect/read timeouts and response sizes, and gateway-side rejection of loopback, private, link-local, metadata, and DNS-rebinding destinations. Presets are the default non-developer path. Local/private endpoints require an explicit ungoverned development flag and are excluded from security claims.
+
+Provider connection and discovery are separate states. Model refresh is serialized per provider, rate-limited, bounded, generation-checked to ignore out-of-order results, and stores only normalized IDs plus timestamps. `404`/`405` from model listing means `unsupported`, not necessarily an unusable provider. Cached IDs can be displayed as stale, but authentication failure blocks new assignments and leases. Explicit manual IDs are allowed with an `unverified` warning; no automatic paid inference validates them.
 
 Lease metadata:
 
@@ -366,7 +454,7 @@ Runtime ── internal network ── Gateway ── egress network ── Prov
    X────────────── direct public internet / provider ─────────────X
 ```
 
-The Runtime receives only its Project workspace and sanitized per-Agent Codex state. The gateway receives neither workspace mount.
+Compose uses separate control, Runtime-internal, and gateway-egress networks. The Runtime receives only its Project workspace and sanitized per-Agent Codex state. The gateway receives neither workspace mount. The control plane and Runtime receive neither provider credentials nor the gateway master key. The ungoverned `local-process` runner cannot execute provider-managed Runs and is excluded from provider-management security claims.
 
 ## 9. Orchestration and Agent communication
 
@@ -400,6 +488,10 @@ Queue behavior:
 - Stage completion is accepted once; duplicate completion is a no-op.
 - Cancellation marks pending stages cancelled and revokes the active stage before stopping it.
 - Queue limits return `429` before creating partial records.
+- Standalone Playground Runs use the Agent default binding. An orchestration override must contain both `providerId` and `modelId` and applies to Planner, Builder, and Reviewer.
+- Effective bindings are resolved and persisted at admission; later provider/model or Agent changes never retarget queued or historical Runs.
+- A disabled provider, removed model, or authentication failure blocks launch with a stable error. There is no implicit provider/model fallback.
+- Resuming a Codex thread with a different provider/model starts a new thread and records why; it never silently crosses a model binding.
 
 ## 10. Observability contract
 
@@ -413,6 +505,7 @@ queue.wait
 stage.planner | stage.builder | stage.reviewer
 runtime.launch | runtime.execute | runtime.cleanup
 gateway.lease | gateway.request | gateway.revoke
+gateway.provider.enroll | gateway.provider.rotate | gateway.models.refresh
 provider.responses
 security.deny | security.kill
 ```
@@ -425,7 +518,8 @@ Capture limits:
 - Maximum 500 telemetry records per Run.
 - Existing final Agent output remains governed by the baseline model; telemetry stores only a preview.
 - Sensitive key names and configured secret values are redacted before persistence and before logger output.
-- The API never returns the raw lease, its hash, a provider key, or gateway-admin material.
+- Provider mutation, discovery, and secret-ingress responses use `Cache-Control: no-store`.
+- The API never returns the raw lease, its hash, plaintext/ciphertext provider credentials, private endpoint details, or gateway-admin material.
 
 Future export must occur behind the ledger implementation, preferably through OTLP/OpenTelemetry Collector. Application modules will not write directly to Kafka.
 
@@ -440,6 +534,17 @@ GET    /api/projects/:id
 PATCH  /api/projects/:id
 
 GET    /api/providers
+POST   /api/providers
+GET    /api/providers/:id
+PATCH  /api/providers/:id
+POST   /api/providers/:id/credential-rotations
+POST   /api/providers/:id/disables
+POST   /api/providers/:id/models/refresh
+POST   /api/providers/:id/models
+POST   /api/providers/:id/tests
+
+PUT    /api/agents/:id/model-binding
+DELETE /api/agents/:id/model-binding
 
 GET    /api/orchestrations?projectId=&status=&cursor=&limit=
 POST   /api/orchestrations
@@ -461,11 +566,16 @@ Example orchestration request:
 {
   "projectId": "project-uuid",
   "prompt": "Implement and review the requested change.",
-  "providerId": "ark"
+  "modelOverride": {
+    "providerId": "provider-uuid",
+    "modelId": "exact-upstream-model-id"
+  }
 }
 ```
 
 `202 Accepted` is returned only after the orchestration, first queue job, correlation IDs, and initial message are durably persisted.
+
+Provider mutation routes require configured control-plane authentication; when `APP_AUTH_TOKEN` is empty they return a stable permission error. The key field is write-only, responses set `Cache-Control: no-store`, and neither validation errors nor upstream failures echo the submitted credential or raw response body. Provider creation is compensated: if gateway persistence succeeds but safe control-plane metadata persistence fails, the gateway record is archived; startup reconciliation detects any remaining divergence.
 
 Stable new error codes include:
 
@@ -475,6 +585,14 @@ PROJECT_NOT_FOUND
 ROLE_ASSIGNMENT_INVALID
 QUEUE_FULL
 PROVIDER_NOT_FOUND
+PROVIDER_AUTH_FAILED
+PROVIDER_UNREACHABLE
+PROVIDER_DISABLED
+PROVIDER_DISCOVERY_UNSUPPORTED
+PROVIDER_DISCOVERY_FAILED
+MODEL_NOT_FOUND
+MODEL_UNVERIFIED
+MODEL_SWITCH_REQUIRES_NEW_SESSION
 GATEWAY_UNAVAILABLE
 LEASE_INVALID
 LEASE_REVOKED
@@ -510,8 +628,8 @@ The existing Agent Playground remains reachable from Agent detail; it is not reb
 ### Required views
 
 - **Projects:** catalog, shared-workspace status, three role assignments, latest orchestration.
-- **Agents:** existing lifecycle and Playground plus Project/role metadata.
-- **Providers:** safe descriptor, health, model, protocol, and `gateway-managed` credential mode—never credential values.
+- **Agents:** existing lifecycle and Playground plus Project/role metadata, default provider/model picker, binding warnings, and a clear new-session notice when the binding changes.
+- **Providers:** catalog plus operator setup wizard: choose a preset or guarded custom Responses endpoint, enter a write-only key, discover/refresh models, add a manual unverified model when necessary, explicitly test a model, rotate credentials, and disable/archive providers. Credentials are never prefilled or displayed again.
 - **Orchestrations:** FIFO position, fixed stage strip, retry count, inter-Agent messages, cancel/Kill action.
 - **Runs:** filterable table and Inspector tabs for Overview, Trace, Logs, Usage, and Security.
 - **Security:** protected asset statement, active controls, gateway status, recent denies/kills, and a controlled-demo guide.
@@ -525,13 +643,14 @@ The existing Agent Playground remains reachable from Agent detail; it is not reb
 - WCAG AA contrast, visible focus, semantic tables, keyboard-operable controls, one `h1` per route, and reduced motion are required.
 - Responsive checkpoints: 320, 768, 1024, and 1440 px.
 - Avoid generic component abstractions until at least two features need them.
+- The provider wizard uses plain-language progressive disclosure: preset first, advanced endpoint controls second, separate connection/discovery states, explicit paid-test confirmation, and actionable remediation without raw upstream errors.
 
 ## 13. Platform and middleware requirement mapping
 
 | Requirement | Planned evidence |
 | --- | --- |
 | Preserve baseline | Baseline tests remain green; existing routes and Playground remain functional. |
-| Real backend behavior | Fastify delegates to Project, orchestration, model-access, and telemetry modules. |
+| Real backend behavior | Fastify delegates to Project, orchestration, provider-administration, model-access, and telemetry modules. |
 | Real Runtime behavior | Container receives a lease instead of a provider key and is terminated by the Kill path. |
 | Real data behavior | Queue, messages, correlation, spans, usage, and recovery state persist in JSON v2. |
 | Real infrastructure behavior | Runtime and gateway use separate networks and process environments. |
@@ -540,7 +659,7 @@ The existing Agent Playground remains reachable from Agent detail; it is not reb
 | Abuse evidence | Direct egress/key theft attempt fails; lease is revoked; Runtime is removed. |
 | Recovery evidence | A later safe Run obtains a new lease and succeeds. |
 | Automated verification | Interface, integration, negative, cleanup, migration, and secret-sweep tests are required. |
-| Keep secrets out | Runtime allowlist, gateway-only provider config, pre-persistence redaction, and secret sweeps. |
+| Keep secrets out | Write-only enrollment, encrypted gateway-only provider storage, Runtime allowlist, pre-persistence redaction, and secret sweeps. |
 | Small infrastructure | Node processes, local containers, and existing JSON persistence only. |
 
 ## 14. Implementation tasks
@@ -565,14 +684,16 @@ Each task is intended for one focused implementation session and should leave th
 
 **Estimated scope:** Small.
 
-### Task 1: Add lossless database v2 migration
+### Task 1: Add lossless database v2 migration and model-binding metadata
 
-**Description:** Add Project, orchestration, queue, handoff, and telemetry collections while preserving all version-1 records.
+**Description:** Add Project, orchestration, queue, handoff, telemetry, safe provider/model summary, Agent model-binding, Run binding-snapshot, and thread-binding fields while preserving all version-1 records. Credentials and encrypted credential blobs are not part of this database.
 
 **Acceptance criteria:**
 
 - Version-1 fixtures migrate deterministically to version 2.
 - Existing Agents, Runs, messages, thread IDs, and paths are unchanged.
+- Legacy Agents receive a null model binding; existing Runs retain history without being silently assigned a new provider/model.
+- Provider summaries contain safe metadata only and cannot represent a credential, ciphertext, master key, or private management capability.
 - Unsupported/corrupt formats fail with a useful error and do not overwrite the file.
 
 **Verification:** focused store migration tests; `npm run typecheck`.
@@ -601,25 +722,48 @@ Each task is intended for one focused implementation session and should leave th
 
 **Estimated scope:** Medium.
 
-### Task 3: Build the gateway with deterministic mock provider
+### Task 3: Build the gateway, encrypted provider store, and deterministic mock
 
-**Description:** Start the sidecar as a separate process with health, allowlisted provider resolution, bounded requests, and a deterministic Responses-compatible mock.
+**Description:** Start the sidecar as a separate process with health, a gateway-owned authenticated-encryption store, a dynamic provider registry, bounded requests, and a deterministic Responses-compatible mock.
 
 **Acceptance criteria:**
 
 - The mock returns deterministic output and token usage.
 - Unknown providers and arbitrary URLs fail closed.
+- Credential ciphertext is bound to provider identity and key version with a unique nonce; missing, wrong, or corrupt master keys fail closed.
+- The provider store is atomic and readable only by the gateway process; neither plaintext nor ciphertext is exposed through management responses.
 - Gateway logs contain only redacted structured fields.
 
-**Verification:** gateway HTTP tests; production TypeScript build.
+**Verification:** encrypted-store round-trip/wrong-key/tag/atomic-write tests; gateway HTTP tests; production TypeScript build.
 
 **Dependencies:** Task 2.
 
-**Files likely touched:** `gateway/main.ts`, `gateway/app.ts`, `gateway/provider-catalog.ts`, `gateway/providers/deterministic-mock-provider.ts`, `gateway/app.test.ts`.
+**Files likely touched:** `gateway/main.ts`, `gateway/app.ts`, `gateway/provider-registry.ts`, `gateway/encrypted-provider-store.ts`, `gateway/providers/deterministic-mock-provider.ts`, `gateway/app.test.ts`.
 
 **Estimated scope:** Medium.
 
-### Task 4: Implement opaque lease issue, validation, and revocation
+### Task 4: Add authenticated provider onboarding and model discovery
+
+**Description:** Add operator-only control-plane routes and private gateway operations for preset/custom provider enrollment, credential rotation, disable/archive, bounded discovery, manual model IDs, and explicit model testing.
+
+**Acceptance criteria:**
+
+- Provider mutations are unavailable when `APP_AUTH_TOKEN` is empty; the MVP claims one authorized operator, not per-user RBAC.
+- Credential fields are write-only, `no-store`, transiently relayed, encrypted gateway-side, and absent from every response, log, telemetry record, and control-plane record.
+- Custom endpoints enforce HTTPS and complete SSRF/DNS/redirect/private-network protections; Runtime requests cannot supply endpoints or arbitrary headers.
+- Connection and discovery states are separate. Unsupported discovery permits a clearly labelled manual/unverified model ID; automatic discovery never performs paid inference.
+- Refresh is bounded, serialized, rate-limited, generation-safe, and marks missing models removed instead of deleting history.
+- Rotation/disable revokes active leases and prevents new ones; partial gateway/control-plane writes are compensated or reconciled.
+
+**Verification:** provider administration route tests; secret-ingress/no-store tests; SSRF/DNS/redirect tests; discovery unsupported/stale/timeout/size/rate-limit tests; gateway/control-plane reconciliation tests.
+
+**Dependencies:** Task 3.
+
+**Files likely touched:** `modules/providers/provider-admin-service.ts`, `modules/providers/provider-routes.ts`, `gateway/app.ts`, `gateway/model-discovery.ts`, `gateway/provider-registry.ts`, `app.ts`.
+
+**Estimated scope:** Large.
+
+### Task 5: Implement opaque lease issue, validation, and revocation
 
 **Description:** Add an in-memory hashed lease registry and authenticated management endpoints.
 
@@ -631,13 +775,13 @@ Each task is intended for one focused implementation session and should leave th
 
 **Verification:** lease contract tests prove denied calls result in zero provider calls.
 
-**Dependencies:** Task 3.
+**Dependencies:** Task 4.
 
 **Files likely touched:** `gateway/lease-registry.ts`, `gateway/app.ts`, `gateway/config.ts`, `gateway/lease-registry.test.ts`, `gateway/app.test.ts`.
 
 **Estimated scope:** Medium.
 
-### Task 5: Add the control-plane `ModelAccess` adapter
+### Task 6: Add the control-plane `ModelAccess` adapter
 
 **Description:** Hide management HTTP, session issuance, normalized failures, and guaranteed revocation behind the deep model-access interface.
 
@@ -649,13 +793,13 @@ Each task is intended for one focused implementation session and should leave th
 
 **Verification:** interface tests with an in-memory gateway plus management HTTP contract test.
 
-**Dependencies:** Task 4.
+**Dependencies:** Task 5.
 
 **Files likely touched:** `modules/model-access/model-access.ts`, `modules/model-access/gateway-client.ts`, `modules/model-access/model-access.test.ts`, `modules/model-access/gateway-client.test.ts`.
 
 **Estimated scope:** Medium.
 
-### Task 6: Make the local Runtime secretless and gateway-only
+### Task 7: Make the local Runtime secretless and gateway-only
 
 **Description:** Wrap the container Runner, generate Codex gateway configuration, allowlist environment variables, and place Runtime/Gateway on the protected network topology.
 
@@ -667,39 +811,44 @@ Each task is intended for one focused implementation session and should leave th
 
 **Verification:** container-argument unit tests and a local protected-network integration test.
 
-**Dependencies:** Task 5.
+**Dependencies:** Task 6.
 
 **Files likely touched:** `runtime/secretless-runner.ts`, `container-codex-runner.ts`, `container-codex-runner.test.ts`, `config.ts`, `docker-compose.yml`.
 
 **Estimated scope:** Medium.
 
-### Task 7: Add a live Responses-compatible provider adapter
+### Task 8: Add live provider execution and model-binding resolution
 
-**Description:** Forward one configured provider through the gateway and make additional Responses-compatible provider descriptors configuration-ready.
+**Description:** Forward operator-managed Responses-compatible providers through the gateway, resolve Agent defaults and orchestration-wide overrides, snapshot effective bindings on Runs, and protect Codex session continuity across model changes.
 
 **Acceptance criteria:**
 
 - Only the gateway process reads provider credentials.
 - Streaming/non-streaming behavior required by Codex is normalized and bounded.
 - Provider errors expose stable safe codes and available token usage, never raw sensitive bodies.
+- Standalone Runs use the Agent default; complete orchestration overrides apply to all stages and are resolved at admission.
+- Invalid, disabled, removed, or mismatched bindings fail closed without fallback.
+- A binding change starts a new Codex thread rather than silently resuming the previous provider/model session.
 
-**Verification:** mocked-fetch contract tests; one manual live smoke test through Codex → gateway → provider.
+**Verification:** mocked-fetch contract tests; binding/override/snapshot/session-switch tests; one manual live smoke test through Codex → gateway → provider.
 
-**Dependencies:** Task 6.
+**Dependencies:** Task 7.
 
-**Files likely touched:** `gateway/providers/responses-http-provider.ts`, `gateway/provider-catalog.ts`, `gateway/config.ts`, `gateway/providers/responses-http-provider.test.ts`.
+**Files likely touched:** `gateway/providers/responses-http-provider.ts`, `gateway/provider-registry.ts`, `gateway/config.ts`, `agent-service.ts`, `types.ts`, `gateway/providers/responses-http-provider.test.ts`.
 
 **Estimated scope:** Medium.
 
-### Security checkpoint: Tasks 0–7
+### Security checkpoint: Tasks 0–8
 
 - `npm run check` passes.
 - A real safe container Run succeeds through the gateway.
-- No provider credential is present in the Runtime, workspace, API, telemetry, or browser.
+- After enrollment, no provider credential remains in browser storage/state or appears in Runtime, workspace, API responses, control-plane state, logs, or telemetry.
+- Provider credentials and the gateway master key are absent from control-plane/Runtime environment, JSON state, argv, mounts, and compose inspection; setup inputs are never retained or returned.
+- Preset onboarding, guarded custom onboarding, discovery, manual fallback, Agent binding, and binding-change session reset behave as documented.
 - Gateway down/denied means no Runtime fallback and no provider call.
 - The owner reviews the checkpoint before orchestration work begins.
 
-### Task 8: Implement Kill, revocation, cleanup, and safe recovery
+### Task 9: Implement Kill, revocation, cleanup, and safe recovery
 
 **Description:** Integrate revoke-first cancellation with Runtime termination and security telemetry.
 
@@ -717,7 +866,7 @@ Each task is intended for one focused implementation session and should leave th
 
 **Estimated scope:** Medium.
 
-### Task 9: Add Projects and shared workspace ownership
+### Task 10: Add Projects and shared workspace ownership
 
 **Description:** Add Project CRUD, role assignments, and a Project-owned shared directory without changing standalone Agent workspaces.
 
@@ -729,13 +878,13 @@ Each task is intended for one focused implementation session and should leave th
 
 **Verification:** Project module and path-containment tests; one API integration test.
 
-**Dependencies:** Task 1, Task 8.
+**Dependencies:** Task 1, Task 9.
 
 **Files likely touched:** `modules/projects/project-service.ts`, `modules/projects/project-workspace.ts`, `modules/projects/project-routes.ts`, `modules/projects/project-service.test.ts`, `app.ts`.
 
 **Estimated scope:** Medium.
 
-### Task 10: Admit persisted FIFO orchestrations
+### Task 11: Admit persisted FIFO orchestrations
 
 **Description:** Implement idempotent submission, monotonic sequence allocation, queue limits, and one global atomic claim.
 
@@ -747,13 +896,13 @@ Each task is intended for one focused implementation session and should leave th
 
 **Verification:** concurrency, idempotency, and restart tests through `OrchestrationControl`.
 
-**Dependencies:** Task 9.
+**Dependencies:** Task 10.
 
 **Files likely touched:** `modules/orchestration/orchestration-control.ts`, `modules/orchestration/orchestration-routes.ts`, `modules/orchestration/orchestration-control.test.ts`, `types.ts`, `app.ts`.
 
 **Estimated scope:** Medium.
 
-### Task 11: Execute Planner → Builder → Reviewer
+### Task 12: Execute Planner → Builder → Reviewer
 
 **Description:** Add the fixed stage state machine, role-specific sandbox permissions, shared workspace selection, and bounded handoff messages.
 
@@ -761,17 +910,18 @@ Each task is intended for one focused implementation session and should leave th
 
 - Stage order is immutable and each stage creates a correlated ordinary Agent Run.
 - Planner/Reviewer are read-only; Builder is the sole workspace writer.
+- A complete orchestration override applies to all three stages; without one, each stage uses the assigned Agent default snapshot resolved at admission.
 - Failure, block, or cancellation prevents every later stage.
 
 **Verification:** fake-Runner state-machine tests and one mock-provider end-to-end orchestration.
 
-**Dependencies:** Task 10.
+**Dependencies:** Task 11.
 
 **Files likely touched:** `modules/orchestration/fixed-pipeline.ts`, `modules/orchestration/orchestration-control.ts`, `modules/orchestration/fixed-pipeline.test.ts`, `agent-service.ts`, `types.ts`.
 
 **Estimated scope:** Medium.
 
-### Task 12: Add safe retries and restart reconciliation
+### Task 13: Add safe retries and restart reconciliation
 
 **Description:** Encode the locked retry matrix, backoff, attempt IDs, stale-job recovery, and duplicate-completion protection.
 
@@ -783,13 +933,13 @@ Each task is intended for one focused implementation session and should leave th
 
 **Verification:** table-driven retry tests and process-restart fixture tests.
 
-**Dependencies:** Task 11.
+**Dependencies:** Task 12.
 
 **Files likely touched:** `modules/orchestration/retry-policy.ts`, `modules/orchestration/orchestration-control.ts`, `modules/orchestration/retry-policy.test.ts`, `modules/orchestration/orchestration-control.test.ts`.
 
 **Estimated scope:** Medium.
 
-### Orchestration checkpoint: Tasks 8–12
+### Orchestration checkpoint: Tasks 9–13
 
 - Two workflows execute in strict FIFO order.
 - Planner, Builder, and Reviewer use the assigned Agents and one Project workspace.
@@ -797,25 +947,28 @@ Each task is intended for one focused implementation session and should leave th
 - Cancellation, safe retry, and restart behaviors match the documented matrix.
 - `npm run check` passes.
 
-### Task 13: Expose provider and Project catalog views end to end
+### Task 14: Add provider onboarding, model assignment, and Project catalog UI
 
-**Description:** Add safe provider descriptors and Project catalog data through the API and initial frontend feature modules.
+**Description:** Add the guided provider setup/rotation/disable wizard, separate connection/discovery status, model refresh/manual fallback, Agent default binding, orchestration override selection, and Project catalog data through initial frontend feature modules.
 
 **Acceptance criteria:**
 
 - Browser responses include health/model/credential mode but no keys, URLs that permit proxy abuse, or leases.
+- Credential input is never prefilled, persisted in browser storage, echoed, or rendered after submission.
+- Presets are the primary path; custom endpoint controls and manual model IDs are advanced, guarded, and clearly labelled.
+- Model assignment shows stale/removed/unverified/disabled states and warns that a binding change starts a new session.
 - Projects show role assignments and workspace status.
 - Loading, empty, error, and degraded states render correctly.
 
 **Verification:** route response tests and web typecheck/build.
 
-**Dependencies:** Task 9, Task 12.
+**Dependencies:** Task 4, Task 8, Task 10, Task 13.
 
 **Files likely touched:** `app/AppShell.tsx`, `features/projects/ProjectsPage.tsx`, `features/providers/ProvidersPage.tsx`, `api/contracts.ts`, `api/client.ts`.
 
 **Estimated scope:** Medium.
 
-### Task 14: Add the Port-inspired application shell
+### Task 15: Add the Port-inspired application shell
 
 **Description:** Split the monolithic frontend incrementally into routing, navigation, tokens, and reusable shell primitives while preserving the Playground.
 
@@ -827,13 +980,13 @@ Each task is intended for one focused implementation session and should leave th
 
 **Verification:** web typecheck/build and manual keyboard/responsive audit.
 
-**Dependencies:** Task 13.
+**Dependencies:** Task 14.
 
 **Files likely touched:** `app/App.tsx`, `app/AppShell.tsx`, `app/routes.tsx`, `app/navigation.ts`, `shared/styles/tokens.css`.
 
 **Estimated scope:** Medium.
 
-### Task 15: Add Orchestrations and Agent communication UI
+### Task 16: Add Orchestrations and Agent communication UI
 
 **Description:** Add submission, FIFO queue, stage strip, correlated messages, retry state, and Kill controls.
 
@@ -845,13 +998,13 @@ Each task is intended for one focused implementation session and should leave th
 
 **Verification:** API integration test; web build; manual mock-provider flow.
 
-**Dependencies:** Task 12, Task 14.
+**Dependencies:** Task 13, Task 15.
 
 **Files likely touched:** `features/orchestrations/OrchestrationsPage.tsx`, `features/orchestrations/OrchestrationDetail.tsx`, `features/orchestrations/StageStrip.tsx`, `features/orchestrations/HandoffTimeline.tsx`, `features/orchestrations/hooks.ts`.
 
 **Estimated scope:** Medium.
 
-### Task 16: Add Run Inspector and Security views
+### Task 17: Add Run Inspector and Security views
 
 **Description:** Expose redacted traces, logs, token usage, security-envelope state, and denial/cleanup evidence.
 
@@ -863,13 +1016,13 @@ Each task is intended for one focused implementation session and should leave th
 
 **Verification:** telemetry route tests, secret sweep, web build, manual successful and denied Runs.
 
-**Dependencies:** Task 2, Task 8, Task 14.
+**Dependencies:** Task 2, Task 9, Task 15.
 
 **Files likely touched:** `modules/telemetry/telemetry-routes.ts`, `features/runs/RunInspector.tsx`, `features/runs/TraceView.tsx`, `features/runs/UsageView.tsx`, `features/security/SecurityPage.tsx`.
 
 **Estimated scope:** Medium.
 
-### Task 17: Harden, document, and rehearse
+### Task 18: Harden, document, and rehearse
 
 **Description:** Finish failure handling, architecture docs, one-command startup, evidence tests, and the three-minute demonstration.
 
@@ -881,7 +1034,7 @@ Each task is intended for one focused implementation session and should leave th
 
 **Verification:** `npm run check`; secret scan of source/config/generated telemetry; complete documented local setup from a clean data root.
 
-**Dependencies:** Tasks 15–16.
+**Dependencies:** Tasks 16–17.
 
 **Files likely touched:** `README.md`, `docs/MIDDLEWARE.md`, `docs/DEMO.md`, `scripts/start-local-poc.sh`, `SECURITY.md`.
 
@@ -894,8 +1047,9 @@ Each task is intended for one focused implementation session and should leave th
 - Controlled malicious Run is blocked/terminated, credential remains protected, and cleanup is visible.
 - Safe recovery Run succeeds.
 - Fixed multi-Agent orchestration, messages, queue, retries, traces, logs, and usage are functional—not static.
+- An operator can onboard a provider, discover or manually register a model, bind Agents, and observe the effective binding without editing environment files.
 - `npm run check` passes.
-- Repository, logs, traces, browser state, screenshots, and demo output contain no secret.
+- Repository, control-plane state, logs, traces, post-submit browser state, screenshots, and demo output contain no plaintext secret; the gateway store contains ciphertext only.
 - Reviewer can reproduce the POC from the README.
 
 ## 15. Verification strategy
@@ -904,13 +1058,16 @@ Each task is intended for one focused implementation session and should leave th
 
 - `OrchestrationControl`: FIFO, state order, idempotency, cancellation, retries, restart.
 - `ModelAccess`: issue/use/revoke, fail closed, `finally`, normalized errors.
-- `ProviderCatalog`: allowlist only; real and mock contract equivalence.
+- `ProviderRegistry`: encrypted-store behavior, safe summaries, provider lifecycle, and real/mock contract equivalence.
+- Model discovery: capability probing, bounds, independent connection/discovery states, refresh generations, stale/removed/manual states, and no automatic inference.
+- Model binding: Agent default, complete orchestration override, admission snapshot, disabled/missing model failure, and new-session-on-change behavior.
 - `TelemetryLedger`: redaction, bounds, ordering, usage aggregation.
 - Project module: role assignments, shared-path containment, archive ownership.
 
 ### Integration tests
 
 - Control plane → gateway management interface.
+- Browser → authenticated control-plane write-only enrollment → encrypted gateway store, with safe response and compensation on partial failure.
 - Runtime → mock gateway on the internal network.
 - Runtime cannot use a direct external endpoint.
 - Revoke-first cancellation denies the old lease and removes the Runtime.
@@ -922,28 +1079,36 @@ Each task is intended for one focused implementation session and should leave th
 - Existing AgentService, app, store, Codex runner, and container runner suites.
 - Existing `npm run check` remains the phase gate.
 - Manual baseline follow-up confirms saved Codex thread continuation.
+- Manual binding change confirms a new Codex thread starts and the prior thread is not resumed against another provider/model.
 
 ### Secret verification
 
 - Assert generated container args/environment do not contain configured provider credentials.
 - Assert persisted database and telemetry do not contain provider credentials, leases, gateway-admin material, or authorization headers.
 - Assert public API snapshots and frontend fixtures are clean.
+- Assert provider mutation responses are `no-store`, submitted credentials are not retained in browser storage, and encrypted provider blobs/master keys never enter control-plane fixtures.
+- Assert custom provider enrollment rejects URL credentials, redirects, loopback/private/link-local/metadata targets, and DNS rebinding.
 - Scan source and committed documentation for credential-shaped values before demo freeze.
 
 ## 16. Three-minute demo
 
-1. Open the Project catalog, select a configured Project, and show Planner/Builder/Reviewer assignments plus gateway-managed providers.
-2. Submit a safe orchestration. Show FIFO admission and the fixed stage progression against the shared Project workspace.
-3. Open Run Inspector and show correlated Runtime/gateway/provider spans, redacted logs, duration, and token usage.
-4. Launch the controlled malicious case: attempt to find the provider credential and contact the provider directly.
-5. Invoke Kill. Show lease revocation, provider denial, Runtime termination, cleanup, and the protected credential remaining absent.
-6. Start a new safe Run and show successful recovery, leaving the platform understandable and controllable.
+1. Open Providers, use a preset to show the write-only onboarding path and model discovery result, then show that the credential cannot be read back. Use a preconfigured demo provider so no live secret appears on screen.
+2. Bind the three Agents to a discovered model, open the Project catalog, and show Planner/Builder/Reviewer assignments plus safe provider/model summaries.
+3. Submit a safe orchestration. Show FIFO admission, the snapshotted effective binding, and fixed stage progression against the shared Project workspace.
+4. Open Run Inspector and show correlated Runtime/gateway/provider spans, redacted logs, duration, and token usage.
+5. Launch the controlled malicious case: attempt to find the provider credential and contact the provider directly.
+6. Invoke Kill. Show lease revocation, provider denial, Runtime termination, cleanup, and the protected credential remaining absent; then start a new safe Run to prove recovery.
 
 ## 17. Risks and mitigations
 
 | Risk | Impact | Mitigation / gate |
 | --- | --- | --- |
-| Codex cannot use the gateway's Responses behavior transparently | High | Task 6–7 real smoke test is the first security checkpoint; stop and quarantine orchestration scope if it fails. |
+| Codex cannot use the gateway's Responses behavior transparently | High | Task 7–8 real smoke test is the first security checkpoint; stop and quarantine orchestration scope if it fails. |
+| Provider enrollment becomes an SSRF or credential-exfiltration surface | High | Presets first; HTTPS-only guarded custom endpoints; DNS/IP/redirect revalidation; bounded requests; write-only no-store secret handling. |
+| Gateway master key loss or mismatch makes credentials unrecoverable | High | Gateway-only deployment secret, key versioning, fail-closed startup, documented backup/rotation/re-enrollment procedure, and wrong-key tests. |
+| Model discovery is unavailable or misleading | Medium | Separate connection/discovery states, bounded capability probing, explicit manual/unverified fallback, stale/removed markers, and no automatic paid test. |
+| Model change corrupts session continuity | Medium | Persist thread binding and start a new Codex session on any provider/model mismatch. |
+| A full agent framework expands scope or bypasses controls | Medium | Keep the fixed workflow and `AgentExecutor` adapter seam; any future framework must use `ModelAccess` and cannot own secrets/retries. |
 | Container networking differs across Docker, Colima, and Podman | High | Support and document one proven protected path first; make network names configurable; test the selected judge machine. |
 | Sidecar separation exists in code but key still reaches control plane | High | Separate gateway process environment and config loader; automated environment/argv/API secret assertions. |
 | Retried Builder duplicates file changes | High | No retry after Builder process start; retry only pre-launch failures. |
@@ -959,7 +1124,7 @@ Each task is intended for one focused implementation session and should leave th
 Contract changes and database migration are sequential. After Task 1, the following lanes can proceed with coordination at the named interfaces:
 
 - **Security lane:** Tasks 2–8.
-- **Project/orchestration lane:** Tasks 9–12 after the security checkpoint.
+- **Project/orchestration lane:** Tasks 10–13 after the security checkpoint; Task 9 Kill remains in the security lane.
 - **Frontend lane:** shell/token exploration may begin after contracts freeze, but live feature integration waits for the relevant route contracts.
 - **Verification/docs lane:** test fixtures, diagram maintenance, secret-sweep procedure, and demo script can run alongside completed slices.
 
