@@ -274,7 +274,7 @@ export interface GatewayRuntimeContext {
 
 export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 
-export interface RunnerRequest {
+export interface RunnerRequest extends Correlation {
   agentId: string;
   workspacePath: string;
   prompt: string;
