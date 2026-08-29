@@ -9,6 +9,10 @@ import { JsonStore } from "./store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 import type { PreviewLifecycleCleanup } from "./preview/preview-service.js";
+import type {
+  AgentPreviewContext,
+  PreviewContextProvider,
+} from "./preview/preview-context-provider.js";
 
 class FakeRunner implements AgentRunner {
   async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -95,6 +99,7 @@ async function makeService(
     curatedModels?: string;
     arkModel?: string;
     previewLifecycle?: PreviewLifecycleCleanup;
+    previewContext?: PreviewContextProvider;
   } = {},
 ): Promise<AgentService> {
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
@@ -115,6 +120,7 @@ async function makeService(
     runner,
     undefined,
     options.previewLifecycle,
+    options.previewContext,
   );
   await service.initialize();
   return service;
@@ -364,5 +370,90 @@ describe("Agent lifecycle", () => {
 
     const result = await service.cancelRun(run.id);
     expect(result).toMatchObject({ id: run.id, status: "completed" });
+  });
+});
+
+class StubPreviewContextProvider implements PreviewContextProvider {
+  readonly requestedAgentIds: string[] = [];
+
+  constructor(private readonly context: AgentPreviewContext) {}
+
+  async getForAgent(agentId: string): Promise<AgentPreviewContext> {
+    this.requestedAgentIds.push(agentId);
+    return this.context;
+  }
+}
+
+describe("Agent Preview awareness", () => {
+  it("gives the worker trusted Preview state while a Preview is running", async () => {
+    const runner = new CapturingRunner();
+    const previewContext = new StubPreviewContextProvider({ status: "running" });
+    const service = await makeService(runner, { previewContext });
+    const agent = await service.createAgent({ name: "Aware" });
+
+    const { run } = await service.sendMessage(agent.id, 'Change the heading to "My Tasks".');
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const executed = runner.requests[0]?.prompt ?? "";
+    expect(previewContext.requestedAgentIds).toEqual([agent.id]);
+    expect(executed).toContain('preview.status = "running"');
+    expect(executed).toContain("<platform_runtime_context>");
+    expect(executed).toContain('<user_request>\nChange the heading to "My Tasks".\n</user_request>');
+  });
+
+  it("reports a stopped Preview when no Preview server is up", async () => {
+    const runner = new CapturingRunner();
+    const service = await makeService(runner, {
+      previewContext: new StubPreviewContextProvider({ status: "not_started" }),
+    });
+    const agent = await service.createAgent({ name: "Stopped" });
+
+    const { run } = await service.sendMessage(agent.id, "add a button");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    expect(runner.requests[0]?.prompt).toContain('preview.status = "not_started"');
+  });
+
+  it("persists the user message exactly as typed", async () => {
+    const runner = new CapturingRunner();
+    const service = await makeService(runner, {
+      previewContext: new StubPreviewContextProvider({ status: "running" }),
+    });
+    const agent = await service.createAgent({ name: "History" });
+
+    const { run } = await service.sendMessage(agent.id, "Change the heading.");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const messages = service.getMessages(agent.id);
+    expect(messages[0]).toMatchObject({ role: "user", content: "Change the heading." });
+    expect(service.getRun(run.id).prompt).toBe("Change the heading.");
+  });
+
+  it("sends the untouched prompt when no Preview context provider is attached", async () => {
+    const runner = new CapturingRunner();
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Unaware" });
+
+    const { run } = await service.sendMessage(agent.id, "plain prompt");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    expect(runner.requests[0]?.prompt).toBe("plain prompt");
+  });
+
+  it("falls back to the untouched prompt when the provider fails", async () => {
+    const runner = new CapturingRunner();
+    const service = await makeService(runner, {
+      previewContext: {
+        async getForAgent(): Promise<AgentPreviewContext> {
+          throw new Error("store unavailable");
+        },
+      },
+    });
+    const agent = await service.createAgent({ name: "Degraded" });
+
+    const { run } = await service.sendMessage(agent.id, "still works");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    expect(runner.requests[0]?.prompt).toBe("still works");
   });
 });

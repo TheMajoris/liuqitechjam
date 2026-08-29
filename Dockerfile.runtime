@@ -23,6 +23,11 @@ RUN if [ -n "$DEBIAN_SECURITY_MIRROR" ]; then \
     && codex --version \
     && rm -rf /var/lib/apt/lists/*
 
+# The static preview server is repository-owned and bundled into every
+# runtime image. Preview commands reference this fixed path; workspaces never
+# provide their own server executable or port.
+COPY scripts/preview-static-server.mjs /opt/launchpad/preview-static-server.mjs
+
 ENV CODEX_HOME=/codex-home
 ENV HOME=/tmp
 ENV NO_COLOR=1

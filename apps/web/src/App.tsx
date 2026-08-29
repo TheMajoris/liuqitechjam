@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
 import { OrchestrationWorkspace } from "./components/orchestration/OrchestrationWorkspace";
+import { PreviewSidecar, type PreviewActionError } from "./components/PreviewSidecar";
+import { StickyComposer } from "./components/StickyComposer";
 import {
   WorkerModelFields,
   formatReasoningEffort,
@@ -32,10 +34,21 @@ const starterPrompts = [
 ];
 
 const SIDEBAR_KEY = "launchpad.sidebar";
+const PREVIEW_PANEL_KEY = "launchpad.previewPanel";
 
 function readSidebarPreference(): boolean {
   if (typeof window === "undefined") return true;
   return window.localStorage.getItem(SIDEBAR_KEY) !== "collapsed";
+}
+
+/**
+ * Panel visibility is pure layout state. It is remembered per browser so the
+ * workspace reopens the way it was left, and it never touches Preview
+ * lifecycle: a collapsed panel leaves the server running.
+ */
+function readPreviewPanelPreference(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(PREVIEW_PANEL_KEY) === "open";
 }
 
 type AgentForm = {
@@ -55,11 +68,6 @@ const emptyForm: AgentForm = {
 function errorMessage(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
 }
-
-type PreviewActionError = {
-  message: string;
-  errorCode: string | null;
-};
 
 function toPreviewActionError(reason: unknown): PreviewActionError {
   if (reason instanceof ApiError) {
@@ -115,110 +123,6 @@ function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
 
-function PreviewStatusPill({ status }: { status: Preview["status"] }) {
-  return (
-    <span className={"preview-status preview-status-" + status}>
-      <span className="status-dot" />
-      {status}
-    </span>
-  );
-}
-
-function PreviewPanel({
-  preview,
-  logs,
-  busy,
-  actionError,
-  onStart,
-  onRestart,
-  onStop,
-  onOpen,
-}: {
-  preview: Preview | null;
-  logs: string[];
-  busy: string | null;
-  actionError: PreviewActionError | null;
-  onStart: () => void;
-  onRestart: () => void;
-  onStop: () => void;
-  onOpen: () => void;
-}) {
-  const active = preview && ["starting", "running", "stopping"].includes(preview.status);
-  const persistedError = preview && (preview.errorMessage || preview.errorCode)
-    ? {
-        message: preview.errorMessage || "The preview could not be started.",
-        errorCode: preview.errorCode,
-      }
-    : null;
-  const displayedError = persistedError ?? actionError;
-  return (
-    <section className="preview-panel" aria-labelledby="preview-title">
-      <div className="preview-heading">
-        <div>
-          <span className="eyebrow">Artifact runtime</span>
-          <h2 id="preview-title">Preview</h2>
-          <p>Run the app from this Agent&apos;s persistent workspace.</p>
-        </div>
-        {preview && <PreviewStatusPill status={preview.status} />}
-      </div>
-      {displayedError && (
-        <div className="preview-error" role="alert">
-          <div className="preview-error-heading">
-            <strong>Preview failed</strong>
-            {displayedError.errorCode && (
-              <code className="preview-error-code">{displayedError.errorCode}</code>
-            )}
-          </div>
-          <p>{displayedError.message}</p>
-        </div>
-      )}
-      {!preview ? (
-        <div className="preview-empty">
-          <span>No preview is running yet.</span>
-          <button className="button button-primary" onClick={onStart} disabled={busy !== null}>
-            {busy === "start" ? <Spinner /> : "Start Preview"}
-          </button>
-        </div>
-      ) : (
-        <>
-          <div className="preview-actions">
-            <button
-              className="button button-primary"
-              onClick={onOpen}
-              disabled={preview.status !== "running" || !preview.url || busy !== null}
-            >
-              Open Preview ↗
-            </button>
-            <button
-              className="button button-ghost"
-              onClick={onRestart}
-              disabled={busy !== null || preview.status === "stopping"}
-            >
-              {busy === "restart" ? <Spinner /> : "Restart"}
-            </button>
-            <button
-              className="button button-danger"
-              onClick={onStop}
-              disabled={busy !== null || !active}
-            >
-              {busy === "stop" ? <Spinner /> : "Stop"}
-            </button>
-          </div>
-          {preview.url && <code className="preview-url">{preview.url}</code>}
-          <div className="preview-logs" aria-live="polite">
-            <div className="preview-logs-title">Recent logs</div>
-            {logs.length > 0 ? (
-              <pre>{logs.join("\n")}</pre>
-            ) : (
-              <span className="preview-logs-empty">No runtime logs yet.</span>
-            )}
-          </div>
-        </>
-      )}
-    </section>
-  );
-}
-
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -239,6 +143,7 @@ export default function App() {
   const [previewLogs, setPreviewLogs] = useState<string[]>([]);
   const [previewBusy, setPreviewBusy] = useState<string | null>(null);
   const [previewActionError, setPreviewActionError] = useState<PreviewActionError | null>(null);
+  const [previewPanelOpen, setPreviewPanelOpen] = useState(readPreviewPanelPreference);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -260,6 +165,10 @@ export default function App() {
     [agents, selectedId],
   );
 
+  /** A Run is in flight while it is queued or executing; the composer locks. */
+  const runInFlight =
+    activeRun !== null && ["queued", "running"].includes(activeRun.status);
+
   const supportedModelProviders = useMemo(
     () => workerProviders(modelProviders),
     [modelProviders],
@@ -275,6 +184,10 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem(SIDEBAR_KEY, sidebarOpen ? "open" : "collapsed");
   }, [sidebarOpen]);
+
+  useEffect(() => {
+    window.localStorage.setItem(PREVIEW_PANEL_KEY, previewPanelOpen ? "open" : "collapsed");
+  }, [previewPanelOpen]);
 
   const openCreate = useCallback(() => {
     setForm(emptyForm);
@@ -941,7 +854,16 @@ export default function App() {
         </aside>
       )}
 
-      <main className={"main " + (workspace === "orchestration" ? "main-chat" : "")}>
+      <main
+        className={
+          "main " +
+          (workspace === "orchestration"
+            ? "main-chat"
+            : selected
+              ? "main-workspace"
+              : "")
+        }
+      >
         {!sidebarOpen && (
           <button
             type="button"
@@ -989,7 +911,7 @@ export default function App() {
             )}
 
             {selected ? (
-          <>
+          <div className="agent-workspace">
             <header className="agent-header">
               <div>
                 <div className="header-title-row">
@@ -1016,6 +938,18 @@ export default function App() {
                 </div>
               </div>
               <div className="header-actions">
+                <button
+                  type="button"
+                  className={"button button-ghost preview-toggle " + (previewPanelOpen ? "is-active" : "")}
+                  onClick={() => setPreviewPanelOpen((value) => !value)}
+                  aria-pressed={previewPanelOpen}
+                >
+                  <span
+                    className={"preview-toggle-dot preview-dot-" + (preview?.status ?? "not_started")}
+                    aria-hidden="true"
+                  />
+                  Preview
+                </button>
                 <button
                   className="button button-ghost"
                   onClick={() => setShowSettings((value) => !value)}
@@ -1106,123 +1040,119 @@ export default function App() {
               </form>
             )}
 
-            <PreviewPanel
-              preview={preview}
-              logs={previewLogs}
-              busy={previewBusy}
-              actionError={previewActionError}
-              onStart={() => void runPreviewAction("start")}
-              onRestart={() => void runPreviewAction("restart")}
-              onStop={() => void runPreviewAction("stop")}
-              onOpen={openPreview}
-            />
-
-            <section className="playground">
-              <div className="playground-topbar">
-                <div>
-                  <span className="eyebrow">Playground</span>
-                  <h2>Build something with your Agent</h2>
-                </div>
-                <div className="session-info">
-                  <span className="pulse" />
-                  {selected.codexThreadId ? "Session connected" : "New session"}
-                </div>
-              </div>
-
-              <div className="messages">
-                {messages.length === 0 && !activeRun ? (
-                  <div className="welcome">
-                    <div className="welcome-orbit">
-                      <div>⌁</div>
-                    </div>
-                    <h3>What should {selected.name} build?</h3>
-                    <p>
-                      The Agent can inspect files, write code, run commands, and continue the
-                      same Codex session across messages.
-                    </p>
-                    <div className="prompt-grid">
-                      {starterPrompts.map((item) => (
-                        <button key={item} onClick={() => setPrompt(item)}>
-                          <span>↗</span>
-                          {item}
-                        </button>
-                      ))}
-                    </div>
+            <div className="workspace-body">
+              <section className="conversation-pane" aria-label="Conversation">
+                <div className="playground-topbar">
+                  <div>
+                    <span className="eyebrow">Playground</span>
+                    <h2>Build something with your Agent</h2>
                   </div>
-                ) : (
-                  messages.map((message) => (
-                    <article className={"message message-" + message.role} key={message.id}>
-                      <div className="message-meta">
-                        <strong>{message.role === "user" ? "You" : selected.name}</strong>
-                        <span>{formatTime(message.createdAt)}</span>
-                      </div>
-                      <div className="message-body">{message.content}</div>
-                    </article>
-                  ))
-                )}
-                {activeRun && ["queued", "running"].includes(activeRun.status) && (
-                  <article className="message message-assistant thinking">
-                    <div className="message-meta">
-                      <strong>{selected.name}</strong>
-                      <span>working in the Agent workspace</span>
-                    </div>
-                    <div className="thinking-row">
-                      <Spinner />
-                      Codex is reading, editing, or running commands…
-                    </div>
-                  </article>
-                )}
-                {activeRun?.status === "failed" && (
-                  <article className="run-error">
-                    <strong>Run failed</strong>
-                    <span>{activeRun.error}</span>
-                  </article>
-                )}
-                <div ref={messageEnd} />
-              </div>
+                  <div className="session-info">
+                    <span className="pulse" />
+                    {selected.codexThreadId ? "Session connected" : "New session"}
+                  </div>
+                </div>
 
-              <form className="composer" onSubmit={sendMessage}>
-                <textarea
+                <div className="messages">
+                  {messages.length === 0 && !activeRun ? (
+                    <div className="welcome">
+                      <div className="welcome-orbit">
+                        <div>⌁</div>
+                      </div>
+                      <h3>What should {selected.name} build?</h3>
+                      <p>
+                        The Agent can inspect files, write code, run commands, and continue the
+                        same Codex session across messages.
+                      </p>
+                      <div className="prompt-grid">
+                        {starterPrompts.map((item) => (
+                          <button key={item} onClick={() => setPrompt(item)}>
+                            <span>↗</span>
+                            {item}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    messages.map((message) => (
+                      <article className={"message message-" + message.role} key={message.id}>
+                        <div className="message-meta">
+                          <strong>{message.role === "user" ? "You" : selected.name}</strong>
+                          <span>{formatTime(message.createdAt)}</span>
+                        </div>
+                        <div className="message-body">{message.content}</div>
+                      </article>
+                    ))
+                  )}
+                  {activeRun && ["queued", "running"].includes(activeRun.status) && (
+                    <article className="message message-assistant thinking">
+                      <div className="message-meta">
+                        <strong>{selected.name}</strong>
+                        <span>working in the Agent workspace</span>
+                      </div>
+                      <div className="thinking-row">
+                        <Spinner />
+                        Codex is reading, editing, or running commands…
+                      </div>
+                    </article>
+                  )}
+                  {activeRun?.status === "failed" && (
+                    <article className="run-error">
+                      <strong>Run failed</strong>
+                      <span>{activeRun.error}</span>
+                    </article>
+                  )}
+                  <div ref={messageEnd} />
+                </div>
+
+                <StickyComposer
                   value={prompt}
-                  onChange={(event) => setPrompt(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      event.currentTarget.form?.requestSubmit();
-                    }
-                  }}
                   placeholder={
                     selected.status === "stopped"
                       ? "Start this Agent to continue…"
                       : "Describe what you want the Agent to do…"
                   }
-                  disabled={
-                    selected.status === "stopped" ||
-                    selected.status === "busy" ||
-                    activeRun != null && ["queued", "running"].includes(activeRun.status)
+                  hint={
+                    "Enter to send · Shift + Enter for newline · " +
+                    (system?.codexSandboxMode ?? "checking sandbox")
                   }
-                  rows={3}
+                  disabled={selected.status === "stopped" || selected.status === "busy"}
+                  sending={runInFlight}
+                  onChange={setPrompt}
+                  onSubmit={sendMessage}
                 />
-                <div className="composer-footer">
-                  <span>
-                    Enter to send · Shift + Enter for newline · {system?.codexSandboxMode ?? "checking sandbox"}
-                  </span>
-                  <button
-                    className="send-button"
-                    disabled={
-                      !prompt.trim() ||
-                      selected.status === "stopped" ||
-                      selected.status === "busy" ||
-                      (activeRun != null && ["queued", "running"].includes(activeRun.status))
-                    }
-                    aria-label="Send message"
-                  >
-                    ↑
-                  </button>
-                </div>
-              </form>
-            </section>
-          </>
+              </section>
+
+              <PreviewSidecar
+                open={previewPanelOpen}
+                preview={preview}
+                logs={previewLogs}
+                busy={previewBusy}
+                actionError={previewActionError}
+                onClose={() => setPreviewPanelOpen(false)}
+                onStart={() => void runPreviewAction("start")}
+                onRestart={() => void runPreviewAction("restart")}
+                onStop={() => void runPreviewAction("stop")}
+                onOpenExternal={openPreview}
+              />
+
+              {!previewPanelOpen && (
+                <button
+                  type="button"
+                  className="preview-rail"
+                  onClick={() => setPreviewPanelOpen(true)}
+                  aria-label="Show preview panel"
+                  aria-expanded={false}
+                >
+                  <span
+                    className={"preview-toggle-dot preview-dot-" + (preview?.status ?? "not_started")}
+                    aria-hidden="true"
+                  />
+                  <span className="preview-rail-label">Preview</span>
+                </button>
+              )}
+            </div>
+          </div>
             ) : (
               <div className="no-agent">
                 <div className="no-agent-art">A</div>

@@ -1,5 +1,6 @@
 :root {
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, ui-sans-serif,
+    system-ui, "Segoe UI", sans-serif;
   color: #20211f;
   background: #f2f1ed;
   font-synthesis: none;
@@ -14,6 +15,18 @@
   --green: #33906d;
   --red: #c55353;
   --shadow: 0 24px 60px rgba(39, 38, 33, 0.12);
+  /* Hairlines and materials keep surfaces separated by light, not by heavy borders. */
+  --hairline: rgba(60, 60, 67, 0.12);
+  --material: rgba(251, 250, 247, 0.76);
+  --material-blur: saturate(180%) blur(20px);
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+  /* Apple's standard deceleration curve: fast out, long settle. */
+  --ease-out: cubic-bezier(0.32, 0.72, 0, 1);
+  --elevation-1: 0 1px 2px rgba(37, 36, 32, 0.05), 0 6px 18px rgba(37, 36, 32, 0.05);
+  --elevation-2: 0 10px 40px rgba(37, 36, 32, 0.14);
 }
 
 * {
@@ -661,7 +674,8 @@ button {
 }
 
 .agent-header h1,
-.playground h2,
+.conversation-pane h2,
+.sidecar-title h2,
 .settings-panel h2,
 .modal h2,
 .no-agent h1 {
@@ -1005,38 +1019,9 @@ textarea:focus {
   text-overflow: ellipsis;
 }
 
-.preview-panel {
-  max-width: 1180px;
-  margin: 0 auto 14px;
-  padding: 18px 20px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: var(--paper);
-  box-shadow: 0 12px 36px rgba(43, 42, 38, 0.06);
-}
-
-.preview-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.preview-heading h2 {
-  margin: 3px 0 3px;
-  font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
-  font-size: 16px;
-  letter-spacing: -0.03em;
-}
-
-.preview-heading p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 10px;
-}
-
 .preview-status {
   display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
@@ -1065,20 +1050,6 @@ textarea:focus {
 .preview-status-interrupted {
   color: #ac4343;
   background: #f6dfdc;
-}
-
-.preview-empty,
-.preview-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 15px;
-}
-
-.preview-empty {
-  justify-content: space-between;
-  color: var(--muted);
-  font-size: 11px;
 }
 
 .preview-error {
@@ -1119,40 +1090,23 @@ textarea:focus {
 }
 
 .preview-url {
-  display: inline-block;
+  flex-shrink: 0;
+  align-self: flex-start;
   max-width: 100%;
-  margin-top: 12px;
   overflow: hidden;
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: var(--purple-soft);
   color: #5d4ac1;
-  font-size: 10px;
+  font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-decoration: none;
   text-overflow: ellipsis;
   white-space: nowrap;
+  transition: 140ms var(--ease-out);
 }
 
-.preview-logs {
-  margin-top: 14px;
-  border: 1px solid #e4e1d8;
-  border-radius: 10px;
-  padding: 10px;
-  background: #f8f7f2;
-}
-
-.preview-logs-title {
-  color: #777870;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-}
-
-.preview-logs pre {
-  max-height: 145px;
-  margin: 8px 0 0;
-  overflow: auto;
-  color: #51524d;
-  font: 10px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
-  white-space: pre-wrap;
-  word-break: break-word;
+.preview-url:hover {
+  background: #e5e0ff;
 }
 
 .preview-logs-empty {
@@ -1160,15 +1114,6 @@ textarea:focus {
   margin-top: 8px;
   color: #999a93;
   font-size: 10px;
-}
-
-.playground {
-  height: calc(100vh - 150px);
-  min-height: 560px;
-  border-radius: 17px;
-  overflow: hidden;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
 .playground-topbar {
@@ -1181,9 +1126,9 @@ textarea:focus {
   background: rgba(251, 250, 247, 0.94);
 }
 
-.playground h2 {
+.conversation-pane h2 {
   margin: 3px 0 0;
-  font-size: 16px;
+  font-size: 15px;
 }
 
 .session-info {
@@ -1285,7 +1230,7 @@ textarea:focus {
 
 .prompt-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 8px;
   width: 100%;
 }
@@ -1345,8 +1290,11 @@ textarea:focus {
   line-height: 1.65;
 }
 
+/* User turns hug their own text and sit right; agent turns stay full width. */
 .message-user {
-  margin-left: 22%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
 }
 
 .message-user .message-meta {
@@ -1354,11 +1302,15 @@ textarea:focus {
 }
 
 .message-user .message-body {
+  max-width: min(560px, 86%);
+}
+
+.message-user .message-body {
   background: #ebe7fc;
   color: #4b3d86;
   border: 1px solid #ddd6f8;
-  border-radius: 13px 4px 13px 13px;
-  padding: 11px 13px;
+  border-radius: 18px 6px 18px 18px;
+  padding: 11px 14px;
 }
 
 .message-assistant .message-body {
@@ -1397,52 +1349,6 @@ textarea:focus {
   padding: 10px 12px;
   color: #9e4545;
   font-size: 11px;
-}
-
-.composer {
-  margin: 0;
-  border-top: 1px solid #e1dfd8;
-  padding: 13px max(22px, calc((100% - 800px) / 2)) 15px;
-  background: #f8f7f3;
-}
-
-.composer textarea {
-  min-height: 66px;
-  max-height: 180px;
-  resize: none;
-  border: 0;
-  box-shadow: none;
-  margin: 0;
-  padding: 7px 4px;
-  background: transparent;
-  font-size: 12px;
-}
-
-.composer-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.composer-footer > span {
-  color: #999992;
-  font-size: 8px;
-}
-
-.send-button {
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
-  border: 0;
-  color: white;
-  background: var(--purple);
-  font-size: 18px;
-  cursor: pointer;
-}
-
-.send-button:disabled {
-  background: #cfcdc6;
-  cursor: not-allowed;
 }
 
 .no-agent {
@@ -3281,5 +3187,547 @@ textarea:focus {
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+
+/* ============================================================
+   Agent workspace: viewport-bounded shell
+   ------------------------------------------------------------
+   The playground owns the viewport instead of the page scrolling.
+   Only the message list scrolls; the header, composer, and Preview
+   sidecar are flex siblings that stay where they are put.
+   ============================================================ */
+
+.main-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 24px 20px;
+  overflow: hidden;
+}
+
+.agent-workspace {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* The header spans the workspace rather than the old centred column. */
+.agent-workspace > .agent-header {
+  max-width: none;
+  margin: 0;
+  min-height: 0;
+  flex-shrink: 0;
+  padding: 0 4px;
+}
+
+/* Settings is a tall form; cap it and let it scroll rather than squeezing chat. */
+.agent-workspace > .settings-panel {
+  flex-shrink: 0;
+  max-width: none;
+  margin: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.workspace-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+}
+
+.conversation-pane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-xl);
+  background: var(--paper);
+  box-shadow: var(--elevation-1);
+  overflow: hidden;
+}
+
+.conversation-pane .playground-topbar {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--material);
+  -webkit-backdrop-filter: var(--material-blur);
+  backdrop-filter: var(--material-blur);
+}
+
+.conversation-pane .messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 26px max(22px, calc((100% - 720px) / 2)) 6px;
+  background: transparent;
+}
+
+/* ============================================================
+   Sticky composer
+   ============================================================ */
+
+.composer-dock {
+  position: relative;
+  flex-shrink: 0;
+  padding: 6px max(18px, calc((100% - 740px) / 2)) 12px;
+  background: var(--paper);
+}
+
+/* Softens the point where messages scroll out from under the composer. */
+.composer-dock::before {
+  content: "";
+  position: absolute;
+  top: -24px;
+  right: 0;
+  bottom: 100%;
+  left: 0;
+  background: linear-gradient(to bottom, rgba(251, 250, 247, 0), var(--paper));
+  pointer-events: none;
+}
+
+.composer {
+  margin: 0;
+}
+
+.composer-surface {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 7px 7px 7px 16px;
+  border: 1px solid var(--hairline);
+  border-radius: 22px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(37, 36, 32, 0.04), 0 6px 20px rgba(37, 36, 32, 0.05);
+  transition: border-color 220ms var(--ease-out), box-shadow 220ms var(--ease-out);
+}
+
+.composer-surface:focus-within {
+  border-color: rgba(105, 84, 217, 0.42);
+  box-shadow: 0 0 0 4px rgba(105, 84, 217, 0.1), 0 6px 20px rgba(37, 36, 32, 0.06);
+}
+
+.composer-input {
+  flex: 1;
+  min-width: 0;
+  max-height: 200px;
+  margin: 0;
+  padding: 8px 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.composer-input::placeholder {
+  color: #a4a49c;
+}
+
+.composer-input:disabled {
+  cursor: not-allowed;
+}
+
+.send-button {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: white;
+  background: var(--purple);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform 200ms var(--ease-out), background 160ms ease;
+}
+
+.send-button:hover:not(:disabled) {
+  background: var(--purple-dark);
+  transform: scale(1.06);
+}
+
+.send-button:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.send-button:disabled {
+  color: #f6f5f1;
+  background: #d3d2ca;
+  cursor: not-allowed;
+}
+
+.composer-hint {
+  margin: 8px 0 0;
+  text-align: center;
+  color: #a2a39b;
+  font-size: 10px;
+}
+
+/* ============================================================
+   Preview sidecar
+   ============================================================ */
+
+.preview-sidecar {
+  flex-shrink: 0;
+  width: clamp(360px, 34vw, 520px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-xl);
+  background: var(--paper);
+  box-shadow: var(--elevation-1);
+  overflow: hidden;
+  animation: sidecar-in 280ms var(--ease-out);
+}
+
+@keyframes sidecar-in {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.sidecar-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 11px 11px 18px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--material);
+  -webkit-backdrop-filter: var(--material-blur);
+  backdrop-filter: var(--material-blur);
+}
+
+.sidecar-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.sidecar-title h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.sidecar-head-actions {
+  display: flex;
+  gap: 2px;
+}
+
+.icon-button {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: #7a7b73;
+  font-size: 13px;
+  cursor: pointer;
+  transition: 140ms var(--ease-out);
+}
+
+.icon-button:hover {
+  color: var(--ink);
+  background: rgba(60, 60, 67, 0.07);
+}
+
+.sidecar-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.sidecar-stage {
+  flex: 1;
+  min-height: 240px;
+  display: flex;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: white;
+  overflow: hidden;
+}
+
+.preview-frame {
+  flex: 1;
+  width: 100%;
+  border: 0;
+  background: white;
+}
+
+.sidecar-placeholder {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 30px 24px;
+  text-align: center;
+}
+
+.sidecar-placeholder h3 {
+  margin: 0;
+  font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
+  font-size: 14px;
+  letter-spacing: -0.02em;
+}
+
+.sidecar-placeholder p {
+  max-width: 34ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+/* Window traffic lights: reads as "an app lives here" before one is running. */
+.sidecar-glyph {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.sidecar-glyph span {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #e3e1d9;
+}
+
+.sidecar-glyph span:first-child {
+  background: #eec6c0;
+}
+
+.sidecar-glyph span:nth-child(2) {
+  background: #eee0c0;
+}
+
+.sidecar-glyph span:last-child {
+  background: #cfe4d3;
+}
+
+.sidecar-logs {
+  flex-shrink: 0;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: #f6f5f0;
+  overflow: hidden;
+}
+
+.sidecar-logs-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border: 0;
+  background: transparent;
+  color: #6f7068;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sidecar-logs-toggle:hover {
+  color: var(--ink);
+}
+
+.disclosure {
+  display: inline-block;
+  color: #9a9b93;
+  font-size: 11px;
+  transition: transform 200ms var(--ease-out);
+}
+
+.disclosure.is-open {
+  transform: rotate(90deg);
+}
+
+.sidecar-logs-count {
+  margin-left: auto;
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: #7a7b73;
+  background: #e6e4dc;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.sidecar-logs-body {
+  border-top: 1px solid var(--hairline);
+  padding: 10px 12px;
+}
+
+.sidecar-logs-body pre {
+  max-height: 150px;
+  margin: 0;
+  overflow: auto;
+  color: #51524d;
+  font: 10px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.sidecar-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--hairline);
+  background: var(--material);
+  -webkit-backdrop-filter: var(--material-blur);
+  backdrop-filter: var(--material-blur);
+}
+
+.sidecar-actions .button {
+  flex: 1;
+  min-height: 34px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+/* Collapsed rail: the only affordance that reopens the panel in-place. */
+.preview-rail {
+  flex-shrink: 0;
+  width: 42px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px 0;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+  color: #6f7068;
+  cursor: pointer;
+  transition: 180ms var(--ease-out);
+}
+
+.preview-rail:hover {
+  color: var(--ink);
+  background: white;
+  box-shadow: var(--elevation-1);
+}
+
+.preview-rail-label {
+  writing-mode: vertical-rl;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+/* Status dot shared by the header toggle and the collapsed rail. */
+.preview-toggle-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #c6c5be;
+}
+
+.preview-dot-running {
+  background: var(--green);
+  box-shadow: 0 0 0 3px rgba(51, 144, 109, 0.16);
+}
+
+.preview-dot-starting,
+.preview-dot-stopping {
+  background: var(--purple);
+  box-shadow: 0 0 0 3px rgba(105, 84, 217, 0.16);
+}
+
+.preview-dot-failed,
+.preview-dot-interrupted {
+  background: var(--red);
+  box-shadow: 0 0 0 3px rgba(197, 83, 83, 0.16);
+}
+
+.preview-toggle.is-active {
+  color: var(--ink);
+  background: #e3e1d8;
+}
+
+/* The status pill needs the never-launched case the backend cannot persist. */
+.preview-status-not_started {
+  color: #77786f;
+  background: #e8e7e1;
+}
+
+/* ============================================================
+   Workspace responsiveness
+   ============================================================ */
+
+/* Below this width a side-by-side split starves the conversation, so the
+   Preview panel becomes an overlay drawer inside the workspace body. */
+@media (max-width: 1120px) {
+  .preview-sidecar {
+    position: absolute;
+    inset: 0 0 0 auto;
+    z-index: 5;
+    width: min(440px, 100%);
+    box-shadow: var(--elevation-2);
+  }
+}
+
+@media (max-width: 900px) {
+  .main-workspace {
+    padding: 14px 16px 16px;
+  }
+}
+
+@media (max-width: 680px) {
+  .main-workspace {
+    height: calc(100dvh - 65px);
+    min-height: 0;
+    padding: 12px;
+  }
+
+  .preview-rail {
+    width: 36px;
+  }
+
+  .conversation-pane .messages {
+    padding: 18px 16px 4px;
+  }
+
+  .composer-dock {
+    padding: 6px 12px 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .preview-sidecar {
+    animation: none;
   }
 }

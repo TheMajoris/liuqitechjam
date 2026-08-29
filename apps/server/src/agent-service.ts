@@ -24,6 +24,10 @@ import type {
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 import type { PreviewLifecycleCleanup } from "./preview/preview-service.js";
+import {
+  composeRuntimeContextPrompt,
+  type PreviewContextProvider,
+} from "./preview/preview-context-provider.js";
 
 const now = () => new Date().toISOString();
 const RUN_POLL_INTERVAL_MS = 50;
@@ -52,6 +56,7 @@ type AgentModelResolver = WorkerModelResolver & {
 
 export class AgentService {
   private previewLifecycle: PreviewLifecycleCleanup | undefined;
+  private previewContext: PreviewContextProvider | undefined;
   private readonly activeExecutions = new Map<
     string,
     { runId: string; execution: Promise<void> }
@@ -68,13 +73,20 @@ export class AgentService {
     private readonly modelResolver: AgentModelResolver =
       createWorkerModelResolver(config),
     previewLifecycle?: PreviewLifecycleCleanup,
+    previewContext?: PreviewContextProvider,
   ) {
     this.previewLifecycle = previewLifecycle;
+    this.previewContext = previewContext;
   }
 
   /** Attach the preview cleanup seam after both services have been assembled. */
   setPreviewLifecycle(previewLifecycle: PreviewLifecycleCleanup): void {
     this.previewLifecycle = previewLifecycle;
+  }
+
+  /** Attach the read-only Preview state seam used to build runtime context. */
+  setPreviewContextProvider(previewContext: PreviewContextProvider): void {
+    this.previewContext = previewContext;
   }
 
   async initialize(): Promise<void> {
@@ -429,7 +441,7 @@ export class AgentService {
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,
-        prompt: run.prompt,
+        prompt: await this.executionPrompt(agentAtStart.id, run.prompt),
         threadId: agentAtStart.codexThreadId,
         model: runtimeModel,
       });
@@ -493,6 +505,24 @@ export class AgentService {
           agent.updatedAt = completedAt;
         }
       });
+    }
+  }
+
+  /**
+   * Builds the prompt the worker actually executes.
+   *
+   * Trusted platform state is composed here, at the runtime boundary, rather
+   * than in the client or in the persisted message, so the Agent sees current
+   * Preview state without the conversation history being rewritten. A missing
+   * or failing provider degrades to the untouched user prompt.
+   */
+  private async executionPrompt(agentId: string, prompt: string): Promise<string> {
+    if (!this.previewContext) return prompt;
+    try {
+      const context = await this.previewContext.getForAgent(agentId);
+      return composeRuntimeContextPrompt(prompt, context);
+    } catch {
+      return prompt;
     }
   }
 

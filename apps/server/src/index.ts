@@ -18,6 +18,7 @@ import {
 import { DefaultAuthorizationService } from "./access/default-authorization-service.js";
 import { LocalContainerPreviewRuntime } from "./preview/local-container-preview-runtime.js";
 import { PreviewCommandResolver } from "./preview/preview-command-resolver.js";
+import { StorePreviewContextProvider } from "./preview/preview-context-provider.js";
 import {
   PreviewService,
   previewResourceLimitsFromConfig,
@@ -49,6 +50,7 @@ const previewService = new PreviewService(
   { resourceLimits: previewResourceLimitsFromConfig(config) },
 );
 service.setPreviewLifecycle(previewService);
+service.setPreviewContextProvider(new StorePreviewContextProvider(store));
 await service.initialize();
 await previewService.initialize();
 
