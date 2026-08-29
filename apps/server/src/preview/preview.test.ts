@@ -99,6 +99,7 @@ async function makePreview(options: { runtime?: FakePreviewRuntime } = {}) {
 describe("PreviewCommandResolver", () => {
   it("detects the supported Vite preview shape", async () => {
     const { workspacePath } = await makePreview();
+    await writeFile(path.join(workspacePath, "index.html"), "<h1>ignored by Vite</h1>", "utf8");
     const resolved = await new PackageJsonPreviewCommandResolver().resolve({ workspacePath });
     expect(resolved).toEqual({
       command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"],
@@ -107,9 +108,55 @@ describe("PreviewCommandResolver", () => {
     });
   });
 
-  it("rejects a workspace without a supported preview configuration", async () => {
+  it("selects static preview when the workspace only has index.html", async () => {
+    const { workspacePath } = await makePreview();
+    await rm(path.join(workspacePath, "package.json"));
+    await writeFile(path.join(workspacePath, "index.html"), "<h1>Static</h1>", "utf8");
+
+    await expect(new PackageJsonPreviewCommandResolver().resolve({ workspacePath })).resolves.toEqual({
+      command: ["node", "/opt/launchpad/preview-static-server.mjs", "/workspace", "4173"],
+      containerPort: 4173,
+      kind: "static",
+    });
+  });
+
+  it("falls back to static preview when package.json is malformed", async () => {
+    const { workspacePath } = await makePreview();
+    await writeFile(path.join(workspacePath, "package.json"), "{not-json", "utf8");
+    await writeFile(path.join(workspacePath, "index.html"), "<h1>Static</h1>", "utf8");
+
+    await expect(new PackageJsonPreviewCommandResolver().resolve({ workspacePath })).resolves.toMatchObject({
+      kind: "static",
+      command: ["node", "/opt/launchpad/preview-static-server.mjs", "/workspace", "4173"],
+      containerPort: 4173,
+    });
+  });
+
+  it("falls back to static preview when package.json is unsupported", async () => {
     const { workspacePath } = await makePreview();
     await writeFile(path.join(workspacePath, "package.json"), JSON.stringify({ name: "plain" }), "utf8");
+    await writeFile(path.join(workspacePath, "index.html"), "<h1>Static</h1>", "utf8");
+
+    await expect(new PackageJsonPreviewCommandResolver().resolve({ workspacePath })).resolves.toMatchObject({
+      kind: "static",
+      command: ["node", "/opt/launchpad/preview-static-server.mjs", "/workspace", "4173"],
+      containerPort: 4173,
+    });
+  });
+
+  it("reports a missing command when package.json and index.html are absent", async () => {
+    const { workspacePath } = await makePreview();
+    await rm(path.join(workspacePath, "package.json"));
+
+    await expect(new PackageJsonPreviewCommandResolver().resolve({ workspacePath })).rejects.toMatchObject({
+      code: "PREVIEW_COMMAND_NOT_FOUND",
+    });
+  });
+
+  it("reports malformed package metadata when no static entrypoint exists", async () => {
+    const { workspacePath } = await makePreview();
+    await writeFile(path.join(workspacePath, "package.json"), "{not-json", "utf8");
+
     await expect(new PackageJsonPreviewCommandResolver().resolve({ workspacePath })).rejects.toMatchObject({
       code: "PREVIEW_UNSUPPORTED_PROJECT",
     });
@@ -128,6 +175,21 @@ describe("PreviewService", () => {
     const stopped = await service.stop(agent.id);
     expect(stopped.status).toBe("stopped");
     expect(runtime.stops).toHaveLength(1);
+  });
+
+  it("requests a read-only workspace mount for static previews", async () => {
+    const context = await makePreview();
+    await rm(path.join(context.workspacePath, "package.json"));
+    await writeFile(path.join(context.workspacePath, "index.html"), "<h1>Static</h1>", "utf8");
+
+    await expect(context.service.start(context.agent.id)).resolves.toMatchObject({
+      status: "running",
+    });
+    expect(context.runtime.starts[0]).toMatchObject({
+      workspaceReadOnly: true,
+      command: ["node", "/opt/launchpad/preview-static-server.mjs", "/workspace", "4173"],
+      containerPort: 4173,
+    });
   });
 
   it("normalizes runtime start failures and persists failed state", async () => {

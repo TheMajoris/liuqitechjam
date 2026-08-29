@@ -86,6 +86,8 @@ export interface PreviewStartInput {
   containerPort: number;
   /** Backend-owned port. Omitted only for runtimes that allocate an ephemeral port. */
   hostPort?: number;
+  /** Backend-owned mount policy; static previews must not mutate the workspace. */
+  workspaceReadOnly?: boolean;
   resourceLimits: PreviewResourceLimits;
 }
 
@@ -125,4 +127,3 @@ export interface PreviewView {
   stoppedAt: string | null;
   updatedAt: string;
 }
-

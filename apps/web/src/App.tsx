@@ -56,6 +56,25 @@ function errorMessage(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
 }
 
+type PreviewActionError = {
+  message: string;
+  errorCode: string | null;
+};
+
+function toPreviewActionError(reason: unknown): PreviewActionError {
+  if (reason instanceof ApiError) {
+    return {
+      message: reason.message,
+      errorCode: reason.errorCode,
+    };
+  }
+
+  return {
+    message: "Unable to complete the preview request. Please try again.",
+    errorCode: null,
+  };
+}
+
 function chooseDefaultEffort(model: ModelDescriptor | undefined): ReasoningEffort | undefined {
   const efforts = model?.capabilities.reasoningEfforts ?? [];
   if (model?.capabilities.reasoning !== true || efforts.length === 0) return undefined;
@@ -109,6 +128,7 @@ function PreviewPanel({
   preview,
   logs,
   busy,
+  actionError,
   onStart,
   onRestart,
   onStop,
@@ -117,12 +137,20 @@ function PreviewPanel({
   preview: Preview | null;
   logs: string[];
   busy: string | null;
+  actionError: PreviewActionError | null;
   onStart: () => void;
   onRestart: () => void;
   onStop: () => void;
   onOpen: () => void;
 }) {
   const active = preview && ["starting", "running", "stopping"].includes(preview.status);
+  const persistedError = preview && (preview.errorMessage || preview.errorCode)
+    ? {
+        message: preview.errorMessage || "The preview could not be started.",
+        errorCode: preview.errorCode,
+      }
+    : null;
+  const displayedError = persistedError ?? actionError;
   return (
     <section className="preview-panel" aria-labelledby="preview-title">
       <div className="preview-heading">
@@ -133,6 +161,17 @@ function PreviewPanel({
         </div>
         {preview && <PreviewStatusPill status={preview.status} />}
       </div>
+      {displayedError && (
+        <div className="preview-error" role="alert">
+          <div className="preview-error-heading">
+            <strong>Preview failed</strong>
+            {displayedError.errorCode && (
+              <code className="preview-error-code">{displayedError.errorCode}</code>
+            )}
+          </div>
+          <p>{displayedError.message}</p>
+        </div>
+      )}
       {!preview ? (
         <div className="preview-empty">
           <span>No preview is running yet.</span>
@@ -142,7 +181,6 @@ function PreviewPanel({
         </div>
       ) : (
         <>
-          {preview.errorMessage && <p className="preview-error">{preview.errorMessage}</p>}
           <div className="preview-actions">
             <button
               className="button button-primary"
@@ -200,6 +238,7 @@ export default function App() {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewLogs, setPreviewLogs] = useState<string[]>([]);
   const [previewBusy, setPreviewBusy] = useState<string | null>(null);
+  const [previewActionError, setPreviewActionError] = useState<PreviewActionError | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -396,11 +435,15 @@ export default function App() {
     }
   }, []);
 
-  const refreshPreview = useCallback(async (agentId: string) => {
+  const refreshPreview = useCallback(async (
+    agentId: string,
+    options: { clearActionErrorOnSuccess?: boolean } = {},
+  ) => {
     try {
       const result = await api.getPreview(agentId);
       if (mountedRef.current && selectedIdRef.current === agentId) {
         setPreview(result.preview);
+        if (options.clearActionErrorOnSuccess) setPreviewActionError(null);
       }
       if (["starting", "running", "failed"].includes(result.preview.status)) {
         try {
@@ -421,6 +464,7 @@ export default function App() {
         if (mountedRef.current && selectedIdRef.current === agentId) {
           setPreview(null);
           setPreviewLogs([]);
+          if (options.clearActionErrorOnSuccess) setPreviewActionError(null);
         }
         return null;
       }
@@ -455,12 +499,13 @@ export default function App() {
     setActiveRun(null);
     setPreview(null);
     setPreviewLogs([]);
+    setPreviewActionError(null);
     setShowSettings(false);
     if (!selectedId) {
       setMessages([]);
       return;
     }
-    void Promise.all([refreshMessages(selectedId), api.runs(selectedId), refreshPreview(selectedId)])
+    void Promise.all([refreshMessages(selectedId), api.runs(selectedId)])
       .then(([, result]) => {
         if (selectedIdRef.current !== selectedId) return;
         const latest = result.runs[0] ?? null;
@@ -474,14 +519,19 @@ export default function App() {
       .catch((reason) =>
         setError(reason instanceof Error ? reason.message : String(reason)),
       );
+    void refreshPreview(selectedId, { clearActionErrorOnSuccess: true }).catch((reason) => {
+      if (mountedRef.current && selectedIdRef.current === selectedId) {
+        setPreviewActionError(toPreviewActionError(reason));
+      }
+    });
   }, [refreshMessages, refreshPreview, selectedId]);
 
   useEffect(() => {
     if (!selectedId || !preview || !["starting", "running"].includes(preview.status)) return;
     const interval = window.setInterval(() => {
-      void refreshPreview(selectedId).catch((reason) => {
+      void refreshPreview(selectedId, { clearActionErrorOnSuccess: true }).catch((reason) => {
         if (mountedRef.current && selectedIdRef.current === selectedId) {
-          setError(errorMessage(reason));
+          setPreviewActionError(toPreviewActionError(reason));
         }
       });
     }, 2_000);
@@ -599,7 +649,7 @@ export default function App() {
   const runPreviewAction = async (action: "start" | "restart" | "stop") => {
     if (!selected) return;
     setPreviewBusy(action);
-    setError(null);
+    setPreviewActionError(null);
     try {
       const result = action === "start"
         ? await api.startPreview(selected.id)
@@ -615,8 +665,13 @@ export default function App() {
           setPreviewLogs([]);
         }
       }
+      if (mountedRef.current && selectedIdRef.current === selected.id) {
+        setPreviewActionError(null);
+      }
     } catch (reason) {
-      setError(errorMessage(reason));
+      if (mountedRef.current && selectedIdRef.current === selected.id) {
+        setPreviewActionError(toPreviewActionError(reason));
+      }
       await refreshPreview(selected.id).catch(() => undefined);
     } finally {
       setPreviewBusy(null);
@@ -1055,6 +1110,7 @@ export default function App() {
               preview={preview}
               logs={previewLogs}
               busy={previewBusy}
+              actionError={previewActionError}
               onStart={() => void runPreviewAction("start")}
               onRestart={() => void runPreviewAction("restart")}
               onStop={() => void runPreviewAction("stop")}

@@ -7,7 +7,7 @@ import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
-import { PreviewError } from "./preview/preview-errors.js";
+import { isPreviewError } from "./preview/preview-service.js";
 import type { PreviewLogsView } from "./preview/preview-service.js";
 import type { PreviewView } from "./preview/preview-types.js";
 import {
@@ -394,7 +394,7 @@ export async function createApp(
   app.setErrorHandler((error, request, reply) => {
     const appError = error instanceof Error ? error : new Error(String(error));
     const modelError = error instanceof ModelCatalogError ? error : null;
-    const previewError = error instanceof PreviewError ? error : null;
+    const previewError = isPreviewError(error) ? error : null;
     const validationError = error instanceof z.ZodError;
     const details = validationError
       ? error.issues
@@ -425,8 +425,9 @@ export async function createApp(
         request.log.error(appError);
       }
     }
+    const responseMessage = previewError === null ? appError.message : previewError.message;
     return reply.code(statusCode).send({
-      error: appError.message,
+      error: responseMessage,
       ...(modelError === null ? {} : { errorCode: modelError.code }),
       ...(previewError === null ? {} : { errorCode: previewError.code }),
       ...(details !== undefined ? { details } : {}),

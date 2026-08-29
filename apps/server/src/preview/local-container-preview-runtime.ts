@@ -139,7 +139,8 @@ export function buildPreviewContainerRunArgs(
     "--env",
     "NO_COLOR=1",
     "--mount",
-    "type=bind,src=" + input.workspacePath + ",dst=/workspace",
+    "type=bind,src=" + input.workspacePath + ",dst=/workspace" +
+      (input.workspaceReadOnly === true ? ",readonly" : ""),
     "--workdir",
     "/workspace",
     "--publish",
@@ -295,4 +296,3 @@ export async function isDirectory(workspacePath: string): Promise<boolean> {
     return false;
   }
 }
-

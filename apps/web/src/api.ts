@@ -40,14 +40,18 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     ...options,
     headers,
   });
-  const data = (await response.json().catch(() => ({}))) as T & {
+  const data = ((await response.json().catch(() => ({}))) ?? {}) as T & {
+    message?: string;
     error?: string;
     errorCode?: string;
     details?: unknown;
   };
   if (!response.ok) {
+    const message = [data.message, data.error, response.statusText, "Request failed"].find(
+      (candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0,
+    ) as string;
     throw new ApiError(
-      data.error ?? "Request failed",
+      message,
       response.status,
       data.errorCode ?? null,
       data.details,

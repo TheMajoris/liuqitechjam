@@ -406,6 +406,7 @@ export class PreviewService implements PreviewLifecycleCleanup {
         command: [...resolved.command],
         containerPort: resolved.containerPort,
         hostPort,
+        workspaceReadOnly: resolved.kind === "static",
         resourceLimits: { ...this.resourceLimits },
       });
       if (
