@@ -1,5 +1,10 @@
 import { useMemo, useState } from "react";
-import type { Agent, CreateOrchestrationInput, OrchestrationParticipant } from "../../types";
+import type {
+  Agent,
+  CreateOrchestrationInput,
+  ModelProviderDescriptor,
+  OrchestrationParticipant,
+} from "../../types";
 import {
   type DraftErrors,
   deriveSessionName,
@@ -17,6 +22,7 @@ interface OrchestrationComposerProps {
   disabled?: boolean;
   onCreate: (input: CreateOrchestrationInput) => Promise<unknown>;
   onCancel?: () => void;
+  modelProviders?: ModelProviderDescriptor[];
 }
 
 /**
@@ -38,6 +44,7 @@ export function OrchestrationComposer({
   disabled = false,
   onCreate,
   onCancel,
+  modelProviders = [],
 }: OrchestrationComposerProps) {
   const [draft, setDraft] = useState<OrchestrationDraft>(initialDraft);
   const [errors, setErrors] = useState<DraftErrors>({});
@@ -96,6 +103,7 @@ export function OrchestrationComposer({
       <AgentPicker
         participants={draft.participants}
         agents={agents}
+        modelProviders={modelProviders}
         disabled={busy}
         error={errors.participants}
         showOrder={isOrderedMode(draft.mode)}

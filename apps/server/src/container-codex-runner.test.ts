@@ -60,4 +60,32 @@ describe("Container Codex runner", () => {
     expect(args.slice(-3)).toEqual(["resume", "thread-123", "continue"]);
     expect(args).not.toContain("keep-id");
   });
+
+  it("passes a resolved model into Codex without exposing credentials", () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      ARK_API_KEY: "secret-that-must-not-appear-in-argv",
+      ARK_MODEL: "ep-default",
+      CODEX_HOME: "/tmp/codex-home",
+      RUNTIME_PROVIDER: "container",
+    });
+    const args = buildContainerRunArgs(
+      {
+        agentId: "agent",
+        workspacePath: "/tmp/workspace",
+        prompt: "run",
+        threadId: null,
+        model: {
+          providerId: "volcengine_ark",
+          modelId: "ep-worker-b",
+          codexModel: "ep-worker-b",
+          usesDefaultModel: false,
+        },
+      },
+      config,
+    );
+    expect(args).toContain("--model");
+    expect(args[args.indexOf("--model") + 1]).toBe("ep-worker-b");
+    expect(args).not.toContain("secret-that-must-not-appear-in-argv");
+  });
 });

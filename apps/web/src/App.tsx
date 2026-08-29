@@ -1,13 +1,29 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
 import { OrchestrationWorkspace } from "./components/orchestration/OrchestrationWorkspace";
+import {
+  WorkerModelFields,
+  formatReasoningEffort,
+  formatWorkerModelRef,
+  workerProviders,
+} from "./components/WorkerModelFields";
 import { useOrchestration } from "./components/orchestration/use-orchestration";
 import {
   formatDateTime,
   isOrchestrationActive,
   statusLabel,
 } from "./components/orchestration/orchestration-utils";
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import type {
+  Agent,
+  AgentRun,
+  Message,
+  ModelDescriptor,
+  ModelProviderDescriptor,
+  ModelRef,
+  Preview,
+  ReasoningEffort,
+  SystemInfo,
+} from "./types";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -22,12 +38,62 @@ function readSidebarPreference(): boolean {
   return window.localStorage.getItem(SIDEBAR_KEY) !== "collapsed";
 }
 
-const emptyForm = {
+type AgentForm = {
+  name: string;
+  description: string;
+  instructions: string;
+  modelRef?: ModelRef;
+};
+
+const emptyForm: AgentForm = {
   name: "",
   description: "",
   instructions:
     "Help me build and test software in this workspace. Keep changes small and explain the result.",
 };
+
+function errorMessage(reason: unknown): string {
+  return reason instanceof Error ? reason.message : String(reason);
+}
+
+type PreviewActionError = {
+  message: string;
+  errorCode: string | null;
+};
+
+function toPreviewActionError(reason: unknown): PreviewActionError {
+  if (reason instanceof ApiError) {
+    return {
+      message: reason.message,
+      errorCode: reason.errorCode,
+    };
+  }
+
+  return {
+    message: "Unable to complete the preview request. Please try again.",
+    errorCode: null,
+  };
+}
+
+function chooseDefaultEffort(model: ModelDescriptor | undefined): ReasoningEffort | undefined {
+  const efforts = model?.capabilities.reasoningEfforts ?? [];
+  if (model?.capabilities.reasoning !== true || efforts.length === 0) return undefined;
+  return efforts.includes("medium") ? "medium" : efforts[0];
+}
+
+function formPayload(form: AgentForm): {
+  name: string;
+  description: string;
+  instructions: string;
+  modelRef?: ModelRef;
+} {
+  return {
+    name: form.name,
+    description: form.description,
+    instructions: form.instructions,
+    ...(form.modelRef ? { modelRef: form.modelRef } : {}),
+  };
+}
 
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat(undefined, {
@@ -49,16 +115,130 @@ function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
 
+function PreviewStatusPill({ status }: { status: Preview["status"] }) {
+  return (
+    <span className={"preview-status preview-status-" + status}>
+      <span className="status-dot" />
+      {status}
+    </span>
+  );
+}
+
+function PreviewPanel({
+  preview,
+  logs,
+  busy,
+  actionError,
+  onStart,
+  onRestart,
+  onStop,
+  onOpen,
+}: {
+  preview: Preview | null;
+  logs: string[];
+  busy: string | null;
+  actionError: PreviewActionError | null;
+  onStart: () => void;
+  onRestart: () => void;
+  onStop: () => void;
+  onOpen: () => void;
+}) {
+  const active = preview && ["starting", "running", "stopping"].includes(preview.status);
+  const persistedError = preview && (preview.errorMessage || preview.errorCode)
+    ? {
+        message: preview.errorMessage || "The preview could not be started.",
+        errorCode: preview.errorCode,
+      }
+    : null;
+  const displayedError = persistedError ?? actionError;
+  return (
+    <section className="preview-panel" aria-labelledby="preview-title">
+      <div className="preview-heading">
+        <div>
+          <span className="eyebrow">Artifact runtime</span>
+          <h2 id="preview-title">Preview</h2>
+          <p>Run the app from this Agent&apos;s persistent workspace.</p>
+        </div>
+        {preview && <PreviewStatusPill status={preview.status} />}
+      </div>
+      {displayedError && (
+        <div className="preview-error" role="alert">
+          <div className="preview-error-heading">
+            <strong>Preview failed</strong>
+            {displayedError.errorCode && (
+              <code className="preview-error-code">{displayedError.errorCode}</code>
+            )}
+          </div>
+          <p>{displayedError.message}</p>
+        </div>
+      )}
+      {!preview ? (
+        <div className="preview-empty">
+          <span>No preview is running yet.</span>
+          <button className="button button-primary" onClick={onStart} disabled={busy !== null}>
+            {busy === "start" ? <Spinner /> : "Start Preview"}
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="preview-actions">
+            <button
+              className="button button-primary"
+              onClick={onOpen}
+              disabled={preview.status !== "running" || !preview.url || busy !== null}
+            >
+              Open Preview ↗
+            </button>
+            <button
+              className="button button-ghost"
+              onClick={onRestart}
+              disabled={busy !== null || preview.status === "stopping"}
+            >
+              {busy === "restart" ? <Spinner /> : "Restart"}
+            </button>
+            <button
+              className="button button-danger"
+              onClick={onStop}
+              disabled={busy !== null || !active}
+            >
+              {busy === "stop" ? <Spinner /> : "Stop"}
+            </button>
+          </div>
+          {preview.url && <code className="preview-url">{preview.url}</code>}
+          <div className="preview-logs" aria-live="polite">
+            <div className="preview-logs-title">Recent logs</div>
+            {logs.length > 0 ? (
+              <pre>{logs.join("\n")}</pre>
+            ) : (
+              <span className="preview-logs-empty">No runtime logs yet.</span>
+            )}
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [system, setSystem] = useState<SystemInfo | null>(null);
+  const [modelProviders, setModelProviders] = useState<ModelProviderDescriptor[]>([]);
+  const [modelDefaultRef, setModelDefaultRef] = useState<ModelRef | null>(null);
+  const [modelsByProvider, setModelsByProvider] = useState<Record<string, ModelDescriptor[]>>({});
+  const [modelProvidersLoading, setModelProvidersLoading] = useState(false);
+  const [modelLoadingByProvider, setModelLoadingByProvider] = useState<Record<string, boolean>>({});
+  const [modelCatalogError, setModelCatalogError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [previewLogs, setPreviewLogs] = useState<string[]>([]);
+  const [previewBusy, setPreviewBusy] = useState<string | null>(null);
+  const [previewActionError, setPreviewActionError] = useState<PreviewActionError | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -71,6 +251,8 @@ export default function App() {
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
+  const modelRequests = useRef(new Set<string>());
+  const loadedModelProviders = useRef(new Set<string>());
   selectedIdRef.current = selectedId;
 
   const selected = useMemo(
@@ -78,18 +260,35 @@ export default function App() {
     [agents, selectedId],
   );
 
+  const supportedModelProviders = useMemo(
+    () => workerProviders(modelProviders),
+    [modelProviders],
+  );
+
+  const defaultWorkerModel = useMemo<ModelRef | null>(() => {
+    const providerIds = new Set(supportedModelProviders.map((provider) => provider.id));
+    return modelDefaultRef && providerIds.has(modelDefaultRef.providerId)
+      ? modelDefaultRef
+      : null;
+  }, [modelDefaultRef, supportedModelProviders]);
+
   useEffect(() => {
     window.localStorage.setItem(SIDEBAR_KEY, sidebarOpen ? "open" : "collapsed");
   }, [sidebarOpen]);
+
+  const openCreate = useCallback(() => {
+    setForm(emptyForm);
+    setModelCatalogError(null);
+    setShowCreate(true);
+  }, []);
 
   const startNew = useCallback(() => {
     if (workspace === "orchestration") {
       setComposerOpen(true);
       return;
     }
-    setForm(emptyForm);
-    setShowCreate(true);
-  }, [workspace]);
+    openCreate();
+  }, [openCreate, workspace]);
 
   const refreshAgents = useCallback(async () => {
     const { agents: next } = await api.listAgents();
@@ -101,6 +300,134 @@ export default function App() {
     );
   }, []);
 
+  const refreshModelProviders = useCallback(async () => {
+    setModelProvidersLoading(true);
+    setModelCatalogError(null);
+    try {
+      const response = await api.listModelProviders();
+      setModelProviders(response.providers);
+      setModelDefaultRef(response.defaultModelRef);
+    } catch (reason) {
+      setModelCatalogError(errorMessage(reason));
+    } finally {
+      setModelProvidersLoading(false);
+    }
+  }, []);
+
+  const loadProviderModels = useCallback(async (providerId: string, force = false) => {
+    const normalizedProviderId = providerId.trim();
+    if (
+      !normalizedProviderId ||
+      modelRequests.current.has(normalizedProviderId) ||
+      (!force && loadedModelProviders.current.has(normalizedProviderId))
+    ) return;
+    modelRequests.current.add(normalizedProviderId);
+    setModelLoadingByProvider((current) => ({ ...current, [normalizedProviderId]: true }));
+    setModelCatalogError(null);
+    try {
+      const response = await api.listProviderModels(normalizedProviderId);
+      const models = response.models.filter(
+        (model) =>
+          model.providerId === normalizedProviderId &&
+          model.capabilities.scopes.includes("worker"),
+      );
+      setModelsByProvider((current) => ({ ...current, [normalizedProviderId]: models }));
+      loadedModelProviders.current.add(normalizedProviderId);
+    } catch (reason) {
+      setModelCatalogError(errorMessage(reason));
+    } finally {
+      modelRequests.current.delete(normalizedProviderId);
+      setModelLoadingByProvider((current) => ({ ...current, [normalizedProviderId]: false }));
+    }
+  }, []);
+
+  const selectedFormModels = form.modelRef?.providerId
+    ? modelsByProvider[form.modelRef.providerId] ?? []
+    : [];
+  const selectedFormModelsLoading = form.modelRef?.providerId
+    ? modelLoadingByProvider[form.modelRef.providerId] === true
+    : false;
+  const selectedAgentModel = selected?.modelRef?.providerId
+    ? (modelsByProvider[selected.modelRef.providerId] ?? []).find(
+        (model) => model.id === selected.modelRef?.modelId,
+      )
+    : undefined;
+  const selectedAgentReasoning = selected?.modelRef?.reasoning?.effort;
+  const selectedAgentReasoningSupported =
+    selectedAgentReasoning !== undefined &&
+    selectedAgentModel?.capabilities.reasoning === true &&
+    selectedAgentModel.capabilities.reasoningEfforts?.includes(selectedAgentReasoning) === true;
+  const selectedFormModel = form.modelRef?.modelId
+    ? selectedFormModels.find((model) => model.id === form.modelRef?.modelId)
+    : undefined;
+  const selectedFormReasoning = form.modelRef?.reasoning?.effort;
+  const selectedFormEfforts = selectedFormModel?.capabilities.reasoningEfforts ?? [];
+  const modelSelectionInvalid = Boolean(
+    form.modelRef &&
+      (!form.modelRef.providerId ||
+        !form.modelRef.modelId ||
+        selectedFormModelsLoading ||
+        Boolean(modelCatalogError) ||
+        !selectedFormModel ||
+        (selectedFormModel.capabilities.reasoning &&
+          selectedFormEfforts.length > 0 &&
+          (!selectedFormReasoning || !selectedFormEfforts.includes(selectedFormReasoning))) ||
+        (selectedFormReasoning !== undefined &&
+          (!selectedFormModel.capabilities.reasoning ||
+            !selectedFormEfforts.includes(selectedFormReasoning)))),
+  );
+
+  const changeFormProvider = (providerId: string) => {
+    const normalizedProviderId = providerId.trim();
+    setModelCatalogError(null);
+    if (!normalizedProviderId) {
+      setForm((current) => ({ ...current, modelRef: undefined }));
+      return;
+    }
+    setForm((current) => ({
+      ...current,
+      modelRef: { providerId: normalizedProviderId, modelId: "" },
+    }));
+    void loadProviderModels(normalizedProviderId);
+  };
+
+  const changeFormModel = (modelId: string) => {
+    const providerId = form.modelRef?.providerId;
+    if (!providerId || !modelId) return;
+    setModelCatalogError(null);
+    const model = (modelsByProvider[providerId] ?? []).find((candidate) => candidate.id === modelId);
+    const effort = chooseDefaultEffort(model);
+    setForm((current) => ({
+      ...current,
+      modelRef: {
+        providerId,
+        modelId,
+        ...(effort ? { reasoning: { effort } } : {}),
+      },
+    }));
+  };
+
+  const changeFormReasoning = (effort: ReasoningEffort | undefined) => {
+    setForm((current) => {
+      if (!current.modelRef) return current;
+      const { reasoning: _reasoning, ...withoutReasoning } = current.modelRef;
+      return {
+        ...current,
+        modelRef: {
+          ...withoutReasoning,
+          ...(effort ? { reasoning: { effort } } : {}),
+        },
+      };
+    });
+  };
+
+  const retryModelCatalog = () => {
+    void refreshModelProviders();
+    if (form.modelRef?.providerId) {
+      void loadProviderModels(form.modelRef.providerId, true);
+    }
+  };
+
   const refreshMessages = useCallback(async (agentId: string) => {
     const result = await api.messages(agentId);
     if (mountedRef.current && selectedIdRef.current === agentId) {
@@ -108,9 +435,50 @@ export default function App() {
     }
   }, []);
 
+  const refreshPreview = useCallback(async (
+    agentId: string,
+    options: { clearActionErrorOnSuccess?: boolean } = {},
+  ) => {
+    try {
+      const result = await api.getPreview(agentId);
+      if (mountedRef.current && selectedIdRef.current === agentId) {
+        setPreview(result.preview);
+        if (options.clearActionErrorOnSuccess) setPreviewActionError(null);
+      }
+      if (["starting", "running", "failed"].includes(result.preview.status)) {
+        try {
+          const logs = await api.getPreviewLogs(agentId, 100);
+          if (mountedRef.current && selectedIdRef.current === agentId) {
+            setPreviewLogs(logs.logs);
+          }
+        } catch {
+          // Logs are supplemental; keep the status panel useful if the
+          // runtime exits between status and log requests.
+        }
+      } else if (mountedRef.current && selectedIdRef.current === agentId) {
+        setPreviewLogs([]);
+      }
+      return result.preview;
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 404) {
+        if (mountedRef.current && selectedIdRef.current === agentId) {
+          setPreview(null);
+          setPreviewLogs([]);
+          if (options.clearActionErrorOnSuccess) setPreviewActionError(null);
+        }
+        return null;
+      }
+      throw reason;
+    }
+  }, []);
+
   const bootstrap = useCallback(async () => {
-    await Promise.all([refreshAgents(), api.system().then(setSystem)]);
-  }, [refreshAgents]);
+    await Promise.all([
+      refreshAgents(),
+      api.system().then(setSystem),
+      refreshModelProviders(),
+    ]);
+  }, [refreshAgents, refreshModelProviders]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -129,6 +497,9 @@ export default function App() {
 
   useEffect(() => {
     setActiveRun(null);
+    setPreview(null);
+    setPreviewLogs([]);
+    setPreviewActionError(null);
     setShowSettings(false);
     if (!selectedId) {
       setMessages([]);
@@ -148,7 +519,24 @@ export default function App() {
       .catch((reason) =>
         setError(reason instanceof Error ? reason.message : String(reason)),
       );
-  }, [refreshMessages, selectedId]);
+    void refreshPreview(selectedId, { clearActionErrorOnSuccess: true }).catch((reason) => {
+      if (mountedRef.current && selectedIdRef.current === selectedId) {
+        setPreviewActionError(toPreviewActionError(reason));
+      }
+    });
+  }, [refreshMessages, refreshPreview, selectedId]);
+
+  useEffect(() => {
+    if (!selectedId || !preview || !["starting", "running"].includes(preview.status)) return;
+    const interval = window.setInterval(() => {
+      void refreshPreview(selectedId, { clearActionErrorOnSuccess: true }).catch((reason) => {
+        if (mountedRef.current && selectedIdRef.current === selectedId) {
+          setPreviewActionError(toPreviewActionError(reason));
+        }
+      });
+    }, 2_000);
+    return () => window.clearInterval(interval);
+  }, [preview?.status, refreshPreview, selectedId]);
 
   useEffect(() => {
     if (selected) {
@@ -156,9 +544,34 @@ export default function App() {
         name: selected.name,
         description: selected.description,
         instructions: selected.instructions,
+        ...(selected.modelRef ? { modelRef: selected.modelRef } : {}),
       });
     }
   }, [selected]);
+
+  useEffect(() => {
+    if (!showCreate || form.modelRef || modelProvidersLoading || !defaultWorkerModel) return;
+    setForm((current) =>
+      current.modelRef ? current : { ...current, modelRef: defaultWorkerModel },
+    );
+    void loadProviderModels(defaultWorkerModel.providerId);
+  }, [
+    defaultWorkerModel,
+    form.modelRef,
+    loadProviderModels,
+    modelProvidersLoading,
+    showCreate,
+  ]);
+
+  useEffect(() => {
+    const providerId = selected?.modelRef?.providerId;
+    if (providerId) void loadProviderModels(providerId);
+  }, [loadProviderModels, selected?.id, selected?.modelRef?.providerId]);
+
+  useEffect(() => {
+    const providerId = showSettings ? form.modelRef?.providerId : undefined;
+    if (providerId) void loadProviderModels(providerId);
+  }, [form.modelRef?.providerId, loadProviderModels, showSettings]);
 
   useEffect(() => {
     messageEnd.current?.scrollIntoView({ behavior: "smooth" });
@@ -166,10 +579,11 @@ export default function App() {
 
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (modelSelectionInvalid) return;
     setBusy(true);
     setError(null);
     try {
-      const { agent } = await api.createAgent(form);
+      const { agent } = await api.createAgent(formPayload(form));
       await refreshAgents();
       setSelectedId(agent.id);
       setShowCreate(false);
@@ -183,11 +597,11 @@ export default function App() {
 
   const saveAgent = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!selected) return;
+    if (!selected || modelSelectionInvalid) return;
     setBusy(true);
     setError(null);
     try {
-      await api.updateAgent(selected.id, form);
+      await api.updateAgent(selected.id, formPayload(form));
       await refreshAgents();
       setShowSettings(false);
     } catch (reason) {
@@ -230,6 +644,43 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const runPreviewAction = async (action: "start" | "restart" | "stop") => {
+    if (!selected) return;
+    setPreviewBusy(action);
+    setPreviewActionError(null);
+    try {
+      const result = action === "start"
+        ? await api.startPreview(selected.id)
+        : action === "restart"
+          ? await api.restartPreview(selected.id)
+          : await api.stopPreview(selected.id);
+      if (selectedIdRef.current === selected.id) {
+        setPreview(result.preview);
+        if (result.preview.status === "running") {
+          const logs = await api.getPreviewLogs(selected.id, 100).catch(() => null);
+          if (logs) setPreviewLogs(logs.logs);
+        } else {
+          setPreviewLogs([]);
+        }
+      }
+      if (mountedRef.current && selectedIdRef.current === selected.id) {
+        setPreviewActionError(null);
+      }
+    } catch (reason) {
+      if (mountedRef.current && selectedIdRef.current === selected.id) {
+        setPreviewActionError(toPreviewActionError(reason));
+      }
+      await refreshPreview(selected.id).catch(() => undefined);
+    } finally {
+      setPreviewBusy(null);
+    }
+  };
+
+  const openPreview = () => {
+    if (!preview?.url) return;
+    window.open(preview.url, "_blank", "noopener,noreferrer");
   };
 
   const pollRun = async (runId: string, agentId: string) => {
@@ -507,6 +958,7 @@ export default function App() {
         {workspace === "orchestration" ? (
           <OrchestrationWorkspace
             agents={agents}
+            modelProviders={modelProviders}
             orchestration={orchestration}
             composerOpen={composerOpen}
             onComposerOpenChange={setComposerOpen}
@@ -545,6 +997,23 @@ export default function App() {
                   <StatusPill status={selected.status} />
                 </div>
                 <p>{selected.description || "A Codex coding Agent in an isolated workspace."}</p>
+                <div className="agent-header-model">
+                  <span className="eyebrow">Worker model</span>
+                  <strong>
+                    {formatWorkerModelRef(
+                      selected.modelRef,
+                      modelProviders,
+                      selected.modelRef?.providerId
+                        ? modelsByProvider[selected.modelRef.providerId] ?? []
+                        : [],
+                    )}
+                  </strong>
+                  {selectedAgentReasoningSupported && (
+                    <span>
+                      Reasoning: {formatReasoningEffort(selectedAgentReasoning)}
+                    </span>
+                  )}
+                </div>
               </div>
               <div className="header-actions">
                 <button
@@ -612,14 +1081,41 @@ export default function App() {
                     maxLength={10_000}
                   />
                 </label>
+                <WorkerModelFields
+                  providers={modelProviders}
+                  models={selectedFormModels}
+                  value={form.modelRef}
+                  loadingProviders={modelProvidersLoading}
+                  loadingModels={selectedFormModelsLoading}
+                  catalogError={modelCatalogError}
+                  disabled={busy}
+                  onProviderChange={changeFormProvider}
+                  onModelChange={changeFormModel}
+                  onReasoningChange={changeFormReasoning}
+                  onRetry={retryModelCatalog}
+                />
                 <div className="panel-footer">
                   <code>{selected.workspacePath}</code>
-                  <button className="button button-primary" disabled={busy}>
+                  <button
+                    className="button button-primary"
+                    disabled={busy || modelSelectionInvalid}
+                  >
                     {busy ? <Spinner /> : "Save changes"}
                   </button>
                 </div>
               </form>
             )}
+
+            <PreviewPanel
+              preview={preview}
+              logs={previewLogs}
+              busy={previewBusy}
+              actionError={previewActionError}
+              onStart={() => void runPreviewAction("start")}
+              onRestart={() => void runPreviewAction("restart")}
+              onStop={() => void runPreviewAction("stop")}
+              onOpen={openPreview}
+            />
 
             <section className="playground">
               <div className="playground-topbar">
@@ -735,10 +1231,7 @@ export default function App() {
                 <p>Create a workspace, give Codex a job, and continue the conversation here.</p>
                 <button
                   className="button button-primary"
-                  onClick={() => {
-                    setForm(emptyForm);
-                    setShowCreate(true);
-                  }}
+                  onClick={openCreate}
                 >
                   Create your first Agent
                 </button>
@@ -796,6 +1289,20 @@ export default function App() {
                 maxLength={10_000}
               />
             </label>
+            <WorkerModelFields
+              providers={modelProviders}
+              models={selectedFormModels}
+              value={form.modelRef}
+              loadingProviders={modelProvidersLoading}
+              loadingModels={selectedFormModelsLoading}
+              catalogError={modelCatalogError}
+              disabled={busy}
+              isNew
+              onProviderChange={changeFormProvider}
+              onModelChange={changeFormModel}
+              onReasoningChange={changeFormReasoning}
+              onRetry={retryModelCatalog}
+            />
             <div className="modal-footer">
               <button
                 type="button"
@@ -804,7 +1311,10 @@ export default function App() {
               >
                 Cancel
               </button>
-              <button className="button button-primary" disabled={busy}>
+              <button
+                className="button button-primary"
+                disabled={busy || modelSelectionInvalid}
+              >
                 {busy ? <Spinner /> : "Create Agent"}
               </button>
             </div>

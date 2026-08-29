@@ -4,6 +4,10 @@ import type {
   OrchestrationSession,
   OrchestrationTurn,
 } from "./orchestration/types.js";
+import type { ModelRef, WorkerRuntimeModelConfig } from "./models/types.js";
+import type { PreviewRecord } from "./preview/preview-types.js";
+
+export type { ModelRef, WorkerRuntimeModelConfig } from "./models/types.js";
 
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
@@ -15,6 +19,8 @@ export interface Agent {
   description: string;
   instructions: string;
   status: AgentStatus;
+  /** Omitted on legacy records; those resolve to the configured default. */
+  modelRef?: ModelRef;
   workspacePath: string;
   codexThreadId: string | null;
   lastError: string | null;
@@ -59,18 +65,22 @@ export interface Database {
   orchestrationTurns: OrchestrationTurn[];
   orchestrationEvents: OrchestrationEvent[];
   orchestrationContinuationPrompts: OrchestrationContinuationPrompt[];
+  /** Additive Wave 7 collection; absent in legacy v1 stores. */
+  previews: PreviewRecord[];
 }
 
 export interface CreateAgentInput {
   name: string;
   description?: string | undefined;
   instructions?: string | undefined;
+  modelRef?: ModelRef | undefined;
 }
 
 export interface UpdateAgentInput {
   name?: string | undefined;
   description?: string | undefined;
   instructions?: string | undefined;
+  modelRef?: ModelRef | undefined;
 }
 
 export interface RunnerResult {
@@ -84,6 +94,8 @@ export interface RunnerRequest {
   workspacePath: string;
   prompt: string;
   threadId: string | null;
+  /** Resolved worker settings; never contains credentials. */
+  model?: WorkerRuntimeModelConfig;
 }
 
 export interface AgentRunner {

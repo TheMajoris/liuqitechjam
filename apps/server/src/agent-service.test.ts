@@ -8,6 +8,7 @@ import { RunCancelledError } from "./errors.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import type { PreviewLifecycleCleanup } from "./preview/preview-service.js";
 
 class FakeRunner implements AgentRunner {
   async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -20,6 +21,27 @@ class FakeRunner implements AgentRunner {
   async cancel(): Promise<boolean> {
     return false;
   }
+  async isAvailable(): Promise<boolean> {
+    return true;
+  }
+}
+
+class CapturingRunner implements AgentRunner {
+  readonly requests: RunnerRequest[] = [];
+
+  async run(request: RunnerRequest): Promise<RunnerResult> {
+    this.requests.push(structuredClone(request));
+    return {
+      output: "Completed: " + request.prompt,
+      threadId: request.threadId ?? "captured-thread",
+      usage: null,
+    };
+  }
+
+  async cancel(): Promise<boolean> {
+    return false;
+  }
+
   async isAvailable(): Promise<boolean> {
     return true;
   }
@@ -67,7 +89,14 @@ afterEach(async () => {
   );
 });
 
-async function makeService(runner: AgentRunner = new FakeRunner()): Promise<AgentService> {
+async function makeService(
+  runner: AgentRunner = new FakeRunner(),
+  options: {
+    curatedModels?: string;
+    arkModel?: string;
+    previewLifecycle?: PreviewLifecycleCleanup;
+  } = {},
+): Promise<AgentService> {
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
   temporaryDirectories.push(root);
   const config = loadConfig({
@@ -76,19 +105,78 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
     AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
     CODEX_HOME: path.join(root, "codex"),
     ARK_API_KEY: "test-key",
-    ARK_MODEL: "ep-test",
+    ARK_MODEL: options.arkModel ?? "ep-test",
+    WORKER_CURATED_MODELS: options.curatedModels ?? "",
   });
   const service = new AgentService(
     config,
     new JsonStore(path.join(root, "data", "db.json")),
     new WorkspaceManager(path.join(root, "workspaces")),
     runner,
+    undefined,
+    options.previewLifecycle,
   );
   await service.initialize();
   return service;
 }
 
 describe("Agent lifecycle", () => {
+  it("assigns the configured default model to a new Agent", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Defaulted" });
+
+    expect(agent.modelRef).toEqual({
+      providerId: "volcengine_ark",
+      modelId: "ep-test",
+    });
+  });
+
+  it("persists an explicit model assignment and forwards it per run", async () => {
+    const runner = new CapturingRunner();
+    const service = await makeService(runner, { curatedModels: "ep-worker-b" });
+    const agent = await service.createAgent({
+      name: "Assigned",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-worker-b" },
+    });
+
+    expect(agent.modelRef).toEqual({
+      providerId: "volcengine_ark",
+      modelId: "ep-worker-b",
+    });
+    const { run } = await service.sendMessage(agent.id, "use the assignment");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    expect(runner.requests[0]?.model).toEqual({
+      providerId: "volcengine_ark",
+      modelId: "ep-worker-b",
+      codexModel: "ep-worker-b",
+      usesDefaultModel: false,
+    });
+  });
+
+  it("resets only the active thread when the worker model changes", async () => {
+    const runner = new CapturingRunner();
+    const service = await makeService(runner, { curatedModels: "ep-worker-b" });
+    const agent = await service.createAgent({
+      name: "Session reset",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-worker-b" },
+    });
+    const first = await service.sendMessage(agent.id, "first model");
+    await expect.poll(() => service.getRun(first.run.id).status).toBe("completed");
+    expect(service.getAgent(agent.id).codexThreadId).toBe("captured-thread");
+
+    const updated = await service.updateAgent(agent.id, {
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
+    expect(updated.codexThreadId).toBeNull();
+    expect(service.getRuns(agent.id)).toHaveLength(1);
+    expect(service.getMessages(agent.id)).toHaveLength(2);
+
+    const second = await service.sendMessage(agent.id, "second model");
+    await expect.poll(() => service.getRun(second.run.id).status).toBe("completed");
+    expect(runner.requests.at(-1)?.threadId).toBeNull();
+    expect(runner.requests.at(-1)?.model?.modelId).toBe("ep-test");
+  });
+
   it("creates, updates, stops, starts and deletes an Agent", async () => {
     const service = await makeService();
     const agent = await service.createAgent({ name: "Builder" });
@@ -99,6 +187,25 @@ describe("Agent lifecycle", () => {
     expect((await service.startAgent(agent.id)).status).toBe("ready");
     await service.deleteAgent(agent.id);
     expect(service.listAgents()).toHaveLength(0);
+  });
+
+  it("closes the preview start gate before stop and delete cleanup", async () => {
+    let service!: AgentService;
+    const statusesAtCleanup: string[] = [];
+    service = await makeService(new FakeRunner(), {
+      previewLifecycle: {
+        stopForAgent: async (agentId) => {
+          statusesAtCleanup.push(service.getAgent(agentId).status);
+        },
+      },
+    });
+    const agent = await service.createAgent({ name: "Preview owner" });
+
+    await service.stopAgent(agent.id);
+    await service.startAgent(agent.id);
+    await service.deleteAgent(agent.id);
+
+    expect(statusesAtCleanup).toEqual(["stopped", "stopped"]);
   });
 
   it("persists a playground conversation", async () => {

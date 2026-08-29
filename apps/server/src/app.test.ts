@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import type { AgentService } from "./agent-service.js";
+import type { PreviewServiceContract } from "./app.js";
+import { PreviewError } from "./preview/preview-errors.js";
+import type { PreviewView } from "./preview/preview-types.js";
 
 const service = {
   listAgents: () => [],
@@ -26,6 +29,69 @@ describe("HTTP boundary", () => {
     await app.close();
   });
 
+  it("exposes the primary preview start/get/logs/stop flow", async () => {
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    const timestamps = {
+      createdAt: "2026-08-29T00:00:00.000Z",
+      updatedAt: "2026-08-29T00:00:01.000Z",
+    };
+    const preview: PreviewView = {
+      id: "22222222-2222-4222-8222-222222222222",
+      agentId,
+      status: "running",
+      host: "127.0.0.1",
+      hostPort: 41_231,
+      url: "http://127.0.0.1:41231",
+      errorCode: null,
+      errorMessage: null,
+      ...timestamps,
+      startedAt: timestamps.createdAt,
+      stoppedAt: null,
+    };
+    const previewService: PreviewServiceContract = {
+      start: async () => preview,
+      get: async () => preview,
+      restart: async () => preview,
+      stop: async () => ({ ...preview, status: "stopped", url: null }),
+      logs: async () => ({ preview, logs: ["ready"], truncated: false }),
+    };
+    const app = await createApp(
+      loadConfig({ NODE_ENV: "test" }),
+      service,
+      undefined,
+      undefined,
+      previewService,
+    );
+
+    const started = await app.inject({
+      method: "POST",
+      url: "/api/agents/" + agentId + "/preview/start",
+    });
+    expect(started.statusCode).toBe(202);
+    expect(started.json()).toMatchObject({ preview: { status: "running" } });
+
+    const inspected = await app.inject({
+      method: "GET",
+      url: "/api/agents/" + agentId + "/preview",
+    });
+    expect(inspected.statusCode).toBe(200);
+
+    const logs = await app.inject({
+      method: "GET",
+      url: "/api/agents/" + agentId + "/preview/logs?tail=1",
+    });
+    expect(logs.statusCode).toBe(200);
+    expect(logs.json().logs).toEqual(["ready"]);
+
+    const stopped = await app.inject({
+      method: "POST",
+      url: "/api/agents/" + agentId + "/preview/stop",
+    });
+    expect(stopped.statusCode).toBe(202);
+    expect(stopped.json()).toMatchObject({ preview: { status: "stopped" } });
+    await app.close();
+  });
+
   it("preserves Fastify client error status codes", async () => {
     const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
     const malformed = await app.inject({
@@ -43,6 +109,49 @@ describe("HTTP boundary", () => {
       payload: JSON.stringify({ name: "x".repeat(1_100_000) }),
     });
     expect(oversized.statusCode).toBe(413);
+    await app.close();
+  });
+
+  it("preserves the normalized preview error message and code", async () => {
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    const previewService: PreviewServiceContract = {
+      start: async () => {
+        throw new PreviewError(
+          "PREVIEW_COMMAND_NOT_FOUND",
+          422,
+          "No supported preview entrypoint was found",
+        );
+      },
+      get: async () => {
+        throw new PreviewError("PREVIEW_NOT_FOUND", 404, "Preview not found");
+      },
+      restart: async () => {
+        throw new PreviewError("PREVIEW_START_FAILED", 500, "Preview could not restart");
+      },
+      stop: async () => {
+        throw new PreviewError("PREVIEW_NOT_FOUND", 404, "Preview not found");
+      },
+      logs: async () => {
+        throw new PreviewError("PREVIEW_LOGS_FAILED", 500, "Preview logs could not be read");
+      },
+    };
+    const app = await createApp(
+      loadConfig({ NODE_ENV: "test" }),
+      service,
+      undefined,
+      undefined,
+      previewService,
+    );
+
+    const failed = await app.inject({
+      method: "POST",
+      url: "/api/agents/" + agentId + "/preview/start",
+    });
+    expect(failed.statusCode).toBe(422);
+    expect(failed.json()).toEqual({
+      error: "No supported preview entrypoint was found",
+      errorCode: "PREVIEW_COMMAND_NOT_FOUND",
+    });
     await app.close();
   });
 });

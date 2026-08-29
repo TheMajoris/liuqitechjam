@@ -6,6 +6,7 @@ import {
   OrchestrationSessionSchema,
   OrchestrationTurnSchema,
 } from "./orchestration/schemas.js";
+import { PreviewRecordSchema } from "./preview/preview-types.js";
 import type { Database } from "./types.js";
 
 const emptyDatabase = (): Database => ({
@@ -17,6 +18,7 @@ const emptyDatabase = (): Database => ({
   orchestrationTurns: [],
   orchestrationEvents: [],
   orchestrationContinuationPrompts: [],
+  previews: [],
 });
 
 const ORCHESTRATION_COLLECTIONS = [
@@ -25,6 +27,7 @@ const ORCHESTRATION_COLLECTIONS = [
   "orchestrationEvents",
   "orchestrationContinuationPrompts",
 ] as const;
+const ADDITIVE_COLLECTIONS = [...ORCHESTRATION_COLLECTIONS, "previews"] as const;
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -50,7 +53,7 @@ function normalizeDatabase(value: unknown): Database {
   }
 
   const normalized: UnknownRecord = { ...value };
-  for (const collection of ORCHESTRATION_COLLECTIONS) {
+  for (const collection of ADDITIVE_COLLECTIONS) {
     if (Object.prototype.hasOwnProperty.call(value, collection)) {
       if (!Array.isArray(value[collection])) {
         throw new Error("Unsupported database format");
@@ -76,11 +79,13 @@ function normalizeDatabase(value: unknown): Database {
   const validContinuationPrompts = OrchestrationContinuationPromptSchema.array().safeParse(
     normalized.orchestrationContinuationPrompts,
   );
+  const validPreviews = PreviewRecordSchema.array().safeParse(normalized.previews);
   if (
     !validSessions.success ||
     !validTurns.success ||
     !validEvents.success ||
-    !validContinuationPrompts.success
+    !validContinuationPrompts.success ||
+    !validPreviews.success
   ) {
     throw new Error("Unsupported database format");
   }
@@ -89,7 +94,7 @@ function normalizeDatabase(value: unknown): Database {
 }
 
 function needsOrchestrationMigration(value: UnknownRecord): boolean {
-  return ORCHESTRATION_COLLECTIONS.some(
+  return ADDITIVE_COLLECTIONS.some(
     (collection) => !Object.prototype.hasOwnProperty.call(value, collection),
   );
 }
