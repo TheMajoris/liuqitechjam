@@ -1,5 +1,9 @@
 import { useEffect, useRef } from "react";
-import type { Agent, CreateOrchestrationInput } from "../../types";
+import type {
+  Agent,
+  CreateOrchestrationInput,
+  ModelProviderDescriptor,
+} from "../../types";
 import { OrchestrationComposer } from "./OrchestrationComposer";
 
 interface NewConversationDialogProps {
@@ -8,6 +12,7 @@ interface NewConversationDialogProps {
   disabled?: boolean;
   onCreate: (input: CreateOrchestrationInput) => Promise<unknown>;
   onClose: () => void;
+  modelProviders?: ModelProviderDescriptor[];
 }
 
 /**
@@ -21,6 +26,7 @@ export function NewConversationDialog({
   disabled = false,
   onCreate,
   onClose,
+  modelProviders = [],
 }: NewConversationDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
 
@@ -65,6 +71,7 @@ export function NewConversationDialog({
         {open && (
           <OrchestrationComposer
             agents={agents}
+            modelProviders={modelProviders}
             disabled={disabled}
             onCreate={onCreate}
             onCancel={onClose}

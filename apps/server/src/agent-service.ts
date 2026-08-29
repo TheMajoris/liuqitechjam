@@ -2,6 +2,17 @@ import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
+import { ModelCatalogError } from "./models/errors.js";
+import {
+  createWorkerModelResolver,
+  modelRefsEqual,
+  normalizeModelRef,
+} from "./models/worker-model-resolver.js";
+import type {
+  ModelRef,
+  WorkerModelResolver,
+  WorkerRuntimeModelConfig,
+} from "./models/types.js";
 import { JsonStore } from "./store.js";
 import type {
   Agent,
@@ -30,6 +41,14 @@ function waitError(name: "AbortError" | "TimeoutError", message: string): Error 
   return error;
 }
 
+/** Optional helpers are supplied by the canonical Ark resolver. Keeping them
+ * optional preserves the small WorkerModelResolver injection seam for tests
+ * and future providers. */
+type AgentModelResolver = WorkerModelResolver & {
+  defaultModelRef?: () => ModelRef | undefined;
+  effectiveModelRef?: (modelRef: ModelRef | undefined) => ModelRef | undefined;
+};
+
 export class AgentService {
   private readonly activeExecutions = new Map<
     string,
@@ -44,6 +63,8 @@ export class AgentService {
     private readonly store: JsonStore,
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
+    private readonly modelResolver: AgentModelResolver =
+      createWorkerModelResolver(config),
   ) {}
 
   async initialize(): Promise<void> {
@@ -83,12 +104,14 @@ export class AgentService {
   async createAgent(input: CreateAgentInput): Promise<Agent> {
     const timestamp = now();
     const id = randomUUID();
+    const modelRef = this.resolveModelRefForCreate(input.modelRef);
     const agent: Agent = {
       id,
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
       instructions: input.instructions?.trim() ?? "",
       status: "ready",
+      ...(modelRef === undefined ? {} : { modelRef }),
       workspacePath: this.workspaces.workspacePath(id),
       codexThreadId: null,
       lastError: null,
@@ -105,6 +128,22 @@ export class AgentService {
     if (current.status === "busy") {
       throw new HttpError(409, "Stop the active run before editing this Agent");
     }
+    const nextModelRef =
+      input.modelRef === undefined
+        ? current.modelRef
+        : this.effectiveModelRef(input.modelRef);
+    if (input.modelRef !== undefined) {
+      // Validate before entering the store mutation so invalid model changes
+      // cannot partially update the Agent or its workspace instructions.
+      this.modelResolver.resolve(input.modelRef);
+    }
+    const currentEffectiveModelRef = this.effectiveModelRef(current.modelRef);
+    const modelChanged = !modelRefsEqual(
+      currentEffectiveModelRef,
+      input.modelRef === undefined
+        ? currentEffectiveModelRef
+        : nextModelRef,
+    );
     const updated = await this.store.mutate((database) => {
       const agent = database.agents.find((item) => item.id === id);
       if (!agent) {
@@ -116,6 +155,18 @@ export class AgentService {
       if (input.name !== undefined) agent.name = input.name.trim();
       if (input.description !== undefined) agent.description = input.description.trim();
       if (input.instructions !== undefined) agent.instructions = input.instructions.trim();
+      if (input.modelRef !== undefined) {
+        if (nextModelRef === undefined) {
+          delete agent.modelRef;
+        } else {
+          agent.modelRef = nextModelRef;
+        }
+      }
+      if (modelChanged) {
+        // Codex sessions are model/provider-specific. Keep the old session
+        // files in CODEX_HOME, but force the next run to create a fresh thread.
+        agent.codexThreadId = null;
+      }
       agent.lastError = null;
       agent.updatedAt = now();
       return structuredClone(agent);
@@ -257,15 +308,18 @@ export class AgentService {
     agentId: string,
     prompt: string,
   ): Promise<{ run: AgentRun; message: Message }> {
-    if (!isArkConfigured(this.config)) {
-      throw new HttpError(
-        503,
-        "Ark is not configured. Set ARK_API_KEY and ARK_MODEL, then restart.",
-      );
-    }
     if (this.agentCancellationLocks.has(agentId)) {
       throw new HttpError(409, "This Agent is currently being cancelled");
     }
+    const agentBeforeRun = this.getAgent(agentId);
+    if (!this.config.arkApiKey || this.config.arkApiKey.startsWith("replace-")) {
+      throw new ModelCatalogError(
+        "MODEL_RUNTIME_CONFIGURATION_INVALID",
+        503,
+        "Worker runtime credentials are not configured.",
+      );
+    }
+    const runtimeModel = this.modelResolver.resolve(agentBeforeRun.modelRef);
     const timestamp = now();
     const runId = randomUUID();
     const run: AgentRun = {
@@ -307,7 +361,7 @@ export class AgentService {
       storedAgent.updatedAt = timestamp;
       return snapshot;
     });
-    const execution = this.executeRun(agentAtStart, run);
+    const execution = this.executeRun(agentAtStart, run, runtimeModel);
     this.activeExecutions.set(agentId, { runId, execution });
     void execution
       .finally(() => {
@@ -338,7 +392,11 @@ export class AgentService {
     };
   }
 
-  private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
+  private async executeRun(
+    agentAtStart: Agent,
+    run: AgentRun,
+    runtimeModel: WorkerRuntimeModelConfig,
+  ): Promise<void> {
     await this.store.mutate((database) => {
       const storedRun = database.runs.find((item) => item.id === run.id);
       if (storedRun) {
@@ -355,6 +413,7 @@ export class AgentService {
         workspacePath: agentAtStart.workspacePath,
         prompt: run.prompt,
         threadId: agentAtStart.codexThreadId,
+        model: runtimeModel,
       });
       const completedAt = now();
       await this.store.mutate((database) => {
@@ -417,6 +476,28 @@ export class AgentService {
         }
       });
     }
+  }
+
+  private resolveModelRefForCreate(modelRef: ModelRef | undefined): ModelRef | undefined {
+    const effective = this.effectiveModelRef(modelRef);
+    // Validate before creating the workspace/store record. In particular, a
+    // malformed explicit ref must not leave a partially-created Agent behind.
+    if (modelRef !== undefined || effective !== undefined) {
+      this.modelResolver.resolve(modelRef);
+    }
+    return effective;
+  }
+
+  private effectiveModelRef(modelRef: ModelRef | undefined): ModelRef | undefined {
+    if (this.modelResolver.effectiveModelRef) {
+      return this.modelResolver.effectiveModelRef(modelRef);
+    }
+    if (modelRef !== undefined) return normalizeModelRef(modelRef);
+    if (!this.config.arkModel) return undefined;
+    return {
+      providerId: "volcengine_ark",
+      modelId: this.config.arkModel,
+    };
   }
 
   private async setStatus(id: string, status: Agent["status"]): Promise<Agent> {

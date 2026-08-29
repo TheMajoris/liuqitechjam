@@ -8,6 +8,14 @@ import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import {
+  createModelRegistry,
+  ModelCatalogError,
+  ModelProviderParamsSchema,
+  ModelRefSchema,
+  ModelScopeQuerySchema,
+  type ModelRegistry,
+} from "./models/index.js";
+import {
   ContinueOrchestrationSchema,
   CreateOrchestrationSchema,
   OrchestrationRouteParamsSchema,
@@ -41,6 +49,7 @@ const createAgentBody = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().max(500).optional(),
   instructions: z.string().max(10_000).optional(),
+  modelRef: ModelRefSchema.optional(),
 });
 const updateAgentBody = createAgentBody.partial().refine(
   (value) => Object.keys(value).length > 0,
@@ -49,6 +58,27 @@ const updateAgentBody = createAgentBody.partial().refine(
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
 });
+
+function parseAgentInput<T extends z.ZodTypeAny>(
+  schema: T,
+  value: unknown,
+): z.output<T> {
+  const parsed = schema.safeParse(value);
+  if (parsed.success) return parsed.data;
+  const hasReasoningIssue = parsed.error.issues.some((issue) =>
+    issue.path[0] === "modelRef" &&
+    issue.path[1] === "reasoning" &&
+    issue.path[2] === "effort",
+  );
+  if (hasReasoningIssue) {
+    throw new ModelCatalogError(
+      "MODEL_REASONING_EFFORT_INVALID",
+      422,
+      "The selected reasoning effort is invalid",
+    );
+  }
+  throw parsed.error;
+}
 
 /** Validation details that are safe to expose at the HTTP boundary. */
 class OrchestrationValidationError extends HttpError {
@@ -107,6 +137,7 @@ export async function createApp(
   config: AppConfig,
   service: AgentService,
   orchestrationService?: OrchestrationServiceContract,
+  modelRegistry: ModelRegistry = createModelRegistry(config),
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -150,6 +181,34 @@ export async function createApp(
   }));
 
   app.get("/api/auth", async () => ({ required: config.authToken.length > 0 }));
+
+  app.get("/api/model-providers", async (request) => {
+    const { scope } = ModelScopeQuerySchema.parse(request.query);
+    let defaultModelRef = null;
+    if (scope === "worker") {
+      try {
+        const resolved = modelRegistry.resolveWorkerModel();
+        defaultModelRef = {
+          providerId: resolved.providerId,
+          modelId: resolved.modelId,
+        };
+      } catch (error) {
+        if (!(error instanceof ModelCatalogError)) throw error;
+      }
+    }
+    return {
+      providers: await modelRegistry.listProviders(scope),
+      ...(scope === "worker" ? { defaultModelRef } : {}),
+    };
+  });
+
+  app.get("/api/model-providers/:providerId/models", async (request) => {
+    const { providerId } = ModelProviderParamsSchema.parse(request.params);
+    const { scope } = ModelScopeQuerySchema.parse(request.query);
+    return {
+      models: await modelRegistry.listModels(providerId, scope),
+    };
+  });
 
   app.post("/api/orchestrations", async (request, reply) => {
     const input = parseOrchestrationInput(request.body);
@@ -206,7 +265,10 @@ export async function createApp(
   app.get("/api/agents", async () => ({ agents: service.listAgents() }));
 
   app.post("/api/agents", async (request, reply) => {
-    const body = createAgentBody.parse(request.body);
+    const body = parseAgentInput(createAgentBody, request.body);
+    if (body.modelRef !== undefined) {
+      modelRegistry.validateWorkerModelRef(body.modelRef);
+    }
     const agent = await service.createAgent(body);
     return reply.code(201).send({ agent });
   });
@@ -218,7 +280,10 @@ export async function createApp(
 
   app.patch("/api/agents/:id", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    const body = updateAgentBody.parse(request.body);
+    const body = parseAgentInput(updateAgentBody, request.body);
+    if (body.modelRef !== undefined) {
+      modelRegistry.validateWorkerModelRef(body.modelRef);
+    }
     return { agent: await service.updateAgent(id, body) };
   });
 
@@ -275,6 +340,7 @@ export async function createApp(
 
   app.setErrorHandler((error, request, reply) => {
     const appError = error instanceof Error ? error : new Error(String(error));
+    const modelError = error instanceof ModelCatalogError ? error : null;
     const validationError = error instanceof z.ZodError;
     const details = validationError
       ? error.issues
@@ -298,6 +364,7 @@ export async function createApp(
     }
     return reply.code(statusCode).send({
       error: appError.message,
+      ...(modelError === null ? {} : { errorCode: modelError.code }),
       ...(details !== undefined ? { details } : {}),
     });
   });

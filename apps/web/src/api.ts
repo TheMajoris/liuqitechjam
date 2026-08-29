@@ -2,9 +2,12 @@ import type {
   Agent,
   AgentRun,
   CreateOrchestrationInput,
+  ModelProvidersResponse,
+  ModelRef,
   Message,
   OrchestrationSession,
   OrchestrationSessionDetail,
+  ProviderModelsResponse,
   SystemInfo,
 } from "./types";
 
@@ -12,8 +15,11 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public readonly status: number,
+    public readonly errorCode: string | null = null,
+    public readonly details: unknown = undefined,
   ) {
     super(message);
+    this.name = "ApiError";
   }
 }
 
@@ -33,9 +39,18 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     ...options,
     headers,
   });
-  const data = (await response.json().catch(() => ({}))) as T & { error?: string };
+  const data = (await response.json().catch(() => ({}))) as T & {
+    error?: string;
+    errorCode?: string;
+    details?: unknown;
+  };
   if (!response.ok) {
-    throw new ApiError(data.error ?? "Request failed", response.status);
+    throw new ApiError(
+      data.error ?? "Request failed",
+      response.status,
+      data.errorCode ?? null,
+      data.details,
+    );
   }
   return data;
 }
@@ -43,11 +58,18 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 export const api = {
   auth: () => request<{ required: boolean }>("/api/auth"),
   system: () => request<SystemInfo>("/api/system"),
+  listModelProviders: () =>
+    request<ModelProvidersResponse>("/api/model-providers"),
+  listProviderModels: (providerId: string) =>
+    request<ProviderModelsResponse>(
+      "/api/model-providers/" + encodeURIComponent(providerId) + "/models",
+    ),
   listAgents: () => request<{ agents: Agent[] }>("/api/agents"),
   createAgent: (body: {
     name: string;
     description: string;
     instructions: string;
+    modelRef?: ModelRef;
   }) =>
     request<{ agent: Agent }>("/api/agents", {
       method: "POST",
@@ -55,7 +77,12 @@ export const api = {
     }),
   updateAgent: (
     id: string,
-    body: { name: string; description: string; instructions: string },
+    body: {
+      name: string;
+      description: string;
+      instructions: string;
+      modelRef?: ModelRef;
+    },
   ) =>
     request<{ agent: Agent }>("/api/agents/" + id, {
       method: "PATCH",

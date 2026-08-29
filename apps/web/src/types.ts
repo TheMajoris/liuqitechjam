@@ -1,6 +1,52 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
+/** Normalized reasoning values shared by the model catalog and Agent forms. */
+export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
+
+export interface ModelRef {
+  providerId: string;
+  modelId: string;
+  reasoning?: {
+    effort?: ReasoningEffort;
+  };
+}
+
+export interface ModelCapabilities {
+  scopes: Array<"worker" | "supervisor">;
+  reasoning: boolean;
+  reasoningEfforts?: ReasoningEffort[];
+}
+
+export interface ModelDescriptor {
+  id: string;
+  label: string;
+  providerId: string;
+  capabilities: ModelCapabilities;
+}
+
+export interface ModelProviderCapabilities {
+  worker: boolean;
+  supervisor: boolean;
+  dynamicModelListing: boolean;
+}
+
+export interface ModelProviderDescriptor {
+  id: string;
+  label: string;
+  capabilities: ModelProviderCapabilities;
+}
+
+/** The provider catalog response never contains credentials or raw errors. */
+export interface ModelProvidersResponse {
+  providers: ModelProviderDescriptor[];
+  defaultModelRef: ModelRef | null;
+}
+
+export interface ProviderModelsResponse {
+  models: ModelDescriptor[];
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -10,6 +56,8 @@ export interface Agent {
   workspacePath: string;
   codexThreadId: string | null;
   lastError: string | null;
+  /** Omitted on legacy persisted Agents, which use the runtime default. */
+  modelRef?: ModelRef;
   createdAt: string;
   updatedAt: string;
 }

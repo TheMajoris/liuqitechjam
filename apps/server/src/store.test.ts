@@ -20,6 +20,41 @@ afterEach(async () => {
 });
 
 describe("JsonStore", () => {
+  it("keeps legacy Agents without modelRef loadable", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
+    temporaryDirectories.push(root);
+    const databasePath = path.join(root, "db.json");
+    await writeFile(
+      databasePath,
+      JSON.stringify({
+        version: 1,
+        agents: [
+          {
+            id: "11111111-1111-4111-8111-111111111111",
+            name: "Legacy",
+            description: "Old Agent",
+            instructions: "Keep working.",
+            status: "ready",
+            workspacePath: "/tmp/legacy-workspace",
+            codexThreadId: "legacy-thread",
+            lastError: null,
+            createdAt: "2026-08-28T00:00:00.000Z",
+            updatedAt: "2026-08-28T00:00:01.000Z",
+          },
+        ],
+        messages: [],
+        runs: [],
+      }),
+      "utf8",
+    );
+
+    const store = new JsonStore(databasePath);
+    await store.initialize();
+    const legacy = store.snapshot().agents[0];
+    expect(legacy?.name).toBe("Legacy");
+    expect(legacy).not.toHaveProperty("modelRef");
+  });
+
   it("creates empty orchestration collections for a new database", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
     temporaryDirectories.push(root);

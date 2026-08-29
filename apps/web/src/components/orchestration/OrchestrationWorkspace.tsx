@@ -1,5 +1,9 @@
 import { useCallback } from "react";
-import type { Agent, CreateOrchestrationInput } from "../../types";
+import type {
+  Agent,
+  CreateOrchestrationInput,
+  ModelProviderDescriptor,
+} from "../../types";
 import { NewConversationDialog } from "./NewConversationDialog";
 import { OrchestrationRunView } from "./OrchestrationRunView";
 import { OrchestrationRunTabs } from "./OrchestrationRunTabs";
@@ -11,6 +15,7 @@ interface OrchestrationWorkspaceProps {
   orchestration: UseOrchestrationResult;
   composerOpen: boolean;
   onComposerOpenChange: (open: boolean) => void;
+  modelProviders?: ModelProviderDescriptor[];
 }
 
 export function OrchestrationWorkspace({
@@ -18,6 +23,7 @@ export function OrchestrationWorkspace({
   orchestration,
   composerOpen,
   onComposerOpenChange,
+  modelProviders = [],
 }: OrchestrationWorkspaceProps) {
   const { detail, detailLoading, sessions, loading, error } = orchestration;
   const replyCount = detail?.turns.length ?? 0;
@@ -98,6 +104,7 @@ export function OrchestrationWorkspace({
               onStart={handleStart}
               onStop={handleStop}
               onDelete={handleDelete}
+              modelProviders={modelProviders}
             />
             <OrchestrationRunTabs
               detail={detail}
@@ -135,6 +142,7 @@ export function OrchestrationWorkspace({
         disabled={orchestration.action !== null}
         onCreate={handleCreate}
         onClose={() => onComposerOpenChange(false)}
+        modelProviders={modelProviders}
       />
     </section>
   );

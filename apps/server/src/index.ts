@@ -7,6 +7,7 @@ import {
   writeCodexConfig,
 } from "./config.js";
 import { createRunner } from "./runner-factory.js";
+import { createModelRegistry, createWorkerModelResolver } from "./models/index.js";
 import { JsonStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
 import { OrchestrationService } from "./orchestration/orchestration-service.js";
@@ -21,7 +22,17 @@ await writeCodexConfig(config);
 const store = new JsonStore(path.join(config.dataDirectory, "launchpad.json"));
 const workspaces = new WorkspaceManager(config.workspaceRoot);
 const runner = createRunner(config);
-const service = new AgentService(config, store, workspaces, runner);
+const workerModelResolver = createWorkerModelResolver(config);
+const modelRegistry = createModelRegistry(config, {
+  workerResolver: workerModelResolver,
+});
+const service = new AgentService(
+  config,
+  store,
+  workspaces,
+  runner,
+  workerModelResolver,
+);
 await service.initialize();
 
 const supervisorSelector = isSupervisorConfigured(config)
@@ -44,7 +55,7 @@ const orchestrationService = new OrchestrationService({
 });
 await orchestrationService.initialize();
 
-const app = await createApp(config, service, orchestrationService);
+const app = await createApp(config, service, orchestrationService, modelRegistry);
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");

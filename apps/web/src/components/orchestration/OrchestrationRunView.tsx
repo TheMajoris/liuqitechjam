@@ -1,5 +1,6 @@
 import type {
   Agent,
+  ModelProviderDescriptor,
   OrchestrationSession,
   OrchestrationSessionDetail,
 } from "../../types";
@@ -20,6 +21,7 @@ interface OrchestrationRunViewProps {
   onStart: (sessionId: string) => void;
   onStop: (sessionId: string) => void;
   onDelete: (sessionId: string) => void;
+  modelProviders?: ModelProviderDescriptor[];
 }
 
 function StatusMark({ status }: { status: OrchestrationSession["status"] }) {
@@ -66,6 +68,7 @@ export function OrchestrationRunView({
   onStart,
   onStop,
   onDelete,
+  modelProviders = [],
 }: OrchestrationRunViewProps) {
   if (!detail) return null;
 
@@ -132,6 +135,7 @@ export function OrchestrationRunView({
         agents={agents}
         currentParticipantId={session.currentParticipantId}
         showOrder={isOrderedMode(session.mode)}
+        modelProviders={modelProviders}
       />
 
       <p className="orch-run-summary" aria-live="polite">

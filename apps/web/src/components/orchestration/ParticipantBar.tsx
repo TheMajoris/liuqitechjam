@@ -1,4 +1,9 @@
-import type { Agent, OrchestrationParticipant } from "../../types";
+import type {
+  Agent,
+  ModelProviderDescriptor,
+  OrchestrationParticipant,
+} from "../../types";
+import { formatAgentWorkerModel } from "../WorkerModelFields";
 import { AgentAvatar } from "./AgentAvatar";
 import { agentName } from "./orchestration-utils";
 
@@ -8,6 +13,8 @@ interface ParticipantBarProps {
   currentParticipantId?: string | null;
   /** Configured order is only shown where execution actually follows it. */
   showOrder?: boolean;
+  /** Worker assignments are display-only Team metadata. */
+  modelProviders?: ModelProviderDescriptor[];
 }
 
 /**
@@ -20,6 +27,7 @@ export function ParticipantBar({
   agents,
   currentParticipantId = null,
   showOrder = false,
+  modelProviders = [],
 }: ParticipantBarProps) {
   if (participants.length === 0) return null;
 
@@ -30,6 +38,7 @@ export function ParticipantBar({
     >
       {participants.map((participant, index) => {
         const name = agentName(agents, participant.agentId);
+        const agent = agents.find((candidate) => candidate.id === participant.agentId);
         const isActive = participant.id === currentParticipantId;
         const focus = participant.role.trim();
         return (
@@ -42,7 +51,12 @@ export function ParticipantBar({
               <span className="orch-participant-pill-order" aria-hidden="true">{index + 1}</span>
             )}
             <AgentAvatar agentId={participant.agentId} name={name} size="sm" />
-            <span className="orch-participant-pill-name">{name}</span>
+            <span className="orch-participant-pill-copy">
+              <span className="orch-participant-pill-name">{name}</span>
+              <span className="orch-participant-pill-model">
+                {formatAgentWorkerModel(agent ?? { modelRef: undefined }, modelProviders)}
+              </span>
+            </span>
             {isActive && <span className="orch-participant-pill-state">speaking</span>}
           </li>
         );

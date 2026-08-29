@@ -810,6 +810,186 @@ textarea:focus {
   margin-top: 13px;
 }
 
+.worker-model-fields {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  border: 1px solid #e4e1d8;
+  border-radius: 12px;
+  padding: 14px;
+  background: #f8f7f2;
+}
+
+.worker-model-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.worker-model-heading h3 {
+  margin: 3px 0 0;
+  color: var(--ink);
+  font-size: 14px;
+  letter-spacing: -0.02em;
+}
+
+.worker-model-help {
+  max-width: 64ch;
+  margin: -2px 0 2px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.worker-model-lock {
+  flex-shrink: 0;
+  border: 1px solid #dedbd2;
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: #787970;
+  background: #eeece6;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.worker-model-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 11px;
+}
+
+.worker-model-grid label {
+  display: grid;
+  gap: 5px;
+  color: #575851;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.worker-model-grid select {
+  width: 100%;
+  height: 40px;
+  margin: 0;
+  border: 1px solid #d9d7cf;
+  border-radius: 9px;
+  padding: 0 10px;
+  color: var(--ink);
+  background: white;
+  font-size: 11px;
+  outline: none;
+  transition: 150ms ease;
+}
+
+.worker-model-grid select:focus {
+  border-color: #8a78e8;
+  box-shadow: 0 0 0 3px rgba(105, 84, 217, 0.11);
+}
+
+.worker-model-grid select:disabled {
+  color: #999a93;
+  background: #efeee9;
+  cursor: not-allowed;
+}
+
+.worker-model-loading,
+.worker-model-inline-status,
+.worker-model-empty,
+.worker-model-error,
+.worker-model-legacy,
+.worker-model-field-error {
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.worker-model-loading,
+.worker-model-inline-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+}
+
+.worker-model-loading {
+  padding: 4px 0;
+}
+
+.worker-model-inline-status {
+  margin-top: 1px;
+}
+
+.worker-model-inline-status .spinner,
+.worker-model-loading .spinner {
+  width: 11px;
+  height: 11px;
+  border-width: 1px;
+}
+
+.worker-model-empty,
+.worker-model-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-radius: 9px;
+  padding: 9px 10px;
+}
+
+.worker-model-empty {
+  color: #6c541b;
+  background: #fff7d8;
+  border: 1px solid #eddda1;
+}
+
+.worker-model-empty span {
+  color: #806a3a;
+}
+
+.worker-model-error {
+  justify-content: space-between;
+  color: #a13f3f;
+  background: #fae8e6;
+  border: 1px solid #edc4c0;
+}
+
+.worker-model-error .button {
+  min-height: 29px;
+  padding: 0 9px;
+  color: #8f3a3a;
+  background: #fff;
+  font-size: 10px;
+}
+
+.worker-model-legacy {
+  margin: 0;
+  color: #777870;
+}
+
+.worker-model-field-error {
+  color: var(--red);
+  font-weight: 600;
+}
+
+.agent-header-model {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 9px;
+  margin-top: 9px;
+}
+
+.agent-header-model strong {
+  color: #4a4b46;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.agent-header-model > span:last-child {
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .panel-footer {
   margin-top: 13px;
   display: flex;
@@ -1333,6 +1513,15 @@ textarea:focus {
   .form-grid {
     grid-template-columns: 1fr;
   }
+
+  .worker-model-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .worker-model-heading {
+    flex-direction: column;
+    gap: 7px;
+  }
 }
 
 
@@ -1760,6 +1949,13 @@ textarea:focus {
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.orch-agent-chip-model {
+  max-width: 25ch;
+  font-size: 9px !important;
+  font-weight: 600;
+  letter-spacing: 0.01em;
 }
 
 .orch-agent-status {
@@ -2204,6 +2400,12 @@ textarea:focus {
   font-size: 12px;
 }
 
+.orch-participant-pill-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
 .orch-participant-pill.is-active {
   border-color: var(--orch-accent);
   background: var(--orch-accent-soft);
@@ -2211,6 +2413,15 @@ textarea:focus {
 
 .orch-participant-pill-name {
   font-weight: 600;
+}
+
+.orch-participant-pill-model {
+  max-width: 24ch;
+  overflow: hidden;
+  color: var(--orch-muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .orch-participant-pill-state {

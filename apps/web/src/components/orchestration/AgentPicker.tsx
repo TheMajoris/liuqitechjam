@@ -1,6 +1,11 @@
 import { useState } from "react";
-import type { Agent, OrchestrationParticipant } from "../../types";
+import type {
+  Agent,
+  ModelProviderDescriptor,
+  OrchestrationParticipant,
+} from "../../types";
 import { AgentAvatar } from "./AgentAvatar";
+import { formatAgentWorkerModel } from "../WorkerModelFields";
 import {
   agentName,
   createParticipant,
@@ -18,6 +23,8 @@ interface AgentPickerProps {
    * captured, whether or not it is shown.
    */
   showOrder?: boolean;
+  /** Worker assignments are informational and cannot be changed here. */
+  modelProviders?: ModelProviderDescriptor[];
   onChange: (participants: OrchestrationParticipant[]) => void;
 }
 
@@ -27,6 +34,7 @@ export function AgentPicker({
   disabled = false,
   error,
   showOrder = false,
+  modelProviders = [],
   onChange,
 }: AgentPickerProps) {
   const [catalogOpen, setCatalogOpen] = useState(true);
@@ -148,6 +156,9 @@ export function AgentPicker({
                     <span className="orch-agent-chip-copy">
                       <strong>{agent.name}</strong>
                       <span>{agent.description || "Coding Agent"}</span>
+                      <span className="orch-agent-chip-model">
+                        {formatAgentWorkerModel(agent, modelProviders)}
+                      </span>
                     </span>
                     {agent.status === "ready" ? (
                       <span className="orch-sr-only">Ready</span>

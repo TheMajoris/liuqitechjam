@@ -33,6 +33,13 @@ export function buildCodexArgs(
     "-C",
     workspacePath,
   ];
+  // A legacy/default Agent already gets its model from the trusted CODEX_HOME
+  // config. Explicit assignments are passed per run so the same process can
+  // safely serve Agents with different worker models. Never pass credentials
+  // through argv; only the resolver-produced Codex model id is accepted here.
+  if (request.model && !request.model.usesDefaultModel) {
+    args.push("--model", request.model.codexModel);
+  }
   if (request.threadId) {
     args.push("resume", request.threadId, request.prompt);
   } else {

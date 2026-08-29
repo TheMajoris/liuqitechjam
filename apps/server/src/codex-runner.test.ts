@@ -37,6 +37,44 @@ describe("Codex runner protocol", () => {
     expect(args.slice(-3)).toEqual(["resume", "thread-123", "add tests"]);
   });
 
+  it("passes the resolved worker model for new and resumed sessions", () => {
+    const request = {
+      agentId: "agent",
+      workspacePath: "/tmp/workspace",
+      prompt: "continue",
+      threadId: "thread-123",
+      model: {
+        providerId: "volcengine_ark",
+        modelId: "ep-worker-b",
+        codexModel: "ep-worker-b",
+        usesDefaultModel: false,
+      },
+    };
+    const args = buildCodexArgs(request, "workspace-write");
+    expect(args).toContain("--model");
+    expect(args[args.indexOf("--model") + 1]).toBe("ep-worker-b");
+    expect(args.slice(-3)).toEqual(["resume", "thread-123", "continue"]);
+  });
+
+  it("leaves the configured default model in CODEX_HOME for legacy/default runs", () => {
+    const args = buildCodexArgs(
+      {
+        agentId: "agent",
+        workspacePath: "/tmp/workspace",
+        prompt: "use the default",
+        threadId: null,
+        model: {
+          providerId: "volcengine_ark",
+          modelId: "ep-default",
+          codexModel: "ep-default",
+          usesDefaultModel: true,
+        },
+      },
+      "workspace-write",
+    );
+    expect(args).not.toContain("--model");
+  });
+
   it("extracts the session, final message and usage", () => {
     const parsed = {
       messages: [] as string[],
