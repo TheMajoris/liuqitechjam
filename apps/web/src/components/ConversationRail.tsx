@@ -30,7 +30,11 @@ export function ConversationRail({
   onRename: (conversationId: string, title: string) => void;
   onDelete: (conversationId: string) => void;
 }) {
-  const [menuFor, setMenuFor] = useState<string | null>(null);
+  // The menu is anchored in viewport coordinates because the list scrolls:
+  // an absolutely positioned dropdown would be clipped by that scroll box.
+  const [menuFor, setMenuFor] = useState<{ id: string; top: number; right: number } | null>(
+    null,
+  );
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<AgentConversation | null>(null);
@@ -41,11 +45,18 @@ export function ConversationRail({
   }, [renamingId]);
 
   // A click anywhere else closes the compact menu, the way a real menu behaves.
+  // Scrolling or resizing would strand it away from its row, so those close it too.
   useEffect(() => {
     if (!menuFor) return;
     const close = () => setMenuFor(null);
     window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", close, true);
+    };
   }, [menuFor]);
 
   const commitRename = (conversation: AgentConversation) => {
@@ -129,11 +140,18 @@ export function ConversationRail({
                   type="button"
                   className="conversation-menu-button"
                   aria-label={"Actions for " + conversation.title}
-                  aria-expanded={menuFor === conversation.id}
+                  aria-expanded={menuFor?.id === conversation.id}
                   onClick={(event) => {
                     event.stopPropagation();
+                    const rect = event.currentTarget.getBoundingClientRect();
                     setMenuFor((current) =>
-                      current === conversation.id ? null : conversation.id,
+                      current?.id === conversation.id
+                        ? null
+                        : {
+                            id: conversation.id,
+                            top: rect.bottom + 4,
+                            right: window.innerWidth - rect.right,
+                          },
                     );
                   }}
                 >
@@ -142,8 +160,12 @@ export function ConversationRail({
               </>
             )}
 
-            {menuFor === conversation.id && (
-              <div className="conversation-menu" role="menu">
+            {menuFor?.id === conversation.id && (
+              <div
+                className="conversation-menu"
+                role="menu"
+                style={{ top: menuFor.top, right: menuFor.right }}
+              >
                 <button
                   type="button"
                   role="menuitem"

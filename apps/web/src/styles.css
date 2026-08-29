@@ -4042,11 +4042,14 @@ textarea:focus {
   opacity: 1;
 }
 
+/*
+ * Fixed, not absolute: the conversation list is a scroll container, and an
+ * absolutely positioned menu is clipped by it — which made Delete unreachable.
+ * Position comes from the trigger's viewport rect.
+ */
 .conversation-menu {
-  position: absolute;
-  top: 100%;
-  right: 0;
-  z-index: 8;
+  position: fixed;
+  z-index: 60;
   min-width: 128px;
   display: flex;
   flex-direction: column;
