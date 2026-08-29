@@ -28,6 +28,7 @@ export function createMastraOrchestrationWorkflow(
     id: `${options.id}-turn`,
     invoker: options.invoker,
     perAgentTimeoutMs: options.perAgentTimeoutMs,
+    ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
     ...(options.supervisorTimeoutMs === undefined
       ? {}
       : { supervisorTimeoutMs: options.supervisorTimeoutMs }),

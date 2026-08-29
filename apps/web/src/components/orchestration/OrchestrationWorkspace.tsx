@@ -1,12 +1,10 @@
-import { useCallback } from "react";
-import type {
-  Agent,
-  CreateOrchestrationInput,
-  ModelProviderDescriptor,
-} from "../../types";
+import { useCallback, useEffect, useState } from "react";
+import { api } from "../../api";
+import type { Agent, ModelProviderDescriptor, Project } from "../../types";
 import { NewConversationDialog } from "./NewConversationDialog";
 import { OrchestrationRunView } from "./OrchestrationRunView";
 import { OrchestrationRunTabs } from "./OrchestrationRunTabs";
+import type { OrchestrationDraft } from "./orchestration-utils";
 import type { UseOrchestrationResult } from "./use-orchestration";
 
 interface OrchestrationWorkspaceProps {
@@ -27,6 +25,29 @@ export function OrchestrationWorkspace({
 }: OrchestrationWorkspaceProps) {
   const { detail, detailLoading, sessions, loading, error } = orchestration;
   const replyCount = detail?.turns.length ?? 0;
+  const projectId = detail?.session.projectId ?? null;
+  const [project, setProject] = useState<Project | null>(null);
+
+  // The Team stores only the Project ID; its name and membership live with the
+  // Project itself, so they are fetched rather than duplicated into the session.
+  useEffect(() => {
+    if (!projectId) {
+      setProject(null);
+      return;
+    }
+    let active = true;
+    void api
+      .getProject(projectId)
+      .then(({ project: next }) => {
+        if (active) setProject(next);
+      })
+      .catch(() => {
+        if (active) setProject(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [projectId]);
 
   const handleStart = useCallback(
     (sessionId: string) => {
@@ -62,7 +83,7 @@ export function OrchestrationWorkspace({
    * conversation header still offers Start, so nothing is lost.
    */
   const handleCreate = useCallback(
-    async (input: CreateOrchestrationInput) => {
+    async (input: OrchestrationDraft) => {
       const session = await orchestration.createSession(input);
       onComposerOpenChange(false);
       await orchestration.startSession(session.id).catch(() => undefined);
@@ -105,12 +126,14 @@ export function OrchestrationWorkspace({
               onStop={handleStop}
               onDelete={handleDelete}
               modelProviders={modelProviders}
+              project={project}
             />
             <OrchestrationRunTabs
               detail={detail}
               agents={agents}
               action={orchestration.action}
               onContinue={handleContinue}
+              project={project}
             />
           </>
         ) : (

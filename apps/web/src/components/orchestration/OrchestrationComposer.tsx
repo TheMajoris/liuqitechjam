@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import type {
   Agent,
-  CreateOrchestrationInput,
   ModelProviderDescriptor,
   OrchestrationParticipant,
 } from "../../types";
@@ -20,7 +19,7 @@ import { AgentPicker } from "./AgentPicker";
 interface OrchestrationComposerProps {
   agents: Agent[];
   disabled?: boolean;
-  onCreate: (input: CreateOrchestrationInput) => Promise<unknown>;
+  onCreate: (input: OrchestrationDraft) => Promise<unknown>;
   onCancel?: () => void;
   modelProviders?: ModelProviderDescriptor[];
 }
@@ -131,6 +130,57 @@ export function OrchestrationComposer({
         </span>
         {errors.originalPrompt && (
           <span className="orch-field-error" id="orch-prompt-error">{errors.originalPrompt}</span>
+        )}
+      </div>
+
+      {/*
+        A shared Project gives every Agent one workspace to edit, instead of
+        each Agent building in isolation and describing the result.
+      */}
+      <div className="orch-field orch-project-field">
+        <label className="orch-project-toggle">
+          <input
+            type="checkbox"
+            checked={draft.projectName !== undefined}
+            disabled={busy}
+            onChange={(event) => {
+              setDraft((current) => ({
+                ...current,
+                projectName: event.target.checked ? "" : undefined,
+              }));
+              setErrors((current) => ({ ...current, projectName: undefined }));
+            }}
+          />
+          <span>
+            <strong>Work on a shared Project</strong>
+            <span className="orch-field-help">
+              Every Agent reads and edits the same files, and the Team gets one
+              Project preview.
+            </span>
+          </span>
+        </label>
+        {draft.projectName !== undefined && (
+          <>
+            <label htmlFor="orch-project-name">Project name</label>
+            <input
+              id="orch-project-name"
+              value={draft.projectName}
+              disabled={busy}
+              maxLength={80}
+              placeholder="Todo App"
+              aria-invalid={Boolean(errors.projectName)}
+              aria-describedby={errors.projectName ? "orch-project-error" : undefined}
+              onChange={(event) => {
+                setDraft((current) => ({ ...current, projectName: event.target.value }));
+                setErrors((current) => ({ ...current, projectName: undefined }));
+              }}
+            />
+            {errors.projectName && (
+              <span className="orch-field-error" id="orch-project-error">
+                {errors.projectName}
+              </span>
+            )}
+          </>
         )}
       </div>
 

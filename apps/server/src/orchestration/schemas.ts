@@ -215,6 +215,8 @@ export const CreateOrchestrationSchema: z.ZodType<CreateOrchestrationInput> =
       .max(ORCHESTRATION_LIMITS.maxPromptLength),
     participants: OrchestrationParticipantsSchema,
     mode: OrchestrationModeSchema.optional(),
+    /** Opt-in shared Project scope; omitted Teams remain text-only. */
+    projectId: idSchema.optional(),
     maxSteps: z.number().int().positive().max(ORCHESTRATION_LIMITS.maxSteps),
     perAgentTimeoutMs: z
       .number()
@@ -253,6 +255,8 @@ export const OrchestrationSessionSchema: z.ZodType<OrchestrationSession> =
       .max(ORCHESTRATION_LIMITS.maxPromptLength),
     participants: OrchestrationParticipantsSchema,
     mode: OrchestrationModeSchema.optional(),
+    /** Absent on Teams persisted before Projects existed. */
+    projectId: idSchema.nullable().optional(),
     completionReason: OrchestrationCompletionReasonSchema.nullable().optional(),
     status: OrchestrationStatusSchema,
     currentParticipantId: participantIdSchema.nullable(),

@@ -509,6 +509,7 @@ export async function executeMastraOrchestrationStep(
     const childResult = await options.invoker.invoke({
       agentId: participant.agentId,
       prompt: handoff.prompt,
+      ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
       timeoutMs: options.perAgentTimeoutMs,
       signal: linked.signal,
       onRunAccepted: async (runId) => {

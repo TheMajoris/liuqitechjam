@@ -167,6 +167,8 @@ export interface OrchestrationExecutionHooks {
 
 /** Runtime dependencies and platform policies supplied for one execution. */
 export interface OrchestrationExecutionOptions {
+  /** Set when every turn must execute against a shared Project workspace. */
+  projectId?: string | undefined;
   invoker: PlatformAgentInvokerContract;
   /** Optional selector; omitted callers retain deterministic selection. */
   selectNextParticipant?: OrchestrationParticipantSelector;

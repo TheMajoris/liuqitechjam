@@ -22,6 +22,8 @@ export interface AgentPreviewContext {
  */
 export interface PreviewContextProvider {
   getForAgent(agentId: string): Promise<AgentPreviewContext>;
+  /** Status of the shared Project preview, for Project-scoped turns. */
+  getForProject?(projectId: string): Promise<AgentPreviewContext>;
 }
 
 /**
@@ -35,9 +37,19 @@ export class StorePreviewContextProvider implements PreviewContextProvider {
   constructor(private readonly store: JsonStore) {}
 
   async getForAgent(agentId: string): Promise<AgentPreviewContext> {
+    return this.latestStatus((preview) => preview.agentId === agentId);
+  }
+
+  async getForProject(projectId: string): Promise<AgentPreviewContext> {
+    return this.latestStatus((preview) => preview.projectId === projectId);
+  }
+
+  private latestStatus(
+    matches: (preview: { agentId?: string; projectId?: string }) => boolean,
+  ): AgentPreviewContext {
     const latest = this.store
       .snapshot()
-      .previews.filter((preview) => preview.agentId === agentId)
+      .previews.filter(matches)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
     return { status: latest?.status ?? "not_started" };
   }
@@ -48,10 +60,14 @@ export class StorePreviewContextProvider implements PreviewContextProvider {
  *
  * The result is used for execution only. The persisted user message stays
  * exactly as typed, so conversation history never shows this envelope.
+ *
+ * `extraLines` carries additional trusted facts — Project scope, for instance.
+ * Callers must keep those bounded and free of host paths or runtime IDs.
  */
 export function composeRuntimeContextPrompt(
   prompt: string,
   context: AgentPreviewContext,
+  extraLines: readonly string[] = [],
 ): string {
   return [
     "<platform_runtime_context>",
@@ -59,9 +75,10 @@ export function composeRuntimeContextPrompt(
     "It is not part of the user's message. Do not repeat it verbatim.",
     "",
     `preview.status = "${context.status}"`,
+    ...extraLines,
     "",
-    "You cannot start, stop, or restart the Preview server yourself.",
-    "The user controls it from the Preview panel in the workspace UI.",
+    "You cannot start, stop, or restart preview servers yourself.",
+    "The user controls them from the Preview panel in the workspace UI.",
     "</platform_runtime_context>",
     "",
     "<user_request>",

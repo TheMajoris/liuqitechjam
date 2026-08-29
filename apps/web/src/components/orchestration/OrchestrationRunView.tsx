@@ -3,6 +3,7 @@ import type {
   ModelProviderDescriptor,
   OrchestrationSession,
   OrchestrationSessionDetail,
+  Project,
 } from "../../types";
 import { ParticipantBar } from "./ParticipantBar";
 import {
@@ -16,6 +17,8 @@ import {
 interface OrchestrationRunViewProps {
   detail: OrchestrationSessionDetail | null;
   agents: Agent[];
+  /** Present when this Team collaborates on a shared Project. */
+  project?: Project | null;
   replyCount: number;
   action?: "create" | "start" | "stop" | "continue" | "delete" | null;
   onStart: (sessionId: string) => void;
@@ -63,6 +66,7 @@ function summaryLine(session: OrchestrationSession, currentAgent: string | null)
 export function OrchestrationRunView({
   detail,
   agents,
+  project = null,
   replyCount,
   action = null,
   onStart,
@@ -85,9 +89,18 @@ export function OrchestrationRunView({
   return (
     <header className="orch-run-view">
       <div className="orch-run-heading">
-        <h2 id="orch-run-heading" title={session.originalPrompt}>
-          {session.name}
-        </h2>
+        <div className="orch-run-identity">
+          {/* The shared artifact, not the prompt, is what this Team is about. */}
+          {project && (
+            <span className="orch-project-badge">
+              <span className="orch-eyebrow">Shared Project</span>
+              <strong>{project.name}</strong>
+            </span>
+          )}
+          <h2 id="orch-run-heading" title={session.originalPrompt}>
+            {session.name}
+          </h2>
+        </div>
         <div className="orch-run-heading-side">
           <StatusMark status={session.status} />
           {session.status === "draft" && (

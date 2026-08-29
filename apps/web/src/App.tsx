@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
 import { OrchestrationWorkspace } from "./components/orchestration/OrchestrationWorkspace";
+import { ConversationRail } from "./components/ConversationRail";
+import { MarkdownMessage } from "./components/MarkdownMessage";
 import { PreviewSidecar, type PreviewActionError } from "./components/PreviewSidecar";
 import { StickyComposer } from "./components/StickyComposer";
 import {
@@ -17,6 +19,7 @@ import {
 } from "./components/orchestration/orchestration-utils";
 import type {
   Agent,
+  AgentConversation,
   AgentRun,
   Message,
   ModelDescriptor,
@@ -48,6 +51,8 @@ function readSidebarPreference(): boolean {
  */
 function readPreviewPanelPreference(): boolean {
   if (typeof window === "undefined") return false;
+  // Default closed: the conversation is the workspace, and the preview is a
+  // tool you reach for. The choice is remembered once made.
   return window.localStorage.getItem(PREVIEW_PANEL_KEY) === "open";
 }
 
@@ -127,6 +132,9 @@ export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [conversations, setConversations] = useState<AgentConversation[]>([]);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [conversationsOpen, setConversationsOpen] = useState(true);
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [modelProviders, setModelProviders] = useState<ModelProviderDescriptor[]>([]);
   const [modelDefaultRef, setModelDefaultRef] = useState<ModelRef | null>(null);
@@ -154,11 +162,13 @@ export default function App() {
   const orchestration = useOrchestration();
   const messageEnd = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
+  const conversationIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
   const modelRequests = useRef(new Set<string>());
   const loadedModelProviders = useRef(new Set<string>());
   selectedIdRef.current = selectedId;
+  conversationIdRef.current = conversationId;
 
   const selected = useMemo(
     () => agents.find((agent) => agent.id === selectedId) ?? null,
@@ -168,6 +178,13 @@ export default function App() {
   /** A Run is in flight while it is queued or executing; the composer locks. */
   const runInFlight =
     activeRun !== null && ["queued", "running"].includes(activeRun.status);
+
+  const openConversationRecord = useMemo(
+    () => conversations.find((item) => item.id === conversationId) ?? null,
+    [conversations, conversationId],
+  );
+  const openConversationTitle = openConversationRecord?.title ?? "New conversation";
+  const openConversationHasThread = Boolean(openConversationRecord?.codexThreadId);
 
   const supportedModelProviders = useMemo(
     () => workerProviders(modelProviders),
@@ -342,8 +359,13 @@ export default function App() {
   };
 
   const refreshMessages = useCallback(async (agentId: string) => {
-    const result = await api.messages(agentId);
-    if (mountedRef.current && selectedIdRef.current === agentId) {
+    const conversation = conversationIdRef.current;
+    const result = await api.messages(agentId, conversation ?? undefined);
+    if (
+      mountedRef.current &&
+      selectedIdRef.current === agentId &&
+      conversationIdRef.current === conversation
+    ) {
       setMessages(result.messages);
     }
   }, []);
@@ -416,10 +438,24 @@ export default function App() {
     setShowSettings(false);
     if (!selectedId) {
       setMessages([]);
+      setConversations([]);
+      setConversationId(null);
       return;
     }
-    void Promise.all([refreshMessages(selectedId), api.runs(selectedId)])
-      .then(([, result]) => {
+    // Open the Agent's most recent conversation; a brand-new Agent has none
+    // until its first message, which the backend creates on demand.
+    void api
+      .conversations(selectedId)
+      .then(async ({ conversations: next }) => {
+        if (selectedIdRef.current !== selectedId) return;
+        setConversations(next);
+        const opened = next[0]?.id ?? null;
+        setConversationId(opened);
+        conversationIdRef.current = opened;
+        const [, result] = await Promise.all([
+          refreshMessages(selectedId),
+          api.runs(selectedId, opened ?? undefined),
+        ]);
         if (selectedIdRef.current !== selectedId) return;
         const latest = result.runs[0] ?? null;
         setActiveRun(latest);
@@ -559,6 +595,74 @@ export default function App() {
     }
   };
 
+  const openConversation = async (nextId: string) => {
+    if (!selected || nextId === conversationId) return;
+    setConversationId(nextId);
+    conversationIdRef.current = nextId;
+    setMessages([]);
+    setActiveRun(null);
+    setError(null);
+    try {
+      const [, result] = await Promise.all([
+        refreshMessages(selected.id),
+        api.runs(selected.id, nextId),
+      ]);
+      if (conversationIdRef.current !== nextId) return;
+      const latest = result.runs[0] ?? null;
+      setActiveRun(latest);
+      if (latest && ["queued", "running"].includes(latest.status)) {
+        void pollRun(latest.id, selected.id).catch(() => undefined);
+      }
+    } catch (reason) {
+      setError(errorMessage(reason));
+    }
+  };
+
+  const createConversation = async () => {
+    if (!selected) return;
+    try {
+      const { conversation } = await api.createConversation(selected.id);
+      setConversations((current) => [conversation, ...current]);
+      setConversationId(conversation.id);
+      conversationIdRef.current = conversation.id;
+      // A fresh conversation starts empty; the workspace files stay put.
+      setMessages([]);
+      setActiveRun(null);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    }
+  };
+
+  const renameConversation = async (id: string, title: string) => {
+    if (!selected) return;
+    try {
+      const { conversation } = await api.renameConversation(selected.id, id, title);
+      setConversations((current) =>
+        current.map((item) => (item.id === id ? conversation : item)),
+      );
+    } catch (reason) {
+      setError(errorMessage(reason));
+    }
+  };
+
+  const deleteConversation = async (id: string) => {
+    if (!selected) return;
+    try {
+      await api.deleteConversation(selected.id, id);
+      const remaining = conversations.filter((item) => item.id !== id);
+      setConversations(remaining);
+      if (conversationId !== id) return;
+      const next = remaining[0]?.id ?? null;
+      setConversationId(next);
+      conversationIdRef.current = next;
+      setMessages([]);
+      setActiveRun(null);
+      if (next) await refreshMessages(selected.id);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    }
+  };
+
   const runPreviewAction = async (action: "start" | "restart" | "stop") => {
     if (!selected) return;
     setPreviewBusy(action);
@@ -622,11 +726,27 @@ export default function App() {
     setPrompt("");
     setError(null);
     try {
-      const result = await api.sendMessage(selected.id, content);
+      const result = await api.sendMessage(
+        selected.id,
+        content,
+        conversationId ?? undefined,
+      );
       if (selectedIdRef.current === selected.id) {
         setMessages((current) => [...current, result.message]);
         setActiveRun(result.run);
       }
+      // The first message of a brand-new Agent creates and titles its
+      // conversation server-side; pick that up so the rail stays accurate.
+      if (result.message.conversationId) {
+        conversationIdRef.current = result.message.conversationId;
+        setConversationId(result.message.conversationId);
+      }
+      void api
+        .conversations(selected.id)
+        .then(({ conversations: next }) => {
+          if (selectedIdRef.current === selected.id) setConversations(next);
+        })
+        .catch(() => undefined);
       setAgents((current) =>
         current.map((agent) =>
           agent.id === selected.id ? { ...agent, status: "busy" } : agent,
@@ -815,24 +935,44 @@ export default function App() {
             </div>
             <nav className="agent-list" aria-label="Agents">
               {agents.map((agent) => (
-                <button
-                  className={"agent-card " + (agent.id === selectedId ? "selected" : "")}
-                  key={agent.id}
-                  aria-current={
-                    workspace === "playground" && agent.id === selectedId ? "true" : undefined
-                  }
-                  onClick={() => {
-                    setSelectedId(agent.id);
-                    setWorkspace("playground");
-                  }}
-                >
-                  <div className="agent-avatar">{agent.name.slice(0, 1).toUpperCase()}</div>
-                  <div className="agent-card-copy">
-                    <strong>{agent.name}</strong>
-                    <span>{agent.description || "Coding Agent"}</span>
-                  </div>
-                  <span className={"mini-dot mini-" + agent.status} />
-                </button>
+                <div className="agent-branch" key={agent.id}>
+                  <button
+                    className={"agent-card " + (agent.id === selectedId ? "selected" : "")}
+                    aria-current={
+                      workspace === "playground" && agent.id === selectedId ? "true" : undefined
+                    }
+                    onClick={() => {
+                      setSelectedId(agent.id);
+                      setWorkspace("playground");
+                    }}
+                  >
+                    <div className="agent-avatar">{agent.name.slice(0, 1).toUpperCase()}</div>
+                    <div className="agent-card-copy">
+                      <strong>{agent.name}</strong>
+                      <span>{agent.description || "Coding Agent"}</span>
+                    </div>
+                    <span className={"mini-dot mini-" + agent.status} />
+                  </button>
+
+                  {/*
+                    Conversations belong to their Agent, so they nest under it
+                    and only for the Agent currently open. Collapsing keeps the
+                    sidebar a list of Agents rather than a list of every thread.
+                  */}
+                  {workspace === "playground" && agent.id === selectedId && (
+                    <ConversationRail
+                      conversations={conversations}
+                      selectedId={conversationId}
+                      open={conversationsOpen}
+                      busy={busy || runInFlight}
+                      onToggleOpen={() => setConversationsOpen((value) => !value)}
+                      onSelect={(id) => void openConversation(id)}
+                      onCreate={() => void createConversation()}
+                      onRename={(id, title) => void renameConversation(id, title)}
+                      onDelete={(id) => void deleteConversation(id)}
+                    />
+                  )}
+                </div>
               ))}
               {agents.length === 0 && (
                 <div className="empty-sidebar">
@@ -1045,11 +1185,12 @@ export default function App() {
                 <div className="playground-topbar">
                   <div>
                     <span className="eyebrow">Playground</span>
-                    <h2>Build something with your Agent</h2>
+                    <h2>{openConversationTitle}</h2>
                   </div>
                   <div className="session-info">
                     <span className="pulse" />
-                    {selected.codexThreadId ? "Session connected" : "New session"}
+                    {/* Session continuity is per conversation, never per Agent. */}
+                    {openConversationHasThread ? "Session connected" : "New session"}
                   </div>
                 </div>
 
@@ -1080,7 +1221,14 @@ export default function App() {
                           <strong>{message.role === "user" ? "You" : selected.name}</strong>
                           <span>{formatTime(message.createdAt)}</span>
                         </div>
-                        <div className="message-body">{message.content}</div>
+                        {message.role === "assistant" ? (
+                          <MarkdownMessage
+                            className="message-body"
+                            content={message.content}
+                          />
+                        ) : (
+                          <div className="message-body">{message.content}</div>
+                        )}
                       </article>
                     ))
                   )}
@@ -1143,12 +1291,15 @@ export default function App() {
                   onClick={() => setPreviewPanelOpen(true)}
                   aria-label="Show preview panel"
                   aria-expanded={false}
+                  title="Show preview"
                 >
+                  <span aria-hidden="true" className="preview-rail-arrow">
+                    ‹
+                  </span>
                   <span
                     className={"preview-toggle-dot preview-dot-" + (preview?.status ?? "not_started")}
                     aria-hidden="true"
                   />
-                  <span className="preview-rail-label">Preview</span>
                 </button>
               )}
             </div>

@@ -7,7 +7,9 @@ import type {
   Message,
   OrchestrationSession,
   OrchestrationSessionDetail,
+  AgentConversation,
   Preview,
+  Project,
   ProviderModelsResponse,
   SystemInfo,
 } from "./types";
@@ -123,16 +125,68 @@ export const api = {
     request<{ preview: Preview; logs: string[]; truncated: boolean }>(
       "/api/agents/" + id + "/preview/logs?tail=" + encodeURIComponent(String(tail)),
     ),
-  messages: (id: string) =>
-    request<{ messages: Message[] }>("/api/agents/" + id + "/messages"),
-  runs: (id: string) =>
-    request<{ runs: AgentRun[] }>("/api/agents/" + id + "/runs"),
-  sendMessage: (id: string, content: string) =>
+  createProject: (body: { name: string; description?: string }) =>
+    request<{ project: Project }>("/api/projects", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  listProjects: () => request<{ projects: Project[] }>("/api/projects"),
+  getProject: (id: string) => request<{ project: Project }>("/api/projects/" + id),
+  getProjectPreview: (id: string) =>
+    request<{ preview: Preview }>("/api/projects/" + id + "/preview"),
+  startProjectPreview: (id: string) =>
+    request<{ preview: Preview }>("/api/projects/" + id + "/preview/start", {
+      method: "POST",
+    }),
+  restartProjectPreview: (id: string) =>
+    request<{ preview: Preview }>("/api/projects/" + id + "/preview/restart", {
+      method: "POST",
+    }),
+  stopProjectPreview: (id: string) =>
+    request<{ preview: Preview }>("/api/projects/" + id + "/preview/stop", {
+      method: "POST",
+    }),
+  getProjectPreviewLogs: (id: string, tail = 100) =>
+    request<{ preview: Preview; logs: string[]; truncated: boolean }>(
+      "/api/projects/" + id + "/preview/logs?tail=" + encodeURIComponent(String(tail)),
+    ),
+  conversations: (id: string) =>
+    request<{ conversations: AgentConversation[] }>(
+      "/api/agents/" + id + "/conversations",
+    ),
+  createConversation: (id: string) =>
+    request<{ conversation: AgentConversation }>("/api/agents/" + id + "/conversations", {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  renameConversation: (id: string, conversationId: string, title: string) =>
+    request<{ conversation: AgentConversation }>(
+      "/api/agents/" + id + "/conversations/" + conversationId,
+      { method: "PATCH", body: JSON.stringify({ title }) },
+    ),
+  deleteConversation: (id: string, conversationId: string) =>
+    request<{ deleted: boolean }>(
+      "/api/agents/" + id + "/conversations/" + conversationId,
+      { method: "DELETE" },
+    ),
+  messages: (id: string, conversationId?: string) =>
+    request<{ messages: Message[] }>(
+      "/api/agents/" + id + "/messages" +
+        (conversationId ? "?conversationId=" + encodeURIComponent(conversationId) : ""),
+    ),
+  runs: (id: string, conversationId?: string) =>
+    request<{ runs: AgentRun[] }>(
+      "/api/agents/" + id + "/runs" +
+        (conversationId ? "?conversationId=" + encodeURIComponent(conversationId) : ""),
+    ),
+  sendMessage: (id: string, content: string, conversationId?: string) =>
     request<{ run: AgentRun; message: Message }>(
       "/api/agents/" + id + "/messages",
       {
         method: "POST",
-        body: JSON.stringify({ content }),
+        body: JSON.stringify(
+          conversationId === undefined ? { content } : { content, conversationId },
+        ),
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),

@@ -44,7 +44,11 @@ describe("PlatformAgentInvoker", () => {
         signal: controller.signal,
       }),
     ).resolves.toEqual({ runId: run.id, output: "done" });
-    expect(sendMessage).toHaveBeenCalledWith(run.agentId, run.prompt);
+    // Team turns are tagged so the Agent Playground never shows them as if
+    // the user had typed them.
+    expect(sendMessage).toHaveBeenCalledWith(run.agentId, run.prompt, {
+      origin: "orchestration",
+    });
     expect(waitForRun).toHaveBeenCalledWith(run.id, {
       timeoutMs: 1_500,
       signal: controller.signal,

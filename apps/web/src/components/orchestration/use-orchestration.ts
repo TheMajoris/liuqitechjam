@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../api";
+import type { OrchestrationDraft } from "./orchestration-utils";
 import type {
   CreateOrchestrationInput,
   OrchestrationSession,
@@ -22,7 +23,7 @@ export interface UseOrchestrationResult {
   clearError: () => void;
   refreshSessions: () => Promise<void>;
   selectSession: (sessionId: string) => void;
-  createSession: (input: CreateOrchestrationInput) => Promise<OrchestrationSession>;
+  createSession: (input: OrchestrationDraft) => Promise<OrchestrationSession>;
   startSession: (sessionId?: string) => Promise<void>;
   stopSession: (sessionId?: string) => Promise<void>;
   continueSession: (prompt: string, sessionId?: string) => Promise<void>;
@@ -177,10 +178,18 @@ export function useOrchestration(): UseOrchestrationResult {
     setError(null);
   }, []);
 
-  const createSession = useCallback(async (input: CreateOrchestrationInput) => {
+  const createSession = useCallback(async (input: OrchestrationDraft) => {
     setAction("create");
     try {
-      const result = await api.createOrchestration(input);
+      // The client never invents IDs: create the Project first, then bind the
+      // Team to it. ProjectService owns membership and workspace allocation.
+      const { projectName, ...draft } = input;
+      const projectId = projectName?.trim()
+        ? (await api.createProject({ name: projectName.trim() })).project.id
+        : undefined;
+      const result = await api.createOrchestration(
+        projectId === undefined ? draft : { ...draft, projectId },
+      );
       const nextDetail: OrchestrationSessionDetail = {
         session: result.session,
         turns: [],
