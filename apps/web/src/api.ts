@@ -7,6 +7,7 @@ import type {
   Message,
   OrchestrationSession,
   OrchestrationSessionDetail,
+  Preview,
   ProviderModelsResponse,
   SystemInfo,
 } from "./types";
@@ -100,6 +101,24 @@ export const api = {
     request<{ agent: Agent }>("/api/agents/" + id + "/stop", {
       method: "POST",
     }),
+  getPreview: (id: string) =>
+    request<{ preview: Preview }>("/api/agents/" + id + "/preview"),
+  startPreview: (id: string) =>
+    request<{ preview: Preview }>("/api/agents/" + id + "/preview/start", {
+      method: "POST",
+    }),
+  restartPreview: (id: string) =>
+    request<{ preview: Preview }>("/api/agents/" + id + "/preview/restart", {
+      method: "POST",
+    }),
+  stopPreview: (id: string) =>
+    request<{ preview: Preview }>("/api/agents/" + id + "/preview/stop", {
+      method: "POST",
+    }),
+  getPreviewLogs: (id: string, tail = 100) =>
+    request<{ preview: Preview; logs: string[]; truncated: boolean }>(
+      "/api/agents/" + id + "/preview/logs?tail=" + encodeURIComponent(String(tail)),
+    ),
   messages: (id: string) =>
     request<{ messages: Message[] }>("/api/agents/" + id + "/messages"),
   runs: (id: string) =>

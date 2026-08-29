@@ -1005,6 +1005,132 @@ textarea:focus {
   text-overflow: ellipsis;
 }
 
+.preview-panel {
+  max-width: 1180px;
+  margin: 0 auto 14px;
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--paper);
+  box-shadow: 0 12px 36px rgba(43, 42, 38, 0.06);
+}
+
+.preview-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.preview-heading h2 {
+  margin: 3px 0 3px;
+  font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
+  font-size: 16px;
+  letter-spacing: -0.03em;
+}
+
+.preview-heading p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.preview-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 4px 9px;
+  color: #666760;
+  background: #e5e4df;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.preview-status-running {
+  color: #277756;
+  background: #dcf2e9;
+}
+
+.preview-status-starting,
+.preview-status-stopping {
+  color: #5640bc;
+  background: #e8e4fb;
+}
+
+.preview-status-failed,
+.preview-status-interrupted {
+  color: #ac4343;
+  background: #f6dfdc;
+}
+
+.preview-empty,
+.preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 15px;
+}
+
+.preview-empty {
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.preview-error {
+  margin: 13px 0 0;
+  color: #a13f3f;
+  font-size: 11px;
+}
+
+.preview-url {
+  display: inline-block;
+  max-width: 100%;
+  margin-top: 12px;
+  overflow: hidden;
+  color: #5d4ac1;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-logs {
+  margin-top: 14px;
+  border: 1px solid #e4e1d8;
+  border-radius: 10px;
+  padding: 10px;
+  background: #f8f7f2;
+}
+
+.preview-logs-title {
+  color: #777870;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.preview-logs pre {
+  max-height: 145px;
+  margin: 8px 0 0;
+  overflow: auto;
+  color: #51524d;
+  font: 10px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.preview-logs-empty {
+  display: block;
+  margin-top: 8px;
+  color: #999a93;
+  font-size: 10px;
+}
+
 .playground {
   height: calc(100vh - 150px);
   min-height: 560px;

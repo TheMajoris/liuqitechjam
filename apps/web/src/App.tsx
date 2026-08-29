@@ -20,6 +20,7 @@ import type {
   ModelDescriptor,
   ModelProviderDescriptor,
   ModelRef,
+  Preview,
   ReasoningEffort,
   SystemInfo,
 } from "./types";
@@ -95,6 +96,91 @@ function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
 
+function PreviewStatusPill({ status }: { status: Preview["status"] }) {
+  return (
+    <span className={"preview-status preview-status-" + status}>
+      <span className="status-dot" />
+      {status}
+    </span>
+  );
+}
+
+function PreviewPanel({
+  preview,
+  logs,
+  busy,
+  onStart,
+  onRestart,
+  onStop,
+  onOpen,
+}: {
+  preview: Preview | null;
+  logs: string[];
+  busy: string | null;
+  onStart: () => void;
+  onRestart: () => void;
+  onStop: () => void;
+  onOpen: () => void;
+}) {
+  const active = preview && ["starting", "running", "stopping"].includes(preview.status);
+  return (
+    <section className="preview-panel" aria-labelledby="preview-title">
+      <div className="preview-heading">
+        <div>
+          <span className="eyebrow">Artifact runtime</span>
+          <h2 id="preview-title">Preview</h2>
+          <p>Run the app from this Agent&apos;s persistent workspace.</p>
+        </div>
+        {preview && <PreviewStatusPill status={preview.status} />}
+      </div>
+      {!preview ? (
+        <div className="preview-empty">
+          <span>No preview is running yet.</span>
+          <button className="button button-primary" onClick={onStart} disabled={busy !== null}>
+            {busy === "start" ? <Spinner /> : "Start Preview"}
+          </button>
+        </div>
+      ) : (
+        <>
+          {preview.errorMessage && <p className="preview-error">{preview.errorMessage}</p>}
+          <div className="preview-actions">
+            <button
+              className="button button-primary"
+              onClick={onOpen}
+              disabled={preview.status !== "running" || !preview.url || busy !== null}
+            >
+              Open Preview ↗
+            </button>
+            <button
+              className="button button-ghost"
+              onClick={onRestart}
+              disabled={busy !== null || preview.status === "stopping"}
+            >
+              {busy === "restart" ? <Spinner /> : "Restart"}
+            </button>
+            <button
+              className="button button-danger"
+              onClick={onStop}
+              disabled={busy !== null || !active}
+            >
+              {busy === "stop" ? <Spinner /> : "Stop"}
+            </button>
+          </div>
+          {preview.url && <code className="preview-url">{preview.url}</code>}
+          <div className="preview-logs" aria-live="polite">
+            <div className="preview-logs-title">Recent logs</div>
+            {logs.length > 0 ? (
+              <pre>{logs.join("\n")}</pre>
+            ) : (
+              <span className="preview-logs-empty">No runtime logs yet.</span>
+            )}
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -111,6 +197,9 @@ export default function App() {
   const [form, setForm] = useState(emptyForm);
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [previewLogs, setPreviewLogs] = useState<string[]>([]);
+  const [previewBusy, setPreviewBusy] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -307,6 +396,38 @@ export default function App() {
     }
   }, []);
 
+  const refreshPreview = useCallback(async (agentId: string) => {
+    try {
+      const result = await api.getPreview(agentId);
+      if (mountedRef.current && selectedIdRef.current === agentId) {
+        setPreview(result.preview);
+      }
+      if (["starting", "running", "failed"].includes(result.preview.status)) {
+        try {
+          const logs = await api.getPreviewLogs(agentId, 100);
+          if (mountedRef.current && selectedIdRef.current === agentId) {
+            setPreviewLogs(logs.logs);
+          }
+        } catch {
+          // Logs are supplemental; keep the status panel useful if the
+          // runtime exits between status and log requests.
+        }
+      } else if (mountedRef.current && selectedIdRef.current === agentId) {
+        setPreviewLogs([]);
+      }
+      return result.preview;
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 404) {
+        if (mountedRef.current && selectedIdRef.current === agentId) {
+          setPreview(null);
+          setPreviewLogs([]);
+        }
+        return null;
+      }
+      throw reason;
+    }
+  }, []);
+
   const bootstrap = useCallback(async () => {
     await Promise.all([
       refreshAgents(),
@@ -332,12 +453,14 @@ export default function App() {
 
   useEffect(() => {
     setActiveRun(null);
+    setPreview(null);
+    setPreviewLogs([]);
     setShowSettings(false);
     if (!selectedId) {
       setMessages([]);
       return;
     }
-    void Promise.all([refreshMessages(selectedId), api.runs(selectedId)])
+    void Promise.all([refreshMessages(selectedId), api.runs(selectedId), refreshPreview(selectedId)])
       .then(([, result]) => {
         if (selectedIdRef.current !== selectedId) return;
         const latest = result.runs[0] ?? null;
@@ -351,7 +474,19 @@ export default function App() {
       .catch((reason) =>
         setError(reason instanceof Error ? reason.message : String(reason)),
       );
-  }, [refreshMessages, selectedId]);
+  }, [refreshMessages, refreshPreview, selectedId]);
+
+  useEffect(() => {
+    if (!selectedId || !preview || !["starting", "running"].includes(preview.status)) return;
+    const interval = window.setInterval(() => {
+      void refreshPreview(selectedId).catch((reason) => {
+        if (mountedRef.current && selectedIdRef.current === selectedId) {
+          setError(errorMessage(reason));
+        }
+      });
+    }, 2_000);
+    return () => window.clearInterval(interval);
+  }, [preview?.status, refreshPreview, selectedId]);
 
   useEffect(() => {
     if (selected) {
@@ -459,6 +594,38 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const runPreviewAction = async (action: "start" | "restart" | "stop") => {
+    if (!selected) return;
+    setPreviewBusy(action);
+    setError(null);
+    try {
+      const result = action === "start"
+        ? await api.startPreview(selected.id)
+        : action === "restart"
+          ? await api.restartPreview(selected.id)
+          : await api.stopPreview(selected.id);
+      if (selectedIdRef.current === selected.id) {
+        setPreview(result.preview);
+        if (result.preview.status === "running") {
+          const logs = await api.getPreviewLogs(selected.id, 100).catch(() => null);
+          if (logs) setPreviewLogs(logs.logs);
+        } else {
+          setPreviewLogs([]);
+        }
+      }
+    } catch (reason) {
+      setError(errorMessage(reason));
+      await refreshPreview(selected.id).catch(() => undefined);
+    } finally {
+      setPreviewBusy(null);
+    }
+  };
+
+  const openPreview = () => {
+    if (!preview?.url) return;
+    window.open(preview.url, "_blank", "noopener,noreferrer");
   };
 
   const pollRun = async (runId: string, agentId: string) => {
@@ -883,6 +1050,16 @@ export default function App() {
                 </div>
               </form>
             )}
+
+            <PreviewPanel
+              preview={preview}
+              logs={previewLogs}
+              busy={previewBusy}
+              onStart={() => void runPreviewAction("start")}
+              onRestart={() => void runPreviewAction("restart")}
+              onStop={() => void runPreviewAction("stop")}
+              onOpen={openPreview}
+            />
 
             <section className="playground">
               <div className="playground-topbar">

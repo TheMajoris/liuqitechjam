@@ -7,6 +7,9 @@ import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
+import { PreviewError } from "./preview/preview-errors.js";
+import type { PreviewLogsView } from "./preview/preview-service.js";
+import type { PreviewView } from "./preview/preview-types.js";
 import {
   createModelRegistry,
   ModelCatalogError,
@@ -41,6 +44,15 @@ export interface OrchestrationServiceContract {
   stopSession(id: string): Promise<OrchestrationSession>;
   continueSession(id: string, prompt: string): Promise<OrchestrationSession>;
   deleteSession(id: string): Promise<{ deleted: boolean }>;
+}
+
+/** Narrow HTTP-facing seam for the trusted preview control plane. */
+export interface PreviewServiceContract {
+  start(agentId: string): Promise<PreviewView>;
+  get(agentId: string): Promise<PreviewView>;
+  restart(agentId: string): Promise<PreviewView>;
+  stop(agentId: string): Promise<PreviewView>;
+  logs(agentId: string, tail?: number): Promise<PreviewLogsView>;
 }
 
 const agentIdParams = z.object({ id: z.string().uuid() });
@@ -100,6 +112,15 @@ function requireOrchestrationService(
   return service;
 }
 
+function requirePreviewService(
+  service: PreviewServiceContract | undefined,
+): PreviewServiceContract {
+  if (!service) {
+    throw new HttpError(503, "Preview is not configured");
+  }
+  return service;
+}
+
 function parseOrchestrationInput(value: unknown): CreateOrchestrationInput {
   const parsed = CreateOrchestrationSchema.safeParse(value);
   if (!parsed.success) {
@@ -138,6 +159,7 @@ export async function createApp(
   service: AgentService,
   orchestrationService?: OrchestrationServiceContract,
   modelRegistry: ModelRegistry = createModelRegistry(config),
+  previewService?: PreviewServiceContract,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -302,6 +324,37 @@ export async function createApp(
     return { agent: await service.stopAgent(id) };
   });
 
+  app.post("/api/agents/:id/preview/start", async (request, reply) => {
+    const { id } = agentIdParams.parse(request.params);
+    const preview = await requirePreviewService(previewService).start(id);
+    return reply.code(202).send({ preview });
+  });
+
+  app.get("/api/agents/:id/preview", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    return { preview: await requirePreviewService(previewService).get(id) };
+  });
+
+  app.post("/api/agents/:id/preview/restart", async (request, reply) => {
+    const { id } = agentIdParams.parse(request.params);
+    const preview = await requirePreviewService(previewService).restart(id);
+    return reply.code(202).send({ preview });
+  });
+
+  app.post("/api/agents/:id/preview/stop", async (request, reply) => {
+    const { id } = agentIdParams.parse(request.params);
+    const preview = await requirePreviewService(previewService).stop(id);
+    return reply.code(202).send({ preview });
+  });
+
+  app.get("/api/agents/:id/preview/logs", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const query = z.object({
+      tail: z.coerce.number().int().min(1).max(200).default(100),
+    }).parse(request.query);
+    return requirePreviewService(previewService).logs(id, query.tail);
+  });
+
   app.get("/api/agents/:id/messages", async (request) => {
     const { id } = agentIdParams.parse(request.params);
     return { messages: service.getMessages(id) };
@@ -341,6 +394,7 @@ export async function createApp(
   app.setErrorHandler((error, request, reply) => {
     const appError = error instanceof Error ? error : new Error(String(error));
     const modelError = error instanceof ModelCatalogError ? error : null;
+    const previewError = error instanceof PreviewError ? error : null;
     const validationError = error instanceof z.ZodError;
     const details = validationError
       ? error.issues
@@ -360,11 +414,21 @@ export async function createApp(
             ? frameworkStatus
             : 500;
     if (statusCode >= 500) {
-      request.log.error(appError);
+      if (previewError) {
+        // Runtime errors can carry container CLI stdout/stderr in their cause.
+        // Log only the normalized preview projection at the HTTP boundary.
+        request.log.error(
+          { errorCode: previewError.code, message: previewError.message },
+          "Preview operation failed",
+        );
+      } else {
+        request.log.error(appError);
+      }
     }
     return reply.code(statusCode).send({
       error: appError.message,
       ...(modelError === null ? {} : { errorCode: modelError.code }),
+      ...(previewError === null ? {} : { errorCode: previewError.code }),
       ...(details !== undefined ? { details } : {}),
     });
   });

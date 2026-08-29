@@ -1,6 +1,44 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
+export type PreviewStatus =
+  | "starting"
+  | "running"
+  | "stopping"
+  | "stopped"
+  | "failed"
+  | "interrupted";
+
+export type PreviewErrorCode =
+  | "PREVIEW_NOT_FOUND"
+  | "PREVIEW_ALREADY_RUNNING"
+  | "PREVIEW_NOT_RUNNING"
+  | "PREVIEW_START_FAILED"
+  | "PREVIEW_STOP_FAILED"
+  | "PREVIEW_RUNTIME_UNAVAILABLE"
+  | "PREVIEW_UNSUPPORTED_PROJECT"
+  | "PREVIEW_COMMAND_NOT_FOUND"
+  | "PREVIEW_PORT_ALLOCATION_FAILED"
+  | "PREVIEW_WORKSPACE_INVALID"
+  | "PREVIEW_LOGS_FAILED"
+  | "PREVIEW_INTERRUPTED"
+  | "PREVIEW_PERMISSION_DENIED";
+
+export interface Preview {
+  id: string;
+  agentId: string;
+  status: PreviewStatus;
+  host: "127.0.0.1";
+  hostPort: number | null;
+  url: string | null;
+  errorCode: PreviewErrorCode | null;
+  errorMessage: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  stoppedAt: string | null;
+  updatedAt: string;
+}
+
 /** Normalized reasoning values shared by the model catalog and Agent forms. */
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 

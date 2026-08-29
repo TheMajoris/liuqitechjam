@@ -15,6 +15,13 @@ import {
   ArkResponsesSupervisorProvider,
   createOrchestrationParticipantSelector,
 } from "./orchestration/supervisor/index.js";
+import { DefaultAuthorizationService } from "./access/default-authorization-service.js";
+import { LocalContainerPreviewRuntime } from "./preview/local-container-preview-runtime.js";
+import { PreviewCommandResolver } from "./preview/preview-command-resolver.js";
+import {
+  PreviewService,
+  previewResourceLimitsFromConfig,
+} from "./preview/preview-service.js";
 
 const config = loadConfig();
 await writeCodexConfig(config);
@@ -33,7 +40,17 @@ const service = new AgentService(
   runner,
   workerModelResolver,
 );
+const previewService = new PreviewService(
+  store,
+  service,
+  new LocalContainerPreviewRuntime(config),
+  new PreviewCommandResolver(),
+  new DefaultAuthorizationService(),
+  { resourceLimits: previewResourceLimitsFromConfig(config) },
+);
+service.setPreviewLifecycle(previewService);
 await service.initialize();
+await previewService.initialize();
 
 const supervisorSelector = isSupervisorConfigured(config)
   ? createOrchestrationParticipantSelector(
@@ -55,7 +72,13 @@ const orchestrationService = new OrchestrationService({
 });
 await orchestrationService.initialize();
 
-const app = await createApp(config, service, orchestrationService, modelRegistry);
+const app = await createApp(
+  config,
+  service,
+  orchestrationService,
+  modelRegistry,
+  previewService,
+);
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");

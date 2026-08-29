@@ -5,6 +5,7 @@ import type {
   OrchestrationTurn,
 } from "./orchestration/types.js";
 import type { ModelRef, WorkerRuntimeModelConfig } from "./models/types.js";
+import type { PreviewRecord } from "./preview/preview-types.js";
 
 export type { ModelRef, WorkerRuntimeModelConfig } from "./models/types.js";
 
@@ -64,6 +65,8 @@ export interface Database {
   orchestrationTurns: OrchestrationTurn[];
   orchestrationEvents: OrchestrationEvent[];
   orchestrationContinuationPrompts: OrchestrationContinuationPrompt[];
+  /** Additive Wave 7 collection; absent in legacy v1 stores. */
+  previews: PreviewRecord[];
 }
 
 export interface CreateAgentInput {

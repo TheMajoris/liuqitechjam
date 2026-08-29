@@ -8,6 +8,7 @@ import { RunCancelledError } from "./errors.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import type { PreviewLifecycleCleanup } from "./preview/preview-service.js";
 
 class FakeRunner implements AgentRunner {
   async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -90,7 +91,11 @@ afterEach(async () => {
 
 async function makeService(
   runner: AgentRunner = new FakeRunner(),
-  options: { curatedModels?: string; arkModel?: string } = {},
+  options: {
+    curatedModels?: string;
+    arkModel?: string;
+    previewLifecycle?: PreviewLifecycleCleanup;
+  } = {},
 ): Promise<AgentService> {
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
   temporaryDirectories.push(root);
@@ -108,6 +113,8 @@ async function makeService(
     new JsonStore(path.join(root, "data", "db.json")),
     new WorkspaceManager(path.join(root, "workspaces")),
     runner,
+    undefined,
+    options.previewLifecycle,
   );
   await service.initialize();
   return service;
@@ -180,6 +187,25 @@ describe("Agent lifecycle", () => {
     expect((await service.startAgent(agent.id)).status).toBe("ready");
     await service.deleteAgent(agent.id);
     expect(service.listAgents()).toHaveLength(0);
+  });
+
+  it("closes the preview start gate before stop and delete cleanup", async () => {
+    let service!: AgentService;
+    const statusesAtCleanup: string[] = [];
+    service = await makeService(new FakeRunner(), {
+      previewLifecycle: {
+        stopForAgent: async (agentId) => {
+          statusesAtCleanup.push(service.getAgent(agentId).status);
+        },
+      },
+    });
+    const agent = await service.createAgent({ name: "Preview owner" });
+
+    await service.stopAgent(agent.id);
+    await service.startAgent(agent.id);
+    await service.deleteAgent(agent.id);
+
+    expect(statusesAtCleanup).toEqual(["stopped", "stopped"]);
   });
 
   it("persists a playground conversation", async () => {

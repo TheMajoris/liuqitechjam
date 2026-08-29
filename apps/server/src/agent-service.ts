@@ -23,6 +23,7 @@ import type {
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import type { PreviewLifecycleCleanup } from "./preview/preview-service.js";
 
 const now = () => new Date().toISOString();
 const RUN_POLL_INTERVAL_MS = 50;
@@ -50,6 +51,7 @@ type AgentModelResolver = WorkerModelResolver & {
 };
 
 export class AgentService {
+  private previewLifecycle: PreviewLifecycleCleanup | undefined;
   private readonly activeExecutions = new Map<
     string,
     { runId: string; execution: Promise<void> }
@@ -65,7 +67,15 @@ export class AgentService {
     private readonly runner: AgentRunner,
     private readonly modelResolver: AgentModelResolver =
       createWorkerModelResolver(config),
-  ) {}
+    previewLifecycle?: PreviewLifecycleCleanup,
+  ) {
+    this.previewLifecycle = previewLifecycle;
+  }
+
+  /** Attach the preview cleanup seam after both services have been assembled. */
+  setPreviewLifecycle(previewLifecycle: PreviewLifecycleCleanup): void {
+    this.previewLifecycle = previewLifecycle;
+  }
 
   async initialize(): Promise<void> {
     await this.store.initialize();
@@ -178,11 +188,17 @@ export class AgentService {
   async deleteAgent(id: string): Promise<{ archivedWorkspace: string }> {
     const agent = this.getAgent(id);
     await this.cancelExecution(id);
+    // Close the PreviewService start gate before cleanup. Any start already
+    // holding the per-Agent preview lock completes first and is then stopped;
+    // later starts observe the stopped Agent and are rejected.
+    await this.setStatus(id, "stopped");
+    await this.previewLifecycle?.stopForAgent(id);
     const archivedWorkspace = await this.workspaces.archive(agent);
     await this.store.mutate((database) => {
       database.agents = database.agents.filter((item) => item.id !== id);
       database.messages = database.messages.filter((item) => item.agentId !== id);
       database.runs = database.runs.filter((item) => item.agentId !== id);
+      database.previews = database.previews.filter((item) => item.agentId !== id);
     });
     return { archivedWorkspace };
   }
@@ -194,7 +210,9 @@ export class AgentService {
   async stopAgent(id: string): Promise<Agent> {
     this.getAgent(id);
     await this.cancelExecution(id);
-    return this.setStatus(id, "stopped");
+    const stopped = await this.setStatus(id, "stopped");
+    await this.previewLifecycle?.stopForAgent(id);
+    return stopped;
   }
 
   getMessages(agentId: string): Message[] {
