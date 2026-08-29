@@ -112,6 +112,12 @@ export interface OrchestrationSession {
   id: string;
   name: string;
   originalPrompt: string;
+  /**
+   * Shared Project this Team collaborates on. Absent on Teams created before
+   * Projects existed, and on Teams that deliberately work text-only; those
+   * keep running against each Agent's private workspace.
+   */
+  projectId?: string | null | undefined;
   participants: OrchestrationParticipant[];
   /** Omitted only on legacy persisted sessions; those run sequentially. */
   mode?: OrchestrationMode | undefined;
@@ -238,6 +244,8 @@ export interface CreateOrchestrationInput {
   name: string;
   originalPrompt: string;
   participants: OrchestrationParticipant[];
+  /** Opt-in shared Project scope; omitted Teams stay text-only. */
+  projectId?: string | undefined;
   /** Defaults to sequential when omitted for backward-compatible clients. */
   mode?: OrchestrationMode | undefined;
   maxSteps: number;

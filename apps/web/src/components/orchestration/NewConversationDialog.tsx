@@ -1,16 +1,13 @@
 import { useEffect, useRef } from "react";
-import type {
-  Agent,
-  CreateOrchestrationInput,
-  ModelProviderDescriptor,
-} from "../../types";
+import type { Agent, ModelProviderDescriptor } from "../../types";
+import type { OrchestrationDraft } from "./orchestration-utils";
 import { OrchestrationComposer } from "./OrchestrationComposer";
 
 interface NewConversationDialogProps {
   open: boolean;
   agents: Agent[];
   disabled?: boolean;
-  onCreate: (input: CreateOrchestrationInput) => Promise<unknown>;
+  onCreate: (input: OrchestrationDraft) => Promise<unknown>;
   onClose: () => void;
   modelProviders?: ModelProviderDescriptor[];
 }

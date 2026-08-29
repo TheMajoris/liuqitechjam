@@ -27,10 +27,42 @@ export const PreviewErrorCodeSchema = z.enum([
 ]);
 export type PreviewErrorCode = z.infer<typeof PreviewErrorCodeSchema>;
 
+/**
+ * Who owns a preview runtime.
+ *
+ * An Agent preview serves that Agent's private workspace; a Project preview
+ * serves the shared collaborative workspace and is the canonical artifact for
+ * a Team. Both use the same PreviewRuntime.
+ */
+export type PreviewOwnerRef =
+  | { kind: "agent"; agentId: string }
+  | { kind: "project"; projectId: string };
+
+export function previewOwnerKey(owner: PreviewOwnerRef): string {
+  return owner.kind === "agent" ? "agent:" + owner.agentId : "project:" + owner.projectId;
+}
+
+/** Reads the owner off a persisted record; legacy records are Agent-owned. */
+export function previewOwnerOf(record: PreviewRecord): PreviewOwnerRef {
+  return record.projectId !== undefined
+    ? { kind: "project", projectId: record.projectId }
+    : { kind: "agent", agentId: record.agentId ?? "" };
+}
+
+export function previewOwnerMatches(
+  record: PreviewRecord,
+  owner: PreviewOwnerRef,
+): boolean {
+  return previewOwnerKey(previewOwnerOf(record)) === previewOwnerKey(owner);
+}
+
 /** Internal persisted state. Host paths and runtime IDs never cross the HTTP boundary. */
 export interface PreviewRecord {
   id: string;
-  agentId: string;
+  /** Set for Agent-owned previews. Legacy records always carry this. */
+  agentId?: string;
+  /** Set for Project-owned previews; mutually exclusive with agentId. */
+  projectId?: string;
   status: PreviewStatus;
   workspacePath: string;
   runtimeId: string | null;
@@ -49,7 +81,8 @@ export interface PreviewRecord {
 
 export const PreviewRecordSchema = z.object({
   id: z.string().min(1),
-  agentId: z.string().min(1),
+  agentId: z.string().min(1).optional(),
+  projectId: z.string().min(1).optional(),
   status: PreviewStatusSchema,
   workspacePath: z.string(),
   runtimeId: z.string().nullable(),
@@ -64,7 +97,10 @@ export const PreviewRecordSchema = z.object({
   startedAt: z.string().nullable(),
   stoppedAt: z.string().nullable(),
   updatedAt: z.string(),
-});
+}).refine(
+  (record) => (record.agentId === undefined) !== (record.projectId === undefined),
+  { message: "A preview must have exactly one owner" },
+);
 
 export interface PreviewRuntimeHandle {
   runtimeId: string;
@@ -80,7 +116,8 @@ export interface PreviewResourceLimits {
 
 export interface PreviewStartInput {
   previewId: string;
-  agentId: string;
+  /** Stable owner label used for runtime tagging, e.g. "project:<id>". */
+  ownerKey: string;
   workspacePath: string;
   command: string[];
   containerPort: number;
@@ -115,7 +152,9 @@ export interface PreviewRuntime {
 /** Safe HTTP projection. Internal paths, commands, and runtime identifiers stay private. */
 export interface PreviewView {
   id: string;
-  agentId: string;
+  /** Exactly one of these is set, mirroring the record's owner. */
+  agentId: string | null;
+  projectId: string | null;
   status: PreviewStatus;
   host: "127.0.0.1";
   hostPort: number | null;

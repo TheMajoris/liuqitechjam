@@ -26,7 +26,9 @@ export type PreviewErrorCode =
 
 export interface Preview {
   id: string;
-  agentId: string;
+  /** Exactly one of these is set, mirroring the preview's owner. */
+  agentId: string | null;
+  projectId: string | null;
   status: PreviewStatus;
   host: "127.0.0.1";
   hostPort: number | null;
@@ -100,12 +102,24 @@ export interface Agent {
   updatedAt: string;
 }
 
+/** One private conversation with an Agent; each owns its own Codex session. */
+export interface AgentConversation {
+  id: string;
+  agentId: string;
+  title: string;
+  codexThreadId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Message {
   id: string;
   agentId: string;
   runId: string;
   role: "user" | "assistant";
   content: string;
+  /** Set on direct messages; Team turns never belong to a conversation. */
+  conversationId?: string | null;
   createdAt: string;
 }
 
@@ -205,6 +219,8 @@ export interface OrchestrationSession {
   id: string;
   name: string;
   originalPrompt: string;
+  /** Shared Project this Team collaborates on; absent for text-only Teams. */
+  projectId?: string | null;
   participants: OrchestrationParticipant[];
   /** Omitted only by legacy persisted sessions; those run sequentially. */
   mode?: OrchestrationMode;
@@ -277,8 +293,23 @@ export interface CreateOrchestrationInput {
   originalPrompt: string;
   participants: OrchestrationParticipant[];
   mode: OrchestrationMode;
+  projectId?: string;
   maxSteps: number;
   perAgentTimeoutMs: number;
+}
+
+export type ProjectStatus = "active" | "archived";
+
+/** Safe Project projection; the host workspace path never reaches the client. */
+export interface Project {
+  id: string;
+  name: string;
+  description: string;
+  teamId: string | null;
+  agentIds: string[];
+  status: ProjectStatus;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ContinueOrchestrationInput {

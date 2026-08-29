@@ -10,6 +10,7 @@ import { isDirectory } from "./local-container-preview-runtime.js";
 import { PreviewError, previewErrorStatus } from "./preview-errors.js";
 import type {
   PreviewErrorCode,
+  PreviewOwnerRef,
   PreviewLogResult,
   PreviewRecord,
   PreviewResourceLimits,
@@ -17,6 +18,11 @@ import type {
   PreviewRuntimeHandle,
   PreviewStatus,
   PreviewView,
+} from "./preview-types.js";
+import {
+  previewOwnerKey,
+  previewOwnerMatches,
+  previewOwnerOf,
 } from "./preview-types.js";
 import type {
   PreviewCommandResolver,
@@ -57,6 +63,24 @@ export interface PreviewAgentService {
   getAgent(id: string): Agent;
 }
 
+/** A validated preview target: the directory to serve and how to name it. */
+export interface PreviewOwnerTarget {
+  workspacePath: string;
+  /** Noun used in owner-specific error copy, e.g. "Agent" or "Project". */
+  label: string;
+}
+
+/**
+ * Resolves an owner ref to its workspace.
+ *
+ * Keeping this behind an interface is what lets one PreviewService serve both
+ * Agent-private and shared Project workspaces without knowing about either
+ * service.
+ */
+export interface PreviewOwnerResolver {
+  resolve(owner: PreviewOwnerRef): Promise<PreviewOwnerTarget>;
+}
+
 export interface PreviewPortAllocator {
   reserve(blockedPorts?: ReadonlySet<number>): Promise<number>;
   release(port: number): void;
@@ -65,6 +89,8 @@ export interface PreviewPortAllocator {
 export interface PreviewServiceOptions {
   portAllocator?: PreviewPortAllocator;
   resourceLimits?: PreviewResourceLimits;
+  /** Required only to serve Project-owned previews. */
+  ownerResolver?: PreviewOwnerResolver;
 }
 
 export interface PreviewLogsView {
@@ -99,7 +125,8 @@ function handleFor(record: PreviewRecord): PreviewRuntimeHandle | null {
 function publicPreview(record: PreviewRecord): PreviewView {
   return {
     id: record.id,
-    agentId: record.agentId,
+    agentId: record.agentId ?? null,
+    projectId: record.projectId ?? null,
     status: record.status,
     host: record.host,
     hostPort: record.hostPort,
@@ -174,6 +201,7 @@ export class PreviewService implements PreviewLifecycleCleanup {
   private readonly resourceLimits: PreviewResourceLimits;
   private readonly locks = new Map<string, Promise<void>>();
   private readonly terminalLogs = new Map<string, PreviewLogResult>();
+  private readonly ownerResolver: PreviewOwnerResolver;
 
   constructor(
     private readonly store: JsonStore,
@@ -185,6 +213,15 @@ export class PreviewService implements PreviewLifecycleCleanup {
   ) {
     this.portAllocator = options.portAllocator ?? new LocalPreviewPortAllocator();
     this.resourceLimits = options.resourceLimits ?? DEFAULT_RESOURCE_LIMITS;
+    this.ownerResolver = options.ownerResolver ?? {
+      async resolve() {
+        throw new PreviewError(
+          "PREVIEW_RUNTIME_UNAVAILABLE",
+          503,
+          "Project previews are not configured",
+        );
+      },
+    };
   }
 
   /** Mark in-flight records interrupted after a control-plane restart. */
@@ -226,37 +263,37 @@ export class PreviewService implements PreviewLifecycleCleanup {
     );
   }
 
-  async start(agentId: string): Promise<PreviewView> {
-    await this.requirePermission(agentId, "preview.start");
-    return this.withLock(agentId, () => this.startInternal(agentId));
+  async start(owner: PreviewOwnerRef): Promise<PreviewView> {
+    await this.requirePermission(owner, "start");
+    return this.withLock(owner, () => this.startInternal(owner));
   }
 
-  async get(agentId: string): Promise<PreviewView> {
-    await this.requirePermission(agentId, "preview.inspect");
-    this.agentService.getAgent(agentId);
-    const current = this.latest(agentId);
+  async get(owner: PreviewOwnerRef): Promise<PreviewView> {
+    await this.requirePermission(owner, "inspect");
+    await this.resolveOwner(owner);
+    const current = this.latest(owner);
     if (!current) {
       throw new PreviewError("PREVIEW_NOT_FOUND", 404, "Preview not found");
     }
     return publicPreview(await this.refreshStatus(current));
   }
 
-  async restart(agentId: string): Promise<PreviewView> {
-    await this.requirePermission(agentId, "preview.restart");
-    return this.withLock(agentId, async () => {
-      const current = this.latest(agentId);
+  async restart(owner: PreviewOwnerRef): Promise<PreviewView> {
+    await this.requirePermission(owner, "restart");
+    return this.withLock(owner, async () => {
+      const current = this.latest(owner);
       if (current && (isActiveStatus(current.status) || current.runtimeId)) {
         await this.stopInternal(current);
       }
-      return this.startInternal(agentId);
+      return this.startInternal(owner);
     });
   }
 
-  async stop(agentId: string): Promise<PreviewView> {
-    await this.requirePermission(agentId, "preview.stop");
-    return this.withLock(agentId, async () => {
-      this.agentService.getAgent(agentId);
-      const current = this.latest(agentId);
+  async stop(owner: PreviewOwnerRef): Promise<PreviewView> {
+    await this.requirePermission(owner, "stop");
+    return this.withLock(owner, async () => {
+      await this.resolveOwner(owner);
+      const current = this.latest(owner);
       if (!current) {
         throw new PreviewError("PREVIEW_NOT_FOUND", 404, "Preview not found");
       }
@@ -264,17 +301,20 @@ export class PreviewService implements PreviewLifecycleCleanup {
     });
   }
 
-  async logs(agentId: string, tail = 100): Promise<PreviewLogsView> {
-    await this.requirePermission(agentId, "preview.logs");
-    this.agentService.getAgent(agentId);
-    const current = this.latest(agentId);
+  async logs(owner: PreviewOwnerRef, tail = 100): Promise<PreviewLogsView> {
+    await this.requirePermission(owner, "logs");
+    await this.resolveOwner(owner);
+    const current = this.latest(owner);
     if (!current) {
       throw new PreviewError("PREVIEW_NOT_FOUND", 404, "Preview not found");
     }
     const refreshed = await this.refreshStatus(current);
     const handle = handleFor(refreshed);
     if (!handle) {
-      const cached = this.terminalLogs.get(agentId) ?? { lines: [], truncated: false };
+      const cached = this.terminalLogs.get(previewOwnerKey(owner)) ?? {
+        lines: [],
+        truncated: false,
+      };
       return {
         preview: publicPreview(refreshed),
         logs: [...cached.lines],
@@ -301,43 +341,50 @@ export class PreviewService implements PreviewLifecycleCleanup {
 
   /** Called by AgentService lifecycle operations; this is a trusted internal seam. */
   async stopForAgent(agentId: string): Promise<void> {
-    await this.withLock(agentId, async () => {
-      const current = this.latest(agentId);
+    const owner: PreviewOwnerRef = { kind: "agent", agentId };
+    await this.withLock(owner, async () => {
+      const current = this.latest(owner);
       if (!current || (!isActiveStatus(current.status) && !current.runtimeId)) return;
       await this.stopInternal(current);
     });
   }
 
-  private async startInternal(agentId: string): Promise<PreviewView> {
-    const agent = this.agentService.getAgent(agentId);
-    if (agent.status === "stopped") {
-      throw new PreviewError(
-        "PREVIEW_START_FAILED",
-        409,
-        "Start the Agent before starting its preview",
-      );
-    }
+  /** Called when a Project is archived; the shared preview must not outlive it. */
+  async stopForProject(projectId: string): Promise<void> {
+    const owner: PreviewOwnerRef = { kind: "project", projectId };
+    await this.withLock(owner, async () => {
+      const current = this.latest(owner);
+      if (!current || (!isActiveStatus(current.status) && !current.runtimeId)) return;
+      await this.stopInternal(current);
+    });
+  }
 
-    const existing = this.latest(agentId);
+  private async startInternal(owner: PreviewOwnerRef): Promise<PreviewView> {
+    const target = await this.resolveOwner(owner);
+    const ownerKey = previewOwnerKey(owner);
+
+    const existing = this.latest(owner);
     if (existing && (isActiveStatus(existing.status) || existing.runtimeId !== null)) {
       throw new PreviewError(
         "PREVIEW_ALREADY_RUNNING",
         409,
-        "This Agent already has an active preview",
+        "This " + target.label + " already has an active preview",
       );
     }
-    if (!(await isDirectory(agent.workspacePath))) {
+    if (!(await isDirectory(target.workspacePath))) {
       throw new PreviewError(
         "PREVIEW_WORKSPACE_INVALID",
         422,
-        "The Agent workspace is not available",
+        "The " + target.label + " workspace is not available",
       );
     }
-    this.terminalLogs.delete(agentId);
+    this.terminalLogs.delete(ownerKey);
 
     let resolved: ResolvedPreviewCommand;
     try {
-      resolved = await this.commandResolver.resolve({ workspacePath: agent.workspacePath });
+      resolved = await this.commandResolver.resolve({
+        workspacePath: target.workspacePath,
+      });
     } catch (error) {
       throw normalizeError(error, "PREVIEW_UNSUPPORTED_PROJECT");
     }
@@ -362,9 +409,11 @@ export class PreviewService implements PreviewLifecycleCleanup {
     const createdAt = now();
     const record: PreviewRecord = {
       id: randomUUID(),
-      agentId,
+      ...(owner.kind === "agent"
+        ? { agentId: owner.agentId }
+        : { projectId: owner.projectId }),
       status: "starting",
-      workspacePath: agent.workspacePath,
+      workspacePath: target.workspacePath,
       runtimeId: null,
       host: "127.0.0.1",
       hostPort,
@@ -381,13 +430,14 @@ export class PreviewService implements PreviewLifecycleCleanup {
     try {
       await this.store.mutate((database) => {
         const active = database.previews.find(
-          (preview) => preview.agentId === agentId && isActiveStatus(preview.status),
+          (preview) =>
+            previewOwnerMatches(preview, owner) && isActiveStatus(preview.status),
         );
         if (active) {
           throw new PreviewError(
             "PREVIEW_ALREADY_RUNNING",
             409,
-            "This Agent already has an active preview",
+            "This " + target.label + " already has an active preview",
           );
         }
         database.previews.push(record);
@@ -401,8 +451,8 @@ export class PreviewService implements PreviewLifecycleCleanup {
     try {
       handle = await this.runtime.start({
         previewId: record.id,
-        agentId,
-        workspacePath: agent.workspacePath,
+        ownerKey,
+        workspacePath: target.workspacePath,
         command: [...resolved.command],
         containerPort: resolved.containerPort,
         hostPort,
@@ -522,7 +572,7 @@ export class PreviewService implements PreviewLifecycleCleanup {
       try {
         const result = await this.runtime.logs(handle, { tail: MAX_LOG_LINES });
         const bounded = this.boundLogs(result.lines, MAX_LOG_LINES);
-        this.terminalLogs.set(record.agentId, {
+        this.terminalLogs.set(previewOwnerKey(previewOwnerOf(record)), {
           lines: bounded.lines,
           truncated: result.truncated || bounded.truncated,
         });
@@ -553,10 +603,10 @@ export class PreviewService implements PreviewLifecycleCleanup {
     });
   }
 
-  private latest(agentId: string): PreviewRecord | null {
+  private latest(owner: PreviewOwnerRef): PreviewRecord | null {
     const records = this.store
       .snapshot()
-      .previews.filter((preview) => preview.agentId === agentId)
+      .previews.filter((preview) => previewOwnerMatches(preview, owner))
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
     return records[0] ?? null;
   }
@@ -578,26 +628,62 @@ export class PreviewService implements PreviewLifecycleCleanup {
     return { lines: safeLines, truncated };
   }
 
-  private async withLock<T>(agentId: string, operation: () => Promise<T>): Promise<T> {
-    const previous = this.locks.get(agentId) ?? Promise.resolve();
+  private async withLock<T>(
+    owner: PreviewOwnerRef,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const key = previewOwnerKey(owner);
+    const previous = this.locks.get(key) ?? Promise.resolve();
     let release!: () => void;
     const current = new Promise<void>((resolve) => {
       release = resolve;
     });
     const queued = previous.then(() => current);
-    this.locks.set(agentId, queued);
+    this.locks.set(key, queued);
     await previous;
     try {
       return await operation();
     } finally {
       release();
-      if (this.locks.get(agentId) === queued) this.locks.delete(agentId);
+      if (this.locks.get(key) === queued) this.locks.delete(key);
     }
   }
 
-  private async requirePermission(agentId: string, permission: PermissionId): Promise<void> {
+  /**
+   * Validates the owner and returns its workspace.
+   *
+   * Agent previews keep their extra lifecycle rule: a stopped Agent has no
+   * runtime to preview. Project previews are deliberately independent of any
+   * Agent's lifecycle, since the shared artifact outlives individual turns.
+   */
+  private async resolveOwner(owner: PreviewOwnerRef): Promise<PreviewOwnerTarget> {
+    if (owner.kind === "agent") {
+      const agent = this.agentService.getAgent(owner.agentId);
+      if (agent.status === "stopped") {
+        throw new PreviewError(
+          "PREVIEW_START_FAILED",
+          409,
+          "Start the Agent before starting its preview",
+        );
+      }
+      return { workspacePath: agent.workspacePath, label: "Agent" };
+    }
+    return this.ownerResolver.resolve(owner);
+  }
+
+  private async requirePermission(
+    owner: PreviewOwnerRef,
+    action: "inspect" | "start" | "restart" | "stop" | "logs",
+  ): Promise<void> {
+    const permission = (
+      owner.kind === "agent" ? "preview." + action : "project.preview." + action
+    ) as PermissionId;
     try {
-      await this.authorization.require({ agentId, permission });
+      await this.authorization.require(
+        owner.kind === "agent"
+          ? { agentId: owner.agentId, permission }
+          : { projectId: owner.projectId, permission },
+      );
     } catch (error) {
       // Authorization implementations are allowed to use their own internal
       // error type, but the HTTP boundary always receives a safe normalized

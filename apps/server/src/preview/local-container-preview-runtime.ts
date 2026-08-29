@@ -119,7 +119,7 @@ export function buildPreviewContainerRunArgs(
     "--label",
     "io.codejam.launchpad=preview-runtime",
     "--label",
-    "io.codejam.agent-id=" + input.agentId,
+    "io.codejam.preview-owner=" + input.ownerKey,
     "--label",
     "io.codejam.preview-id=" + input.previewId,
     "--label",

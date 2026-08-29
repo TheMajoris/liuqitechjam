@@ -7,11 +7,17 @@ import {
   OrchestrationTurnSchema,
 } from "./orchestration/schemas.js";
 import { PreviewRecordSchema } from "./preview/preview-types.js";
+import {
+  ProjectAgentAttachmentSchema,
+  ProjectSchema,
+  ProjectWriteLeaseSchema,
+} from "./projects/project-types.js";
 import type { Database } from "./types.js";
 
 const emptyDatabase = (): Database => ({
   version: 1,
   agents: [],
+  agentConversations: [],
   messages: [],
   runs: [],
   orchestrations: [],
@@ -19,6 +25,9 @@ const emptyDatabase = (): Database => ({
   orchestrationEvents: [],
   orchestrationContinuationPrompts: [],
   previews: [],
+  projects: [],
+  projectAgents: [],
+  projectLeases: [],
 });
 
 const ORCHESTRATION_COLLECTIONS = [
@@ -27,7 +36,16 @@ const ORCHESTRATION_COLLECTIONS = [
   "orchestrationEvents",
   "orchestrationContinuationPrompts",
 ] as const;
-const ADDITIVE_COLLECTIONS = [...ORCHESTRATION_COLLECTIONS, "previews"] as const;
+const PROJECT_COLLECTIONS = ["projects", "projectAgents", "projectLeases"] as const;
+// Core Agent data, validated by shape like agents/messages/runs rather than
+// by a Zod projection, so additive fields survive a round trip.
+const AGENT_COLLECTIONS = ["agentConversations"] as const;
+const ADDITIVE_COLLECTIONS = [
+  ...ORCHESTRATION_COLLECTIONS,
+  "previews",
+  ...PROJECT_COLLECTIONS,
+  ...AGENT_COLLECTIONS,
+] as const;
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -80,12 +98,22 @@ function normalizeDatabase(value: unknown): Database {
     normalized.orchestrationContinuationPrompts,
   );
   const validPreviews = PreviewRecordSchema.array().safeParse(normalized.previews);
+  const validProjects = ProjectSchema.array().safeParse(normalized.projects);
+  const validProjectAgents = ProjectAgentAttachmentSchema.array().safeParse(
+    normalized.projectAgents,
+  );
+  const validProjectLeases = ProjectWriteLeaseSchema.array().safeParse(
+    normalized.projectLeases,
+  );
   if (
     !validSessions.success ||
     !validTurns.success ||
     !validEvents.success ||
     !validContinuationPrompts.success ||
-    !validPreviews.success
+    !validPreviews.success ||
+    !validProjects.success ||
+    !validProjectAgents.success ||
+    !validProjectLeases.success
   ) {
     throw new Error("Unsupported database format");
   }

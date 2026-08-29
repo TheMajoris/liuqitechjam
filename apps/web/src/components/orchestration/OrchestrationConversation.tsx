@@ -5,6 +5,8 @@ import type {
   OrchestrationSessionDetail,
   OrchestrationTurn,
 } from "../../types";
+import { MarkdownMessage } from "../MarkdownMessage";
+import { StickyComposer } from "../StickyComposer";
 import { AgentAvatar } from "./AgentAvatar";
 import {
   agentName,
@@ -104,9 +106,19 @@ export function OrchestrationConversation({
   }
 
   const note = closingNote(detail!);
-  const canContinue = !active && session.status !== "draft" && onContinue;
+
+  // Whoever is mid-turn, so the composer can say why it is locked.
+  const workingParticipant = session.participants.find(
+    (participant) => participant.id === session.currentParticipantId,
+  );
+  const workingName = workingParticipant
+    ? agentName(agents, workingParticipant.agentId)
+    : null;
+  const composerLocked = active || action !== null || session.status === "draft";
 
   return (
+    <div className="orch-chat-pane">
+      <div className="orch-chat-scroll">
     <section className="orch-chat" aria-labelledby="orch-conversation-heading">
       <h2 className="orch-sr-only" id="orch-conversation-heading">Conversation</h2>
       <ol className="orch-chat-list" aria-label="Task and Agent replies in order">
@@ -183,9 +195,11 @@ export function OrchestrationConversation({
                     {turnStatusLabel(turn.status)} —{" "}
                     {humanizeFailure(turn.errorCode, turn.safeOutput)}
                   </p>
+                ) : turn.safeOutput ? (
+                  <MarkdownMessage className="orch-chat-text" content={turn.safeOutput} />
                 ) : (
                   <p className="orch-chat-text">
-                    {turn.safeOutput || "This Agent finished without leaving a reply."}
+                    This Agent finished without leaving a reply.
                   </p>
                 )}
                 {turn.outputTruncated && !unfinished && (
@@ -234,32 +248,39 @@ export function OrchestrationConversation({
         </p>
       )}
 
-      {canContinue && (
-        <form
-          className="orch-follow-up"
+      <div ref={bottomRef} aria-hidden="true" />
+    </section>
+      </div>
+
+      {/*
+        The composer stays mounted while the Team runs so the pane does not
+        reflow mid-turn; it is disabled rather than removed, and a follow-up
+        continues this same Team, Project, and shared workspace.
+      */}
+      {onContinue && (
+        <StickyComposer
+          value={followUp}
+          placeholder={
+            session.status === "draft"
+              ? "Start this conversation to reply…"
+              : "Ask the team to keep going…"
+          }
+          hint={
+            active
+              ? (workingName ?? "The team") + " is working…"
+              : "Enter to send · Shift + Enter for newline"
+          }
+          disabled={composerLocked}
+          sending={action === "continue"}
+          onChange={setFollowUp}
           onSubmit={(event) => {
             event.preventDefault();
-            if (!followUp.trim() || action !== null) return;
+            if (!followUp.trim() || composerLocked) return;
             onContinue(followUp, session.id);
             setFollowUp("");
           }}
-        >
-          <label htmlFor="orch-follow-up-input">Continue this conversation</label>
-          <textarea
-            id="orch-follow-up-input"
-            value={followUp}
-            onChange={(event) => setFollowUp(event.target.value)}
-            placeholder="Ask the team to keep going…"
-            rows={2}
-            disabled={action !== null}
-          />
-          <button type="submit" className="orch-button orch-button-primary" disabled={!followUp.trim() || action !== null}>
-            {action === "continue" ? "Continuing…" : "Continue"}
-          </button>
-        </form>
+        />
       )}
-
-      <div ref={bottomRef} aria-hidden="true" />
-    </section>
+    </div>
   );
 }

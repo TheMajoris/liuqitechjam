@@ -3616,21 +3616,29 @@ textarea:focus {
 }
 
 /* Collapsed rail: the only affordance that reopens the panel in-place. */
+/* A slim tab, not a second column: it only has to be findable. */
 .preview-rail {
   flex-shrink: 0;
-  width: 42px;
+  align-self: center;
+  width: 22px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  padding: 16px 0;
+  gap: 8px;
+  padding: 14px 0;
   border: 1px solid var(--hairline);
-  border-radius: var(--radius-lg);
+  border-right: 0;
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
   background: var(--paper);
-  color: #6f7068;
+  color: #8b8c84;
   cursor: pointer;
   transition: 180ms var(--ease-out);
+}
+
+.preview-rail-arrow {
+  font-size: 13px;
+  line-height: 1;
 }
 
 .preview-rail:hover {
@@ -3639,13 +3647,7 @@ textarea:focus {
   box-shadow: var(--elevation-1);
 }
 
-.preview-rail-label {
-  writing-mode: vertical-rl;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-}
+
 
 /* Status dot shared by the header toggle and the collapsed rail. */
 .preview-toggle-dot {
@@ -3714,7 +3716,7 @@ textarea:focus {
   }
 
   .preview-rail {
-    width: 36px;
+    width: 20px;
   }
 
   .conversation-pane .messages {
@@ -3730,4 +3732,498 @@ textarea:focus {
   .preview-sidecar {
     animation: none;
   }
+}
+
+/* ============================================================
+   Shared Project: Team identity and canonical preview
+   ============================================================ */
+
+.orch-run-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* The shared artifact leads; the Team's derived task name sits under it. */
+.orch-project-badge {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  align-self: flex-start;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 4px 12px;
+  background: var(--purple-soft);
+  color: #4b3d86;
+}
+
+.orch-project-badge strong {
+  font-size: 12px;
+  letter-spacing: -0.01em;
+}
+
+.orch-project-field {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  background: #f7f6f1;
+}
+
+.orch-project-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.orch-project-toggle input {
+  margin-top: 2px;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--purple);
+}
+
+.orch-project-toggle > span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.orch-project-field input[type="text"],
+.orch-project-field input:not([type="checkbox"]) {
+  margin-top: 10px;
+  min-height: 38px;
+  width: 100%;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  padding: 0 12px;
+  background: white;
+}
+
+.project-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  padding: 16px max(20px, calc((100% - 900px) / 2));
+}
+
+.project-preview-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.project-preview-title h3 {
+  margin: 3px 0 0;
+  font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
+  font-size: 17px;
+  letter-spacing: -0.03em;
+}
+
+/* The canonical artifact gets the room; logs and controls stay secondary. */
+.project-preview-stage {
+  flex: 1;
+  min-height: 320px;
+  display: flex;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: white;
+  box-shadow: var(--elevation-1);
+  overflow: hidden;
+}
+
+.project-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.project-preview-actions .button {
+  min-height: 34px;
+  font-size: 12px;
+}
+
+@media (max-width: 680px) {
+  .project-preview {
+    padding: 12px;
+  }
+
+  .project-preview-stage {
+    min-height: 240px;
+  }
+}
+
+/* ============================================================
+   Team conversation: sticky composer over a scrolling thread
+   ------------------------------------------------------------
+   Only the Conversation tab hands its scrolling to an inner region.
+   Timeline and Preview keep the panel's own scroll untouched.
+   ============================================================ */
+
+.orch-run-tab-panel.is-conversation {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.orch-chat-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.orch-chat-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Match the composer column to the conversation's own 820px measure. */
+.orch-chat-pane .composer-dock {
+  padding-inline: max(clamp(20px, 5vw, 40px), calc((100% - 820px) / 2));
+  background: transparent;
+}
+
+.orch-chat-pane .composer-dock::before {
+  background: linear-gradient(to bottom, rgba(251, 250, 247, 0), rgba(251, 250, 247, 0.92));
+}
+
+/* ============================================================
+   Private Agent conversations (nested in the sidebar)
+   ============================================================ */
+
+.agent-branch {
+  display: flex;
+  flex-direction: column;
+}
+
+.conversation-rail {
+  display: flex;
+  flex-direction: column;
+  margin: 2px 0 6px 14px;
+  padding-left: 10px;
+  border-left: 1px solid #3a3a35;
+}
+
+.conversation-rail-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.conversation-disclosure {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 5px 4px;
+  color: #8e8e87;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.conversation-disclosure:hover {
+  color: #d8d6cf;
+}
+
+.conversation-rail .disclosure {
+  color: #7a7a73;
+  font-size: 10px;
+}
+
+.conversation-count {
+  color: #6f6f68;
+  letter-spacing: 0;
+}
+
+.conversation-new {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #8e8e87;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.conversation-new:hover:not(:disabled) {
+  color: #f5f3ed;
+  background: #33332f;
+}
+
+.conversation-new:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.conversation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 240px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.conversation-empty {
+  margin: 3px 4px;
+  color: #6f6f68;
+  font-size: 10px;
+}
+
+.conversation-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: 6px;
+}
+
+.conversation-row:hover {
+  background: #2e2e2a;
+}
+
+.conversation-row.is-selected {
+  background: #37324a;
+}
+
+.conversation-select {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 6px 2px 6px 6px;
+  color: #b4b3ab;
+  font-size: 11px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.conversation-row.is-selected .conversation-select {
+  color: #e7e4f6;
+  font-weight: 600;
+}
+
+.conversation-menu-button {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  margin-right: 3px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #8b8c84;
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.conversation-row:hover .conversation-menu-button,
+.conversation-row.is-selected .conversation-menu-button,
+.conversation-menu-button:focus-visible {
+  opacity: 1;
+}
+
+.conversation-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 8;
+  min-width: 128px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: white;
+  box-shadow: var(--elevation-2);
+}
+
+.conversation-menu button {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 7px 9px;
+  color: #4b4c46;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.conversation-menu button:hover {
+  background: rgba(60, 60, 67, 0.06);
+}
+
+.conversation-menu button.is-danger {
+  color: var(--red);
+}
+
+.conversation-rename {
+  flex: 1;
+  min-width: 0;
+  min-height: 28px;
+  margin: 1px;
+  border: 1px solid var(--purple);
+  border-radius: 6px;
+  padding: 0 6px;
+  background: #1f1f1c;
+  color: #f0eee8;
+  font-size: 11px;
+}
+
+.conversation-confirm {
+  width: min(420px, 100%);
+}
+
+.conversation-confirm h2 {
+  margin: 0 0 8px;
+  font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
+  font-size: 17px;
+  letter-spacing: -0.02em;
+}
+
+.conversation-confirm p {
+  margin: 0 0 18px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* The collapsed sidebar has no room for nested threads. */
+@media (max-width: 900px) {
+  .conversation-rail {
+    display: none;
+  }
+}
+
+/* ============================================================
+   Markdown in Agent replies
+   ------------------------------------------------------------
+   Deliberately quiet: this is conversational text, not a README,
+   so it inherits the surrounding type rather than importing
+   GitHub-style rules, badges, and heavy heading chrome.
+   ============================================================ */
+
+/*
+ * The plain-text bubble sets `white-space: pre-wrap` so raw replies keep their
+ * line breaks. Parsed Markdown already carries its own block structure, so that
+ * would double every gap — normal flow wins inside the renderer.
+ */
+.markdown-message {
+  white-space: normal;
+}
+
+.markdown-message > :first-child {
+  margin-top: 0;
+}
+
+.markdown-message > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-message p {
+  margin: 0 0 0.7em;
+}
+
+.markdown-message .markdown-heading {
+  margin: 1.1em 0 0.45em;
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.markdown-message strong {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.markdown-message ul,
+.markdown-message ol {
+  margin: 0 0 0.7em;
+  padding-left: 1.35em;
+}
+
+.markdown-message li {
+  margin-bottom: 0.28em;
+}
+
+.markdown-message li::marker {
+  color: #a2a39b;
+}
+
+.markdown-message a {
+  color: var(--purple-dark);
+  /* A pasted URL must never widen the bubble. */
+  overflow-wrap: anywhere;
+}
+
+.markdown-message blockquote {
+  margin: 0 0 0.7em;
+  padding: 2px 0 2px 12px;
+  border-left: 2px solid var(--hairline);
+  color: var(--muted);
+}
+
+.markdown-message code {
+  border-radius: 5px;
+  padding: 1px 5px;
+  background: rgba(60, 60, 67, 0.07);
+  font: 0.88em/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere;
+}
+
+.markdown-message pre {
+  max-width: 100%;
+  margin: 0 0 0.75em;
+  padding: 11px 13px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: #f6f5f0;
+  /* Code scrolls inside its own box instead of stretching the conversation. */
+  overflow-x: auto;
+}
+
+.markdown-message pre code {
+  padding: 0;
+  background: transparent;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.markdown-message hr {
+  margin: 1em 0;
+  border: 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.markdown-message table {
+  display: block;
+  max-width: 100%;
+  margin-bottom: 0.7em;
+  border-collapse: collapse;
+  overflow-x: auto;
+}
+
+.markdown-message th,
+.markdown-message td {
+  border: 1px solid var(--hairline);
+  padding: 5px 9px;
+  text-align: left;
 }

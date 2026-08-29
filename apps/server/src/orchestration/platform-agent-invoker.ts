@@ -3,6 +3,8 @@ import type { AgentService } from "../agent-service.js";
 export interface PlatformAgentInvokerInput {
   agentId: string;
   prompt: string;
+  /** Scopes the child Run to a shared Project workspace when present. */
+  projectId?: string | undefined;
   timeoutMs: number;
   signal?: AbortSignal;
   /** Called after the platform accepts the child Run, before waiting for it. */
@@ -31,7 +33,13 @@ export class PlatformAgentInvoker implements PlatformAgentInvokerContract {
   async invoke(
     input: PlatformAgentInvokerInput,
   ): Promise<{ runId: string; output: string }> {
-    const accepted = await this.service.sendMessage(input.agentId, input.prompt);
+    // Every Team turn is tagged at this boundary. The prompt still reaches
+    // AgentService and the runner unchanged — only the Playground projection
+    // excludes it, because the orchestrator authored it, not the user.
+    const accepted = await this.service.sendMessage(input.agentId, input.prompt, {
+      origin: "orchestration",
+      ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
+    });
     let run;
     try {
       await input.onRunAccepted?.(accepted.run.id);

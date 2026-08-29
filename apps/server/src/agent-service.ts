@@ -16,10 +16,13 @@ import type {
 import { JsonStore } from "./store.js";
 import type {
   Agent,
+  AgentConversation,
   AgentRun,
   AgentRunner,
   CreateAgentInput,
+  Database,
   Message,
+  MessageOrigin,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -28,9 +31,32 @@ import {
   composeRuntimeContextPrompt,
   type PreviewContextProvider,
 } from "./preview/preview-context-provider.js";
+import {
+  projectRuntimeContextLines,
+  type ProjectExecutionScope,
+  type ProjectRunBinding,
+} from "./projects/project-execution.js";
 
 const now = () => new Date().toISOString();
 const RUN_POLL_INTERVAL_MS = 50;
+const DEFAULT_CONVERSATION_TITLE = "New conversation";
+const MAX_CONVERSATION_TITLE_LENGTH = 80;
+
+/**
+ * Derives a conversation title from the user's first message.
+ *
+ * Deliberately mechanical: naming a conversation is not worth a second model
+ * call, and a deterministic title is easier to test.
+ */
+export function deriveConversationTitle(prompt: string): string {
+  const firstLine = prompt.trim().split("\n").find((line) => line.trim().length > 0) ?? "";
+  const collapsed = firstLine.replace(/\s+/g, " ").trim();
+  if (collapsed.length === 0) return DEFAULT_CONVERSATION_TITLE;
+  if (collapsed.length <= MAX_CONVERSATION_TITLE_LENGTH) return collapsed;
+  const clipped = collapsed.slice(0, MAX_CONVERSATION_TITLE_LENGTH);
+  const lastSpace = clipped.lastIndexOf(" ");
+  return (lastSpace > 24 ? clipped.slice(0, lastSpace) : clipped).trimEnd() + "…";
+}
 
 function isTerminalRun(run: AgentRun): boolean {
   return (
@@ -54,9 +80,75 @@ type AgentModelResolver = WorkerModelResolver & {
   effectiveModelRef?: (modelRef: ModelRef | undefined) => ModelRef | undefined;
 };
 
+
+function normalizeConversationTitle(title: string | undefined): string | null {
+  const trimmed = (title ?? "").trim().replace(/\s+/g, " ");
+  if (trimmed.length === 0) return null;
+  return trimmed.slice(0, MAX_CONVERSATION_TITLE_LENGTH);
+}
+
+/**
+ * Adopts pre-conversation direct history into one default conversation.
+ *
+ * The old `Agent.codexThreadId` was the Agent's private session, so it moves to
+ * that conversation rather than being copied: leaving it on the Agent as well
+ * would let a Team turn and a private turn resume the same thread. Project
+ * threads live on the attachment and are never touched here.
+ */
+function migrateLegacyConversations(database: Database): void {
+  const orphans = database.messages.filter(
+    (message) =>
+      message.conversationId === undefined && (message.origin ?? "direct") === "direct",
+  );
+  if (orphans.length === 0) return;
+
+  const byAgent = new Map<string, Message[]>();
+  for (const message of orphans) {
+    const bucket = byAgent.get(message.agentId) ?? [];
+    bucket.push(message);
+    byAgent.set(message.agentId, bucket);
+  }
+
+  for (const [agentId, messages] of byAgent) {
+    const agent = database.agents.find((item) => item.id === agentId);
+    if (!agent) continue;
+    const ordered = [...messages].sort((left, right) =>
+      left.createdAt.localeCompare(right.createdAt),
+    );
+    const firstPrompt = ordered.find((message) => message.role === "user")?.content ?? "";
+    const timestamp = now();
+    const conversation: AgentConversation = {
+      id: randomUUID(),
+      agentId,
+      title: firstPrompt
+        ? deriveConversationTitle(firstPrompt)
+        : DEFAULT_CONVERSATION_TITLE,
+      codexThreadId: agent.codexThreadId,
+      createdAt: ordered[0]?.createdAt ?? timestamp,
+      updatedAt: ordered[ordered.length - 1]?.createdAt ?? timestamp,
+    };
+    database.agentConversations.push(conversation);
+    agent.codexThreadId = null;
+
+    const runIds = new Set<string>();
+    for (const message of ordered) {
+      const stored = database.messages.find((item) => item.id === message.id);
+      if (!stored) continue;
+      stored.conversationId = conversation.id;
+      runIds.add(stored.runId);
+    }
+    for (const run of database.runs) {
+      if (run.agentId === agentId && runIds.has(run.id)) {
+        run.conversationId = conversation.id;
+      }
+    }
+  }
+}
+
 export class AgentService {
   private previewLifecycle: PreviewLifecycleCleanup | undefined;
   private previewContext: PreviewContextProvider | undefined;
+  private projectScope: ProjectExecutionScope | undefined;
   private readonly activeExecutions = new Map<
     string,
     { runId: string; execution: Promise<void> }
@@ -89,6 +181,11 @@ export class AgentService {
     this.previewContext = previewContext;
   }
 
+  /** Attach the Project seam that scopes a run to a shared workspace. */
+  setProjectExecutionScope(projectScope: ProjectExecutionScope): void {
+    this.projectScope = projectScope;
+  }
+
   async initialize(): Promise<void> {
     await this.store.initialize();
     await this.workspaces.initialize();
@@ -106,7 +203,110 @@ export class AgentService {
           agent.updatedAt = now();
         }
       }
+      migrateLegacyConversations(database);
     });
+  }
+
+  // ------------------------------------------------- private conversations
+
+  listConversations(agentId: string): AgentConversation[] {
+    this.getAgent(agentId);
+    return this.store
+      .snapshot()
+      .agentConversations.filter((item) => item.agentId === agentId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  getConversation(agentId: string, conversationId: string): AgentConversation {
+    const conversation = this.store
+      .snapshot()
+      .agentConversations.find(
+        (item) => item.id === conversationId && item.agentId === agentId,
+      );
+    if (!conversation) {
+      throw new HttpError(404, "Conversation not found");
+    }
+    return conversation;
+  }
+
+  /**
+   * Starts a new private conversation.
+   *
+   * A fresh conversation means fresh messages and a fresh Codex thread, but
+   * deliberately the same Agent workspace: the point of a second conversation
+   * is to work on the same files with a clean session.
+   */
+  async createConversation(agentId: string, title?: string): Promise<AgentConversation> {
+    this.getAgent(agentId);
+    const timestamp = now();
+    const conversation: AgentConversation = {
+      id: randomUUID(),
+      agentId,
+      title: normalizeConversationTitle(title) ?? DEFAULT_CONVERSATION_TITLE,
+      codexThreadId: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    await this.store.mutate((database) => {
+      database.agentConversations.push(conversation);
+    });
+    return conversation;
+  }
+
+  async renameConversation(
+    agentId: string,
+    conversationId: string,
+    title: string,
+  ): Promise<AgentConversation> {
+    this.getConversation(agentId, conversationId);
+    const normalized = normalizeConversationTitle(title);
+    if (!normalized) {
+      throw new HttpError(422, "A conversation title is required");
+    }
+    return this.store.mutate((database) => {
+      const stored = database.agentConversations.find((item) => item.id === conversationId);
+      if (!stored) throw new HttpError(404, "Conversation not found");
+      stored.title = normalized;
+      stored.updatedAt = now();
+      return structuredClone(stored);
+    });
+  }
+
+  /**
+   * Deletes one conversation and its history.
+   *
+   * The Agent, its workspace files, its other conversations, its preview, and
+   * its Project attachments are all untouched — only this thread of talk goes.
+   */
+  async deleteConversation(
+    agentId: string,
+    conversationId: string,
+  ): Promise<{ deleted: true }> {
+    this.getConversation(agentId, conversationId);
+    await this.store.mutate((database) => {
+      database.agentConversations = database.agentConversations.filter(
+        (item) => item.id !== conversationId,
+      );
+      database.messages = database.messages.filter(
+        (item) => item.conversationId !== conversationId,
+      );
+      database.runs = database.runs.filter(
+        (item) => item.conversationId !== conversationId,
+      );
+    });
+    return { deleted: true };
+  }
+
+  /** Resolves the conversation a direct turn belongs to, creating one if needed. */
+  private async resolveConversation(
+    agentId: string,
+    conversationId: string | undefined,
+  ): Promise<AgentConversation> {
+    if (conversationId !== undefined) {
+      return this.getConversation(agentId, conversationId);
+    }
+    const existing = this.listConversations(agentId)[0];
+    return existing ?? (await this.createConversation(agentId));
   }
 
   listAgents(): Agent[] {
@@ -187,7 +387,15 @@ export class AgentService {
       if (modelChanged) {
         // Codex sessions are model/provider-specific. Keep the old session
         // files in CODEX_HOME, but force the next run to create a fresh thread.
+        // Private conversations each hold their own thread, so all of them
+        // reset too. Project sessions belong to the Project attachment and are
+        // deliberately left alone.
         agent.codexThreadId = null;
+        for (const conversation of database.agentConversations) {
+          if (conversation.agentId !== id) continue;
+          conversation.codexThreadId = null;
+          conversation.updatedAt = now();
+        }
       }
       agent.lastError = null;
       agent.updatedAt = now();
@@ -208,6 +416,9 @@ export class AgentService {
     const archivedWorkspace = await this.workspaces.archive(agent);
     await this.store.mutate((database) => {
       database.agents = database.agents.filter((item) => item.id !== id);
+      database.agentConversations = database.agentConversations.filter(
+        (item) => item.agentId !== id,
+      );
       database.messages = database.messages.filter((item) => item.agentId !== id);
       database.runs = database.runs.filter((item) => item.agentId !== id);
       database.previews = database.previews.filter((item) => item.agentId !== id);
@@ -227,11 +438,30 @@ export class AgentService {
     return stopped;
   }
 
-  getMessages(agentId: string): Message[] {
+  /**
+   * The Agent's own Playground conversation.
+   *
+   * Team turns are deliberately excluded: the orchestrator authored those
+   * prompts, not the user, so projecting them here would put words in the
+   * user's mouth. They remain persisted, and remain visible in the Team
+   * conversation and timeline.
+   */
+  getMessages(
+    agentId: string,
+    options: { origin?: MessageOrigin | "all"; conversationId?: string } = {},
+  ): Message[] {
     this.getAgent(agentId);
+    const origin = options.origin ?? "direct";
+    const conversationId = options.conversationId;
+    if (conversationId !== undefined) this.getConversation(agentId, conversationId);
     return this.store
       .snapshot()
-      .messages.filter((message) => message.agentId === agentId)
+      .messages.filter(
+        (message) =>
+          message.agentId === agentId &&
+          (origin === "all" || (message.origin ?? "direct") === origin) &&
+          (conversationId === undefined || message.conversationId === conversationId),
+      )
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
@@ -326,17 +556,29 @@ export class AgentService {
     }
   }
 
-  getRuns(agentId: string): AgentRun[] {
+  getRuns(agentId: string, options: { conversationId?: string } = {}): AgentRun[] {
     this.getAgent(agentId);
+    const conversationId = options.conversationId;
     return this.store
       .snapshot()
-      .runs.filter((run) => run.agentId === agentId)
+      .runs.filter(
+        (run) =>
+          run.agentId === agentId &&
+          (conversationId === undefined || run.conversationId === conversationId),
+      )
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
   async sendMessage(
     agentId: string,
     prompt: string,
+    options: {
+      projectId?: string | undefined;
+      /** Team turns are tagged so the Playground never shows them. */
+      origin?: MessageOrigin | undefined;
+      /** Private conversation for a direct turn; ignored for Team turns. */
+      conversationId?: string | undefined;
+    } = {},
   ): Promise<{ run: AgentRun; message: Message }> {
     if (this.agentCancellationLocks.has(agentId)) {
       throw new HttpError(409, "This Agent is currently being cancelled");
@@ -350,11 +592,25 @@ export class AgentService {
       );
     }
     const runtimeModel = this.modelResolver.resolve(agentBeforeRun.modelRef);
+    // Validate Project membership before a Run record exists, so an
+    // unattached Agent never leaves a queued run behind.
+    const projectId = options.projectId;
+    if (projectId !== undefined) {
+      this.requireProjectScope().assertRunnable(projectId, agentId);
+    }
+    // Only direct Playground turns belong to a private conversation. Team turns
+    // keep their own session scope and stay out of private history entirely.
+    const origin: MessageOrigin = options.origin ?? "direct";
+    const conversation =
+      origin === "direct" && projectId === undefined
+        ? await this.resolveConversation(agentId, options.conversationId)
+        : null;
     const timestamp = now();
     const runId = randomUUID();
     const run: AgentRun = {
       id: runId,
       agentId,
+      ...(conversation === null ? {} : { conversationId: conversation.id }),
       status: "queued",
       prompt,
       output: null,
@@ -370,6 +626,8 @@ export class AgentService {
       runId,
       role: "user",
       content: prompt,
+      origin,
+      ...(conversation === null ? {} : { conversationId: conversation.id }),
       createdAt: timestamp,
     };
     const agentAtStart = await this.store.mutate((database) => {
@@ -385,13 +643,31 @@ export class AgentService {
       }
       database.runs.push(run);
       database.messages.push(message);
+      if (conversation !== null) {
+        const storedConversation = database.agentConversations.find(
+          (item) => item.id === conversation.id,
+        );
+        if (storedConversation) {
+          if (storedConversation.title === DEFAULT_CONVERSATION_TITLE) {
+            storedConversation.title = deriveConversationTitle(prompt);
+          }
+          storedConversation.updatedAt = timestamp;
+        }
+      }
       const snapshot = structuredClone(storedAgent);
       storedAgent.status = "busy";
       storedAgent.lastError = null;
       storedAgent.updatedAt = timestamp;
       return snapshot;
     });
-    const execution = this.executeRun(agentAtStart, run, runtimeModel);
+    const execution = this.executeRun(
+      agentAtStart,
+      run,
+      runtimeModel,
+      projectId,
+      origin,
+      conversation,
+    );
     this.activeExecutions.set(agentId, { runId, execution });
     void execution
       .finally(() => {
@@ -426,6 +702,9 @@ export class AgentService {
     agentAtStart: Agent,
     run: AgentRun,
     runtimeModel: WorkerRuntimeModelConfig,
+    projectId?: string | undefined,
+    origin: MessageOrigin = "direct",
+    conversation: AgentConversation | null = null,
   ): Promise<void> {
     await this.store.mutate((database) => {
       const storedRun = database.runs.find((item) => item.id === run.id);
@@ -434,15 +713,31 @@ export class AgentService {
         storedRun.startedAt = now();
       }
     });
+    // Held for the whole turn when the run is Project-scoped. The lease and
+    // the shared-scope thread are settled in the `finally` below.
+    let binding: ProjectRunBinding | null = null;
+    let outcome: { codexThreadId: string | null } | null = null;
     try {
       if (this.cancellationRequests.has(run.id)) {
         throw new RunCancelledError();
       }
+      if (projectId !== undefined) {
+        binding = await this.requireProjectScope().beginTurn(
+          agentAtStart,
+          projectId,
+          run.id,
+        );
+      }
       const result = await this.runner.run({
         agentId: agentAtStart.id,
-        workspacePath: agentAtStart.workspacePath,
-        prompt: await this.executionPrompt(agentAtStart.id, run.prompt),
-        threadId: agentAtStart.codexThreadId,
+        workspacePath: binding?.workspacePath ?? agentAtStart.workspacePath,
+        ...(projectId === undefined ? {} : { projectId }),
+        prompt: await this.executionPrompt(agentAtStart.id, run.prompt, binding),
+        threadId: binding
+          ? binding.codexThreadId
+          : conversation
+            ? conversation.codexThreadId
+            : agentAtStart.codexThreadId,
         model: runtimeModel,
       });
       const completedAt = now();
@@ -470,13 +765,28 @@ export class AgentService {
           runId: run.id,
           role: "assistant",
           content: result.output,
+          origin,
+          ...(conversation === null ? {} : { conversationId: conversation.id }),
           createdAt: completedAt,
         });
         agent.status = "ready";
-        agent.codexThreadId = result.threadId;
+        if (binding === null && conversation === null) {
+          // A Team turn with no Project: the Agent-level session is its scope.
+          agent.codexThreadId = result.threadId;
+        }
+        if (conversation !== null) {
+          const storedConversation = database.agentConversations.find(
+            (item) => item.id === conversation.id,
+          );
+          if (storedConversation) {
+            storedConversation.codexThreadId = result.threadId;
+            storedConversation.updatedAt = completedAt;
+          }
+        }
         agent.lastError = null;
         agent.updatedAt = completedAt;
       });
+      if (binding !== null) outcome = { codexThreadId: result.threadId };
     } catch (error) {
       const completedAt = now();
       const cancelled =
@@ -505,7 +815,22 @@ export class AgentService {
           agent.updatedAt = completedAt;
         }
       });
+    } finally {
+      // The write lease must never outlive its turn, on any path: success,
+      // failure, cancellation, or a runner that threw before producing output.
+      if (binding !== null) {
+        await this.requireProjectScope()
+          .endTurn(binding.projectId, agentAtStart.id, run.id, outcome)
+          .catch(() => undefined);
+      }
     }
+  }
+
+  private requireProjectScope(): ProjectExecutionScope {
+    if (!this.projectScope) {
+      throw new HttpError(503, "Project execution is not configured");
+    }
+    return this.projectScope;
   }
 
   /**
@@ -516,11 +841,20 @@ export class AgentService {
    * Preview state without the conversation history being rewritten. A missing
    * or failing provider degrades to the untouched user prompt.
    */
-  private async executionPrompt(agentId: string, prompt: string): Promise<string> {
-    if (!this.previewContext) return prompt;
+  private async executionPrompt(
+    agentId: string,
+    prompt: string,
+    binding: ProjectRunBinding | null,
+  ): Promise<string> {
+    const projectLines = binding ? projectRuntimeContextLines(binding) : [];
+    if (!this.previewContext) {
+      return projectLines.length === 0
+        ? prompt
+        : composeRuntimeContextPrompt(prompt, { status: "not_started" }, projectLines);
+    }
     try {
       const context = await this.previewContext.getForAgent(agentId);
-      return composeRuntimeContextPrompt(prompt, context);
+      return composeRuntimeContextPrompt(prompt, context, projectLines);
     } catch {
       return prompt;
     }

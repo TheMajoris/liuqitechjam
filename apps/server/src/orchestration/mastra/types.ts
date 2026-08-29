@@ -36,6 +36,8 @@ export interface MastraExecutionState {
 
 /** Runtime dependencies captured by the single generic Mastra loop step. */
 export interface MastraOrchestrationStepOptions {
+  /** Scopes every child Run to this shared Project workspace. */
+  projectId?: string | undefined;
   invoker: PlatformAgentInvokerContract;
   perAgentTimeoutMs: number;
   supervisorTimeoutMs?: number;

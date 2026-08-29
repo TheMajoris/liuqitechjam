@@ -9,7 +9,7 @@ import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { isPreviewError } from "./preview/preview-service.js";
 import type { PreviewLogsView } from "./preview/preview-service.js";
-import type { PreviewView } from "./preview/preview-types.js";
+import type { PreviewOwnerRef, PreviewView } from "./preview/preview-types.js";
 import {
   createModelRegistry,
   ModelCatalogError,
@@ -28,6 +28,12 @@ import type {
   OrchestrationSession,
   OrchestrationSessionDetail,
 } from "./orchestration/types.js";
+import { isProjectError } from "./projects/project-errors.js";
+import type {
+  CreateProjectInput,
+  ProjectView,
+  UpdateProjectInput,
+} from "./projects/project-types.js";
 
 /**
  * Narrow HTTP-facing seam for the orchestration module.
@@ -46,13 +52,26 @@ export interface OrchestrationServiceContract {
   deleteSession(id: string): Promise<{ deleted: boolean }>;
 }
 
+/** Narrow HTTP-facing seam for the Project control plane. */
+export interface ProjectServiceContract {
+  create(input: CreateProjectInput): Promise<ProjectView>;
+  list(): Promise<ProjectView[]>;
+  get(projectId: string): Promise<ProjectView>;
+  update(projectId: string, input: UpdateProjectInput): Promise<ProjectView>;
+  archive(projectId: string): Promise<{ archivedWorkspace: string }>;
+  attachAgent(projectId: string, agentId: string): Promise<ProjectView>;
+  detachAgent(projectId: string, agentId: string): Promise<ProjectView>;
+  attachTeam(projectId: string, teamId: string): Promise<ProjectView>;
+  detachTeam(projectId: string): Promise<ProjectView>;
+}
+
 /** Narrow HTTP-facing seam for the trusted preview control plane. */
 export interface PreviewServiceContract {
-  start(agentId: string): Promise<PreviewView>;
-  get(agentId: string): Promise<PreviewView>;
-  restart(agentId: string): Promise<PreviewView>;
-  stop(agentId: string): Promise<PreviewView>;
-  logs(agentId: string, tail?: number): Promise<PreviewLogsView>;
+  start(owner: PreviewOwnerRef): Promise<PreviewView>;
+  get(owner: PreviewOwnerRef): Promise<PreviewView>;
+  restart(owner: PreviewOwnerRef): Promise<PreviewView>;
+  stop(owner: PreviewOwnerRef): Promise<PreviewView>;
+  logs(owner: PreviewOwnerRef, tail?: number): Promise<PreviewLogsView>;
 }
 
 const agentIdParams = z.object({ id: z.string().uuid() });
@@ -69,6 +88,8 @@ const updateAgentBody = createAgentBody.partial().refine(
 );
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
+  /** Omitted by legacy clients; the Agent's most recent conversation is used. */
+  conversationId: z.string().uuid().optional(),
 });
 
 function parseAgentInput<T extends z.ZodTypeAny>(
@@ -121,6 +142,15 @@ function requirePreviewService(
   return service;
 }
 
+function requireProjectService(
+  service: ProjectServiceContract | undefined,
+): ProjectServiceContract {
+  if (!service) {
+    throw new HttpError(503, "Projects are not configured");
+  }
+  return service;
+}
+
 function parseOrchestrationInput(value: unknown): CreateOrchestrationInput {
   const parsed = CreateOrchestrationSchema.safeParse(value);
   if (!parsed.success) {
@@ -160,6 +190,7 @@ export async function createApp(
   orchestrationService?: OrchestrationServiceContract,
   modelRegistry: ModelRegistry = createModelRegistry(config),
   previewService?: PreviewServiceContract,
+  projectService?: ProjectServiceContract,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -326,24 +357,29 @@ export async function createApp(
 
   app.post("/api/agents/:id/preview/start", async (request, reply) => {
     const { id } = agentIdParams.parse(request.params);
-    const preview = await requirePreviewService(previewService).start(id);
+    const preview = await requirePreviewService(previewService).start({ kind: "agent", agentId: id });
     return reply.code(202).send({ preview });
   });
 
   app.get("/api/agents/:id/preview", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return { preview: await requirePreviewService(previewService).get(id) };
+    return {
+      preview: await requirePreviewService(previewService).get({
+        kind: "agent",
+        agentId: id,
+      }),
+    };
   });
 
   app.post("/api/agents/:id/preview/restart", async (request, reply) => {
     const { id } = agentIdParams.parse(request.params);
-    const preview = await requirePreviewService(previewService).restart(id);
+    const preview = await requirePreviewService(previewService).restart({ kind: "agent", agentId: id });
     return reply.code(202).send({ preview });
   });
 
   app.post("/api/agents/:id/preview/stop", async (request, reply) => {
     const { id } = agentIdParams.parse(request.params);
-    const preview = await requirePreviewService(previewService).stop(id);
+    const preview = await requirePreviewService(previewService).stop({ kind: "agent", agentId: id });
     return reply.code(202).send({ preview });
   });
 
@@ -352,23 +388,191 @@ export async function createApp(
     const query = z.object({
       tail: z.coerce.number().int().min(1).max(200).default(100),
     }).parse(request.query);
-    return requirePreviewService(previewService).logs(id, query.tail);
+    return requirePreviewService(previewService).logs({ kind: "agent", agentId: id }, query.tail);
+  });
+
+  // ------------------------------------------------------------- Projects
+  // A Project owns the shared workspace a Team collaborates on. Its preview
+  // is the canonical artifact and is independent of any single Agent.
+
+  const projectIdParams = z.object({ id: z.string().uuid() });
+  const projectAgentParams = z.object({
+    id: z.string().uuid(),
+    agentId: z.string().uuid(),
+  });
+  const projectTeamParams = z.object({
+    id: z.string().uuid(),
+    teamId: z.string().uuid(),
+  });
+  const createProjectBody = z.object({
+    name: z.string().trim().min(1).max(80),
+    description: z.string().trim().max(500).optional(),
+  });
+  const updateProjectBody = z.object({
+    name: z.string().trim().min(1).max(80).optional(),
+    description: z.string().trim().max(500).optional(),
+  });
+
+  app.post("/api/projects", async (request, reply) => {
+    const body = createProjectBody.parse(request.body);
+    const project = await requireProjectService(projectService).create(body);
+    return reply.code(201).send({ project });
+  });
+
+  app.get("/api/projects", async () => {
+    return { projects: await requireProjectService(projectService).list() };
+  });
+
+  app.get("/api/projects/:id", async (request) => {
+    const { id } = projectIdParams.parse(request.params);
+    return { project: await requireProjectService(projectService).get(id) };
+  });
+
+  app.patch("/api/projects/:id", async (request) => {
+    const { id } = projectIdParams.parse(request.params);
+    const body = updateProjectBody.parse(request.body);
+    return { project: await requireProjectService(projectService).update(id, body) };
+  });
+
+  // Archive rather than delete: the shared artifact is the point of the wave.
+  app.delete("/api/projects/:id", async (request) => {
+    const { id } = projectIdParams.parse(request.params);
+    return requireProjectService(projectService).archive(id);
+  });
+
+  app.post("/api/projects/:id/agents/:agentId", async (request) => {
+    const { id, agentId } = projectAgentParams.parse(request.params);
+    return { project: await requireProjectService(projectService).attachAgent(id, agentId) };
+  });
+
+  app.delete("/api/projects/:id/agents/:agentId", async (request) => {
+    const { id, agentId } = projectAgentParams.parse(request.params);
+    return { project: await requireProjectService(projectService).detachAgent(id, agentId) };
+  });
+
+  app.post("/api/projects/:id/team/:teamId", async (request) => {
+    const { id, teamId } = projectTeamParams.parse(request.params);
+    return { project: await requireProjectService(projectService).attachTeam(id, teamId) };
+  });
+
+  app.delete("/api/projects/:id/team", async (request) => {
+    const { id } = projectIdParams.parse(request.params);
+    return { project: await requireProjectService(projectService).detachTeam(id) };
+  });
+
+  app.post("/api/projects/:id/preview/start", async (request, reply) => {
+    const { id } = projectIdParams.parse(request.params);
+    const preview = await requirePreviewService(previewService).start({
+      kind: "project",
+      projectId: id,
+    });
+    return reply.code(202).send({ preview });
+  });
+
+  app.get("/api/projects/:id/preview", async (request) => {
+    const { id } = projectIdParams.parse(request.params);
+    return {
+      preview: await requirePreviewService(previewService).get({
+        kind: "project",
+        projectId: id,
+      }),
+    };
+  });
+
+  app.post("/api/projects/:id/preview/restart", async (request, reply) => {
+    const { id } = projectIdParams.parse(request.params);
+    const preview = await requirePreviewService(previewService).restart({
+      kind: "project",
+      projectId: id,
+    });
+    return reply.code(202).send({ preview });
+  });
+
+  app.post("/api/projects/:id/preview/stop", async (request, reply) => {
+    const { id } = projectIdParams.parse(request.params);
+    const preview = await requirePreviewService(previewService).stop({
+      kind: "project",
+      projectId: id,
+    });
+    return reply.code(202).send({ preview });
+  });
+
+  app.get("/api/projects/:id/preview/logs", async (request) => {
+    const { id } = projectIdParams.parse(request.params);
+    const query = z.object({
+      tail: z.coerce.number().int().min(1).max(200).default(100),
+    }).parse(request.query);
+    return requirePreviewService(previewService).logs(
+      { kind: "project", projectId: id },
+      query.tail,
+    );
+  });
+
+  // ------------------------------------- private Agent conversations
+  // Conversations scope direct history and the Codex session. They all share
+  // the one Agent workspace, so deleting a conversation never touches files.
+
+  const conversationParams = z.object({
+    id: z.string().uuid(),
+    conversationId: z.string().uuid(),
+  });
+  const conversationQuery = z.object({ conversationId: z.string().uuid().optional() });
+  const conversationTitleBody = z.object({ title: z.string().trim().min(1).max(80) });
+
+  app.get("/api/agents/:id/conversations", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    return { conversations: service.listConversations(id) };
+  });
+
+  app.post("/api/agents/:id/conversations", async (request, reply) => {
+    const { id } = agentIdParams.parse(request.params);
+    const body = z
+      .object({ title: z.string().trim().min(1).max(80).optional() })
+      .parse(request.body ?? {});
+    const conversation = await service.createConversation(id, body.title);
+    return reply.code(201).send({ conversation });
+  });
+
+  app.patch("/api/agents/:id/conversations/:conversationId", async (request) => {
+    const { id, conversationId } = conversationParams.parse(request.params);
+    const body = conversationTitleBody.parse(request.body);
+    return {
+      conversation: await service.renameConversation(id, conversationId, body.title),
+    };
+  });
+
+  app.delete("/api/agents/:id/conversations/:conversationId", async (request) => {
+    const { id, conversationId } = conversationParams.parse(request.params);
+    return service.deleteConversation(id, conversationId);
   });
 
   app.get("/api/agents/:id/messages", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return { messages: service.getMessages(id) };
+    const { conversationId } = conversationQuery.parse(request.query);
+    return {
+      messages: service.getMessages(
+        id,
+        conversationId === undefined ? {} : { conversationId },
+      ),
+    };
   });
 
   app.get("/api/agents/:id/runs", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return { runs: service.getRuns(id) };
+    const { conversationId } = conversationQuery.parse(request.query);
+    return {
+      runs: service.getRuns(id, conversationId === undefined ? {} : { conversationId }),
+    };
   });
 
   app.post("/api/agents/:id/messages", async (request, reply) => {
     const { id } = agentIdParams.parse(request.params);
     const body = messageBody.parse(request.body);
-    const result = await service.sendMessage(id, body.content);
+    const result = await service.sendMessage(id, body.content, {
+      ...(body.conversationId === undefined
+        ? {}
+        : { conversationId: body.conversationId }),
+    });
     return reply.code(202).send(result);
   });
 
@@ -395,6 +599,7 @@ export async function createApp(
     const appError = error instanceof Error ? error : new Error(String(error));
     const modelError = error instanceof ModelCatalogError ? error : null;
     const previewError = isPreviewError(error) ? error : null;
+    const projectError = isProjectError(error) ? error : null;
     const validationError = error instanceof z.ZodError;
     const details = validationError
       ? error.issues
@@ -430,6 +635,7 @@ export async function createApp(
       error: responseMessage,
       ...(modelError === null ? {} : { errorCode: modelError.code }),
       ...(previewError === null ? {} : { errorCode: previewError.code }),
+      ...(projectError === null ? {} : { errorCode: projectError.code }),
       ...(details !== undefined ? { details } : {}),
     });
   });

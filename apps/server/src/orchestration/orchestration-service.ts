@@ -79,8 +79,20 @@ export type OrchestrationSelectorFactory =
  */
 export type OrchestrationGraphRunner = LangGraphOrchestrationRunner;
 
+/**
+ * Narrow seam for binding a Team to a shared Project.
+ *
+ * Orchestration never touches Project storage or the filesystem directly; it
+ * only declares the association and lets ProjectService enforce the rules.
+ */
+export interface OrchestrationProjectBinding {
+  bindTeam(projectId: string, teamId: string, agentIds: string[]): Promise<void>;
+}
+
 export interface OrchestrationServiceDependencies {
   store: JsonStore;
+  /** Required only for Teams that collaborate on a shared Project. */
+  projectBinding?: OrchestrationProjectBinding;
   agents?: OrchestrationAgentAccess;
   /** Descriptive alias for callers wiring the concrete AgentService. */
   agentService?: OrchestrationAgentAccess;
@@ -425,6 +437,7 @@ export class OrchestrationService {
   private readonly selectorFactory: () => OrchestrationParticipantSelector | undefined;
   private readonly supervisorTimeoutMs: number | undefined;
   private readonly orchestratorFactory: () => Orchestrator;
+  private readonly projectBinding: OrchestrationProjectBinding | undefined;
   private readonly activeSessions = new Map<string, ActiveSession>();
 
   constructor(dependencies: OrchestrationServiceDependencies);
@@ -447,6 +460,8 @@ export class OrchestrationService {
     this.selectorFactory = normalized.selectorFactory;
     this.supervisorTimeoutMs = normalized.supervisorTimeoutMs;
     this.orchestratorFactory = normalized.orchestratorFactory;
+    this.projectBinding =
+      value instanceof JsonStore ? undefined : value.projectBinding;
   }
 
   async initialize(): Promise<void> {
@@ -523,6 +538,7 @@ export class OrchestrationService {
       ),
       participants,
       mode: normalized.mode ?? "sequential",
+      ...(normalized.projectId ? { projectId: normalized.projectId } : {}),
       completionReason: null,
       status: "draft",
       currentParticipantId: null,
@@ -538,10 +554,22 @@ export class OrchestrationService {
       completedAt: null,
     };
 
+    // Bind the shared Project before the session is visible, so a Team can
+    // never be started against a Project its Agents are not attached to.
+    if (session.projectId) {
+      await this.projectBinding?.bindTeam(
+        session.projectId,
+        session.id,
+        participants.map((participant) => participant.agentId),
+      );
+    }
+
     await this.store.mutate((database) => {
       database.orchestrations.push(session);
       appendEvent(database, session, "orchestration_created", {
-        safeSummary: "Orchestration created",
+        safeSummary: session.projectId
+          ? "Orchestration created on a shared Project"
+          : "Orchestration created",
       });
     });
     return cloneSession(session);
@@ -1273,6 +1301,7 @@ export class OrchestrationService {
           : { supervisorTimeoutMs: context.supervisorTimeoutMs }),
         participantProfiles,
         perAgentTimeoutMs: session.perAgentTimeoutMs,
+        ...(session.projectId ? { projectId: session.projectId } : {}),
         signal: context.controller.signal,
         hooks: this.executionHooks(context),
       });

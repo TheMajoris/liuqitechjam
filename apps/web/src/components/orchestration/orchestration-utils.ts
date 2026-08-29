@@ -29,10 +29,24 @@ const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
   minute: "2-digit",
 });
 
-export type OrchestrationDraft = CreateOrchestrationInput;
+/**
+ * Composer state. `projectName` is UI-only: the hook creates the Project and
+ * sends the resulting `projectId`, since the client never picks IDs.
+ */
+export type OrchestrationDraft = CreateOrchestrationInput & {
+  projectName?: string;
+};
 
 export type DraftErrors = Partial<
-  Record<"name" | "originalPrompt" | "participants" | "maxSteps" | "perAgentTimeoutMs", string>
+  Record<
+    | "name"
+    | "originalPrompt"
+    | "participants"
+    | "projectName"
+    | "maxSteps"
+    | "perAgentTimeoutMs",
+    string
+  >
 >;
 
 export function isOrchestrationActive(status: OrchestrationStatus): boolean {
@@ -104,6 +118,10 @@ export function validateDraft(
   agents: Agent[],
 ): DraftErrors {
   const errors: DraftErrors = {};
+  // A Project the user opted into must actually be named.
+  if (draft.projectName !== undefined && !draft.projectName.trim()) {
+    errors.projectName = "Name the shared Project, or turn it off.";
+  }
   if (!draft.originalPrompt.trim()) {
     errors.originalPrompt = "Describe the task these Agents should work on.";
   }

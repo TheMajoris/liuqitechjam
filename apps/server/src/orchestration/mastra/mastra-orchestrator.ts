@@ -294,6 +294,7 @@ export class MastraOrchestrator implements Orchestrator {
       id: `mastra-${state.sessionId}`,
       invoker,
       perAgentTimeoutMs: timeoutFor(options),
+      ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
       ...(options.supervisorTimeoutMs === undefined
         ? {}
         : { supervisorTimeoutMs: options.supervisorTimeoutMs }),

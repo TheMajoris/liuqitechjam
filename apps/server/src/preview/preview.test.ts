@@ -166,13 +166,13 @@ describe("PreviewCommandResolver", () => {
 describe("PreviewService", () => {
   it("starts one preview, rejects a second active preview, and stops it", async () => {
     const { service, agent, runtime } = await makePreview();
-    const started = await service.start(agent.id);
+    const started = await service.start({ kind: "agent", agentId: agent.id });
     expect(started).toMatchObject({ status: "running", url: "http://127.0.0.1:41231" });
-    await expect(service.start(agent.id)).rejects.toMatchObject({
+    await expect(service.start({ kind: "agent", agentId: agent.id })).rejects.toMatchObject({
       code: "PREVIEW_ALREADY_RUNNING",
       statusCode: 409,
     });
-    const stopped = await service.stop(agent.id);
+    const stopped = await service.stop({ kind: "agent", agentId: agent.id });
     expect(stopped.status).toBe("stopped");
     expect(runtime.stops).toHaveLength(1);
   });
@@ -182,7 +182,7 @@ describe("PreviewService", () => {
     await rm(path.join(context.workspacePath, "package.json"));
     await writeFile(path.join(context.workspacePath, "index.html"), "<h1>Static</h1>", "utf8");
 
-    await expect(context.service.start(context.agent.id)).resolves.toMatchObject({
+    await expect(context.service.start({ kind: "agent", agentId: context.agent.id })).resolves.toMatchObject({
       status: "running",
     });
     expect(context.runtime.starts[0]).toMatchObject({
@@ -196,7 +196,7 @@ describe("PreviewService", () => {
     const runtime = new FakePreviewRuntime();
     runtime.shouldFail = true;
     const { service, agent, store } = await makePreview({ runtime });
-    await expect(service.start(agent.id)).rejects.toMatchObject({
+    await expect(service.start({ kind: "agent", agentId: agent.id })).rejects.toMatchObject({
       code: "PREVIEW_START_FAILED",
     });
     expect(store.snapshot().previews[0]).toMatchObject({
@@ -207,15 +207,15 @@ describe("PreviewService", () => {
 
   it("bounds and redacts runtime logs", async () => {
     const { service, agent } = await makePreview();
-    await service.start(agent.id);
-    const result = await service.logs(agent.id, 10);
+    await service.start({ kind: "agent", agentId: agent.id });
+    const result = await service.logs({ kind: "agent", agentId: agent.id }, 10);
     expect(result.logs).toEqual(["ready", "token=[REDACTED]"]);
     expect(result.logs.join(" ")).not.toContain("secret-value");
   });
 
   it("reconciles an interrupted runtime and permits a fresh start", async () => {
     const { service, agent, runtime, store } = await makePreview();
-    await service.start(agent.id);
+    await service.start({ kind: "agent", agentId: agent.id });
 
     await service.initialize();
 
@@ -225,19 +225,19 @@ describe("PreviewService", () => {
       runtimeId: null,
       url: null,
     });
-    await expect(service.start(agent.id)).resolves.toMatchObject({ status: "running" });
+    await expect(service.start({ kind: "agent", agentId: agent.id })).resolves.toMatchObject({ status: "running" });
   });
 
   it("removes a failed managed runtime before clearing its handle", async () => {
     const { service, agent, runtime, store } = await makePreview();
-    await service.start(agent.id);
+    await service.start({ kind: "agent", agentId: agent.id });
     runtime.statusValue = "failed";
 
-    await expect(service.get(agent.id)).resolves.toMatchObject({ status: "failed" });
+    await expect(service.get({ kind: "agent", agentId: agent.id })).resolves.toMatchObject({ status: "failed" });
 
     expect(runtime.stops).toHaveLength(1);
     expect(store.snapshot().previews[0]?.runtimeId).toBeNull();
-    await expect(service.logs(agent.id, 10)).resolves.toMatchObject({
+    await expect(service.logs({ kind: "agent", agentId: agent.id }, 10)).resolves.toMatchObject({
       logs: ["ready", "token=[REDACTED]"],
     });
   });
