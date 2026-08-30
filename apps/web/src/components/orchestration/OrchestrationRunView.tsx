@@ -94,7 +94,7 @@ export function OrchestrationRunView({
               Per-Agent Project roles are edited in the workspace inspector. */}
           {project && (
             <span className="orch-project-badge">
-              <span className="orch-eyebrow">Shared Project</span>
+              <span className="orch-eyebrow">Workspace</span>
               <strong>{project.name}</strong>
             </span>
           )}

@@ -6,6 +6,22 @@ import { HttpError } from "../errors.js";
 import type { McpRouteDependencies } from "../mcp-server.js";
 import { agentIdParams, auditQuery } from "./route-schemas.js";
 import { RoleError, type RoleService } from "../roles/role-service.js";
+import { WebFetchError } from "../tools/web-fetch-adapter.js";
+import {
+  MAX_SKILL_MARKDOWN_BYTES,
+  normalizeSkillUrl,
+  parseSkillMarkdown,
+} from "../skills/skill-markdown.js";
+import {
+  isSkillError,
+  SkillError,
+  type CreateSkillInput,
+} from "../skills/skill-service.js";
+
+const MAX_IMPORTED_SKILL_INSTRUCTION_LENGTH = 10_000;
+const MAX_DISCOVERY_TITLE_LENGTH = 300;
+const MAX_DISCOVERY_URL_LENGTH = 2_048;
+const MAX_DISCOVERY_DESCRIPTION_LENGTH = 1_000;
 
 /**
  * The HTTP seam for Agent Middleware control-plane routes.
@@ -49,6 +65,45 @@ function requireSearchProvider(
   const searchProvider = dependencies?.searchProvider;
   if (!searchProvider) throw new HttpError(503, "Web search is not configured");
   return searchProvider;
+}
+
+function requireWebFetch(
+  dependencies: McpRouteDependencies | undefined,
+): NonNullable<McpRouteDependencies["webFetch"]> {
+  const webFetch = dependencies?.webFetch;
+  if (!webFetch) throw new HttpError(503, "Skill Markdown import is not configured");
+  return webFetch;
+}
+
+function skillImportError(error: unknown): SkillError {
+  if (isSkillError(error)) return error;
+  if (error instanceof WebFetchError) {
+    return new SkillError("SKILL_INVALID_INPUT", error.message);
+  }
+  if (error instanceof Error) {
+    return new SkillError("SKILL_INVALID_INPUT", error.message);
+  }
+  return new SkillError("SKILL_INVALID_INPUT", "The skill Markdown could not be imported");
+}
+
+function isTextualSkillContentType(contentType: string): boolean {
+  const normalized = typeof contentType === "string"
+    ? contentType.split(";", 1)[0]?.trim().toLocaleLowerCase() ?? ""
+    : "";
+  return normalized.startsWith("text/") || normalized === "application/xhtml+xml";
+}
+
+function assertImportedSkillInstructions(input: CreateSkillInput): void {
+  if (input.instructions.length > MAX_IMPORTED_SKILL_INSTRUCTION_LENGTH) {
+    throw new SkillError(
+      "SKILL_INVALID_INPUT",
+      `Skill instructions are required and must be at most ${MAX_IMPORTED_SKILL_INSTRUCTION_LENGTH} characters`,
+    );
+  }
+}
+
+function boundedDiscoveryText(value: unknown, maxLength: number): string {
+  return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
 }
 
 function requireApprovalService(
@@ -129,6 +184,10 @@ export function registerAgentMiddlewareRoutes(
     limit: z.coerce.number().int().min(1).max(100).optional(),
     installed: z.coerce.boolean().optional(),
   });
+  const skillDiscoveryQuery = z.object({
+    q: z.string().trim().min(2).max(120),
+    limit: z.coerce.number().int().min(1).max(20).default(10),
+  });
   const installSkillBody = z.object({ skillId: z.string().min(1).max(128) });
   const createSkillBody = z.object({
     id: z.string().min(1).max(128),
@@ -143,6 +202,15 @@ export function registerAgentMiddlewareRoutes(
     (value) => Object.keys(value).length > 0,
     "At least one field is required",
   );
+  const importSkillBody = z.union([
+    z.object({
+      markdown: z.string(),
+      fileName: z.string().trim().min(1).max(255).optional(),
+    }).strict(),
+    z.object({
+      url: z.string().trim().max(2_048).url(),
+    }).strict(),
+  ]);
 
   app.get("/api/skills", async (request) => {
     const query = skillSearchQuery.parse(request.query);
@@ -160,6 +228,71 @@ export function registerAgentMiddlewareRoutes(
       query: query.q,
       skills: await requireSkillService(mcp).search(query.q, query),
     };
+  });
+
+  // Discovery returns metadata only. It never imports or installs the result;
+  // the caller must explicitly choose a URL and use the import endpoint.
+  app.get("/api/skills/discover", async (request) => {
+    const query = skillDiscoveryQuery.parse(request.query);
+    const provider = requireSearchProvider(mcp);
+    const providerQuery = `${query.q} agent skill SKILL.md github`;
+    let results;
+    try {
+      results = await provider.search(providerQuery, query.limit);
+    } catch {
+      throw new HttpError(503, "Skill discovery is unavailable");
+    }
+    return {
+      query: query.q,
+      results: results.slice(0, query.limit).map((result) => ({
+        title: boundedDiscoveryText(result.title, MAX_DISCOVERY_TITLE_LENGTH),
+        url: boundedDiscoveryText(result.url, MAX_DISCOVERY_URL_LENGTH),
+        description: boundedDiscoveryText(result.description, MAX_DISCOVERY_DESCRIPTION_LENGTH),
+      })),
+    };
+  });
+
+  // Import only an instruction document. There is no archive, package,
+  // executable, or filesystem path accepted by this route.
+  app.post("/api/skills/import", async (request, reply) => {
+    const body = importSkillBody.parse(request.body);
+    let skillInput: CreateSkillInput;
+    if ("markdown" in body) {
+      if (Buffer.byteLength(body.markdown, "utf8") > MAX_SKILL_MARKDOWN_BYTES) {
+        throw new SkillError(
+          "SKILL_INVALID_INPUT",
+          `Skill Markdown must be at most ${MAX_SKILL_MARKDOWN_BYTES} bytes`,
+        );
+      }
+      try {
+        skillInput = parseSkillMarkdown(body.markdown, body.fileName);
+        assertImportedSkillInstructions(skillInput);
+      } catch (error) {
+        throw skillImportError(error);
+      }
+    } else {
+      const webFetch = requireWebFetch(mcp);
+      let importedUrl: string;
+      let fetched: Awaited<ReturnType<NonNullable<McpRouteDependencies["webFetch"]>["fetch"]>>;
+      try {
+        importedUrl = normalizeSkillUrl(body.url);
+        fetched = await webFetch.fetch(importedUrl, MAX_SKILL_MARKDOWN_BYTES);
+        if (!isTextualSkillContentType(fetched.contentType)) {
+          throw new Error("The imported URL must return a text or Markdown document");
+        }
+        if (Buffer.byteLength(fetched.content, "utf8") > MAX_SKILL_MARKDOWN_BYTES) {
+          throw new Error(
+            `The imported Markdown must be at most ${MAX_SKILL_MARKDOWN_BYTES} bytes`,
+          );
+        }
+        skillInput = parseSkillMarkdown(fetched.content, fetched.finalUrl);
+        assertImportedSkillInstructions(skillInput);
+      } catch (error) {
+        throw skillImportError(error);
+      }
+    }
+    const skill = await requireSkillService(mcp).create(skillInput);
+    return reply.code(201).send({ skill });
   });
 
   app.get("/api/skills/:id", async (request) => {

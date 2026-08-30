@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentAppearance, ApprovalRecord } from "../types";
 import { AgentInspector, type AgentLifecycleAction } from "./AgentInspector";
 import { WorkspaceStage } from "./WorkspaceStage";
@@ -28,6 +28,13 @@ interface WorkspaceViewProps {
   onAppearanceChange?: (agentId: string, appearance: AgentAppearance) => Promise<void>;
 }
 
+const INSPECTOR_PREFERENCE_KEY = "launchpad.workspaceInspector";
+
+function readInspectorPreference(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(INSPECTOR_PREFERENCE_KEY) === "open";
+}
+
 /**
  * The Workspace tab: the room, the things you can do to it, and the words that
  * say what it means. The canvas is one view of this state, never the only one.
@@ -51,6 +58,7 @@ export function WorkspaceView({
   onAppearanceChange,
 }: WorkspaceViewProps) {
   const approvalsRef = useRef<HTMLDivElement>(null);
+  const [inspectorOpen, setInspectorOpen] = useState(readInspectorPreference);
   const selected =
     viewModel.agents.find((agent) => agent.agentId === viewModel.selectedAgentId) ?? null;
   const pending = viewModel.pendingApprovals;
@@ -61,9 +69,24 @@ export function WorkspaceView({
   /** The door hands you the decision it is standing in front of. */
   const openApprovals = useCallback(() => {
     const first = pending[0];
-    if (first) onSelectAgent(first.agentId);
+    if (first) {
+      onSelectAgent(first.agentId);
+      setInspectorOpen(true);
+    }
     approvalsRef.current?.focus();
   }, [onSelectAgent, pending]);
+
+  const selectAgent = useCallback((agentId: string) => {
+    onSelectAgent(agentId);
+    setInspectorOpen(true);
+  }, [onSelectAgent]);
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      INSPECTOR_PREFERENCE_KEY,
+      inspectorOpen ? "open" : "closed",
+    );
+  }, [inspectorOpen]);
 
   // Focus follows the door: clicking it should land you on the decision.
   useEffect(() => {
@@ -81,6 +104,7 @@ export function WorkspaceView({
         {/* The room's stations, as controls. Each one is also clickable in the
             scene; these are the keyboard and screen-reader equivalents, and
             they state every station's status in words. */}
+        <div className="ws-toolbar">
         <div className="ws-stations" role="group" aria-label="Workspace stations">
           <button type="button" className="ws-station" onClick={onOpenConversation}>
             <span className="ws-station-name">Shared board</span>
@@ -134,6 +158,17 @@ export function WorkspaceView({
               </button>
             ))}
         </div>
+        <button
+          type="button"
+          className="ws-inspector-toggle"
+          aria-expanded={inspectorOpen}
+          aria-controls="workspace-agent-inspector"
+          onClick={() => setInspectorOpen((value) => !value)}
+        >
+          <span aria-hidden="true">◍</span>
+          {inspectorOpen ? "Hide Agent details" : "Agent details"}
+        </button>
+        </div>
       </div>
 
       {viewModel.doorState === "waiting" && pending.length > 0 && (
@@ -158,28 +193,31 @@ export function WorkspaceView({
         </p>
       )}
 
-      <div className="ws-body">
+      <div className={"ws-body " + (inspectorOpen ? "has-inspector" : "") }>
         <WorkspaceStage
           viewModel={viewModel}
           replies={replies}
-          onSelectAgent={onSelectAgent}
+          onSelectAgent={selectAgent}
           onOpenConversation={onOpenConversation}
           onOpenPreview={onOpenPreview}
           onOpenApprovals={openApprovals}
         />
-        <AgentInspector
-          agent={selected}
-          projectName={viewModel.projectId ? viewModel.name : null}
-          pending={lifecyclePending}
-          approvals={approvals}
-          approvalBusyId={approvalBusyId}
-          onLifecycle={onLifecycle}
-          onOpenConversation={onOpenConversation}
-          onOpenAgent={onOpenAgent}
-          onApprove={onApprove}
-          onDeny={onDeny}
-          {...(onAppearanceChange ? { onAppearanceChange } : {})}
-        />
+        {inspectorOpen && (
+          <AgentInspector
+            agent={selected}
+            projectName={viewModel.projectId ? viewModel.name : null}
+            pending={lifecyclePending}
+            approvals={approvals}
+            approvalBusyId={approvalBusyId}
+            onLifecycle={onLifecycle}
+            onOpenConversation={onOpenConversation}
+            onOpenAgent={onOpenAgent}
+            onApprove={onApprove}
+            onDeny={onDeny}
+            onClose={() => setInspectorOpen(false)}
+            {...(onAppearanceChange ? { onAppearanceChange } : {})}
+          />
+        )}
       </div>
     </div>
   );

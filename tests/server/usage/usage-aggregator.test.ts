@@ -414,15 +414,243 @@ describe("buildUsageReport", () => {
     expect(report.daily[2]?.runs).toBe(0);
   });
 
-  it("keeps runs from a deleted Agent instead of dropping the spend", () => {
+  it("drops an Agent row that only leftover audit correlation created", () => {
+    // Deleting an Agent also deletes its runs and messages, so a row built
+    // purely from stale audit events is all zeroes and pure noise.
     const report = buildUsageReport(
-      source({ agents: [], runs: [run({ id: "r1", agentId: "gone" })] }),
+      source({
+        agents: [],
+        runs: [],
+        auditEvents: [
+          auditEvent({ id: "e1", type: "authorization_decision", agentId: "gone" }),
+          auditEvent({ id: "e2", type: "authorization_decision", agentId: "gone-too" }),
+        ],
+      }),
+      {},
+      NOW,
+    );
+
+    expect(report.agents).toEqual([]);
+  });
+
+  it("drops a deleted Agent whose only trace is a skill invocation", () => {
+    // Deleting an Agent removes its runs and messages but leaves the audit
+    // journal, so skill or tool residue alone must not resurrect the row.
+    const report = buildUsageReport(
+      source({
+        agents: [],
+        runs: [],
+        auditEvents: [
+          auditEvent({ id: "e1", type: "skill_invoked", agentId: "gone" }),
+          auditEvent({ id: "e2", type: "skill_invoked", agentId: "gone" }),
+          auditEvent({ id: "e3", type: "skill_invoked", agentId: "gone" }),
+        ],
+      }),
+      {},
+      NOW,
+    );
+
+    expect(report.agents).toEqual([]);
+  });
+
+  it("keeps a live Agent whose only activity is a skill invocation", () => {
+    const report = buildUsageReport(
+      source({
+        agents: [agent("a1", "ALICE")],
+        auditEvents: [auditEvent({ id: "e1", type: "skill_invoked", agentId: "a1" })],
+      }),
       {},
       NOW,
     );
 
     expect(report.agents).toHaveLength(1);
-    expect(report.agents[0]?.agentId).toBe("gone");
-    expect(report.agents[0]?.name).toBeNull();
+    expect(report.agents[0]?.activity.skillInvocations).toBe(1);
+  });
+
+  it("keeps a row whose only activity is a tool call", () => {
+    const report = buildUsageReport(
+      source({
+        agents: [agent("a1", "ALICE")],
+        auditEvents: [
+          auditEvent({
+            id: "e1",
+            type: "tool_started",
+            agentId: "a1",
+            resource: { kind: "tool", id: "web.search" },
+          }),
+        ],
+      }),
+      {},
+      NOW,
+    );
+
+    expect(report.agents).toHaveLength(1);
+    expect(report.agents[0]?.activity.toolCalls).toBe(1);
+  });
+
+  it("omits an archived Workspace row but keeps its spend in totals", () => {
+    const report = buildUsageReport(
+      source({
+        agents: [agent("a1", "ALICE")],
+        projects: [
+          { id: "p1", name: "SMU", description: "", workspacePath: "/p1", status: "archived" },
+          { id: "p2", name: "Live", description: "", workspacePath: "/p2", status: "active" },
+        ] as UsageSource["projects"],
+        runs: [
+          run({ id: "r1", agentId: "a1", usage: { inputTokens: 20, cachedInputTokens: 0, outputTokens: 8 } }),
+          run({ id: "r2", agentId: "a1", usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 4 } }),
+        ],
+        auditEvents: [
+          auditEvent({ id: "e1", type: "tool_started", agentId: "a1", runId: "r1", projectId: "p1", resource: { kind: "tool", id: "web.search" } }),
+          auditEvent({ id: "e2", type: "tool_started", agentId: "a1", runId: "r2", projectId: "p2", resource: { kind: "tool", id: "web.search" } }),
+        ],
+      }),
+      {},
+      NOW,
+    );
+
+    // The archived Project is gone from the ranking...
+    expect(report.projects.map((row) => row.projectId)).toEqual(["p2"]);
+    // ...but its spend is still accounted for at the top level, without a
+    // retired ghost row.
+    expect(report.totals.tokens.totalTokens).toBe(42);
+    expect(report.retired.projects).toBeNull();
+  });
+
+  it("omits a deleted Agent row while keeping its spend in totals", () => {
+    const report = buildUsageReport(
+      source({
+        agents: [agent("a1", "ALICE")],
+        runs: [
+          run({ id: "r1", agentId: "a1", usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 5 } }),
+          run({ id: "r2", agentId: "gone", usage: { inputTokens: 40, cachedInputTokens: 0, outputTokens: 20 } }),
+        ],
+      }),
+      {},
+      NOW,
+    );
+
+    expect(report.agents.map((row) => row.agentId)).toEqual(["a1"]);
+    expect(report.retired.agents).toBeNull();
+    expect(report.totals.runs.total).toBe(2);
+  });
+
+  it("does not fold a retired subject that only left audit residue", () => {
+    // Otherwise the all-zero row simply reappears under another name.
+    const report = buildUsageReport(
+      source({
+        agents: [agent("a1", "ALICE")],
+        runs: [run({ id: "r1", agentId: "a1" })],
+        auditEvents: [
+          auditEvent({ id: "e1", type: "skill_invoked", agentId: "gone" }),
+          auditEvent({ id: "e2", type: "skill_invoked", agentId: "also-gone" }),
+        ],
+      }),
+      {},
+      NOW,
+    );
+
+    expect(report.agents.map((row) => row.agentId)).toEqual(["a1"]);
+    expect(report.retired.agents).toBeNull();
+  });
+
+  it("reports no retired rows when nothing has been removed", () => {
+    const report = buildUsageReport(
+      source({ agents: [agent("a1", "ALICE")], runs: [run({ id: "r1", agentId: "a1" })] }),
+      {},
+      NOW,
+    );
+
+    expect(report.retired).toEqual({ agents: null, workspaces: null, projects: null });
+  });
+
+  it("omits a Workspace that no longer exists from named rows", () => {
+    const report = buildUsageReport(
+      source({
+        agents: [agent("a1", "ALICE")],
+        projects: [],
+        runs: [run({ id: "r1", agentId: "a1" })],
+        auditEvents: [
+          auditEvent({
+            id: "e1",
+            type: "tool_started",
+            agentId: "a1",
+            runId: "r1",
+            projectId: "vanished",
+            resource: { kind: "tool", id: "web.search" },
+          }),
+        ],
+      }),
+      {},
+      NOW,
+    );
+
+    expect(report.projects).toEqual([]);
+    expect(report.retired.projects).toBeNull();
+  });
+
+  it("seeds live Agents and rolls conversation messages into their Workspace", () => {
+    const report = buildUsageReport(
+      source({
+        agents: [agent("a1", "ALICE"), agent("a2", "New Agent")],
+        projects: [
+          { id: "p1", name: "Shared", description: "", workspacePath: "/p1", status: "active" },
+        ] as UsageSource["projects"],
+        orchestrations: [{
+          id: "s1",
+          name: "conversation",
+          originalPrompt: "go",
+          projectId: "p1",
+          participants: [],
+          status: "completed",
+          currentParticipantId: null,
+          currentRunId: null,
+          stepIndex: 0,
+          maxSteps: 1,
+          perAgentTimeoutMs: 60_000,
+          errorCode: null,
+          errorMessage: null,
+          createdAt: "2026-08-30T00:00:00.000Z",
+          updatedAt: "2026-08-30T00:00:00.000Z",
+          startedAt: null,
+          completedAt: null,
+        } as OrchestrationSession],
+        orchestrationTurns: [{
+          id: "t1",
+          sessionId: "s1",
+          participantId: "pt1",
+          agentId: "a1",
+          runId: "r1",
+          position: 0,
+          status: "completed",
+          safeInputSummary: "",
+          safeOutput: null,
+          outputTruncated: false,
+          errorCode: null,
+          createdAt: "2026-08-30T00:00:00.000Z",
+          completedAt: "2026-08-30T00:00:00.000Z",
+        }],
+        runs: [run({ id: "r1", agentId: "a1" })],
+        messages: [{
+          id: "m1",
+          agentId: "a1",
+          runId: "r1",
+          role: "assistant",
+          content: "done",
+          createdAt: "2026-08-30T00:00:00.000Z",
+        }],
+      }),
+      {},
+      NOW,
+    );
+
+    expect(report.agents.map((row) => row.agentId)).toEqual(["a1", "a2"]);
+    expect(report.agents.find((row) => row.agentId === "a2")).toMatchObject({
+      runs: { total: 0 },
+      messages: 0,
+      lastActiveAt: null,
+    });
+    expect(report.projects[0]).toMatchObject({ projectId: "p1", runs: { total: 1 }, messages: 1 });
+    expect(report.retired).toEqual({ agents: null, workspaces: null, projects: null });
   });
 });

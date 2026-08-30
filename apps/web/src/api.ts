@@ -20,6 +20,7 @@ import type {
   ApprovalStatus,
   SkillMetadata,
   SkillCatalogEntry,
+  SkillDiscoveryResult,
   AgentRole,
 } from "./types";
 
@@ -112,6 +113,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ skillId }),
     }),
+  importSkillFromMarkdown: (markdown: string, fileName: string) =>
+    request<{ skill: SkillMetadata }>("/api/skills/import", {
+      method: "POST",
+      body: JSON.stringify({ markdown, fileName }),
+    }),
+  importSkillFromUrl: (url: string) =>
+    request<{ skill: SkillMetadata }>("/api/skills/import", {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    }),
+  discoverSkills: (query: string) =>
+    request<{ query: string; results: SkillDiscoveryResult[] }>(
+      "/api/skills/discover?q=" + encodeURIComponent(query),
+    ),
   uninstallSkill: (skillId: string) =>
     request<{ removed: true }>("/api/skills/" + encodeURIComponent(skillId) + "/install", {
       method: "DELETE",
@@ -275,6 +290,21 @@ export const api = {
       body: JSON.stringify(body),
     }),
   listProjects: () => request<{ projects: Project[] }>("/api/projects"),
+  /** Archive preserves the Project workspace; it never deletes the files. */
+  archiveProject: (id: string) =>
+    request<{ archivedWorkspace: string }>("/api/projects/" + id, {
+      method: "DELETE",
+    }),
+  attachProjectAgent: (projectId: string, agentId: string) =>
+    request<{ project: Project }>(
+      "/api/projects/" + encodeURIComponent(projectId) + "/agents/" + encodeURIComponent(agentId),
+      { method: "POST" },
+    ),
+  detachProjectAgent: (projectId: string, agentId: string) =>
+    request<{ project: Project }>(
+      "/api/projects/" + encodeURIComponent(projectId) + "/agents/" + encodeURIComponent(agentId),
+      { method: "DELETE" },
+    ),
   getProject: (id: string) => request<{ project: Project }>("/api/projects/" + id),
   updateProjectAgentRole: (projectId: string, agentId: string, role: ProjectRole) =>
     request<{ project: Project }>(

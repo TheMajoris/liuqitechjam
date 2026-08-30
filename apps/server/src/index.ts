@@ -150,13 +150,14 @@ service.setProjectExecutionScope(
   ),
 );
 const searchProvider = createSearchProvider(config);
+const webFetch = new WebFetchAdapter({
+  timeoutMs: config.webFetchTimeoutMs,
+  maxResponseBytes: config.webFetchMaxResponseBytes,
+  maxRedirects: config.webFetchMaxRedirects,
+});
 const toolRegistry = createBuiltInToolRegistry({
   search: searchProvider,
-  fetch: new WebFetchAdapter({
-    timeoutMs: config.webFetchTimeoutMs,
-    maxResponseBytes: config.webFetchMaxResponseBytes,
-    maxRedirects: config.webFetchMaxRedirects,
-  }),
+  fetch: webFetch,
   preview: previewService,
 });
 const toolService = new ToolService(
@@ -208,22 +209,27 @@ const orchestrationService = new OrchestrationService({
   store,
   agentService: service,
   // Attaching here keeps Project membership rules inside ProjectService while
-  // letting a Team declare its shared artifact at creation time.
+  // letting each Conversation declare its shared Workspace at creation time.
   projectBinding: {
-    async bindTeam(projectId, teamId, agentIds) {
-      await projectService.attachTeam(projectId, teamId);
-      const attached = new Set((await projectService.get(projectId)).agentIds);
-      for (const agentId of agentIds) {
-        if (attached.has(agentId)) continue;
-        await projectService.attachAgent(projectId, agentId);
-        attached.add(agentId);
-      }
+    async bindConversation(projectId, conversationId, agentIds) {
+      await projectService.bindConversation(projectId, conversationId, agentIds);
+    },
+    // Keep the old injection name usable for callers that have not migrated
+    // their wiring yet; orchestration still gets the multi-conversation
+    // semantics through the ProjectService method above.
+    async bindTeam(projectId, conversationId, agentIds) {
+      await projectService.bindConversation(projectId, conversationId, agentIds);
     },
   },
   ...(supervisorSelector === undefined
     ? {}
     : { selectNextParticipant: supervisorSelector }),
   supervisorTimeoutMs: config.supervisorTimeoutMs,
+});
+projectService.setConversationLifecycle({
+  async removeForProject(projectId) {
+    await orchestrationService.removeSessionsForProject(projectId);
+  },
 });
 await orchestrationService.initialize();
 orchestrationService.setTelemetry(telemetry);
@@ -243,6 +249,7 @@ const app = await createApp(
     ...(permitApprovalService === undefined ? {} : { approvalService: permitApprovalService }),
     auditService: audit,
     searchProvider,
+    webFetch,
     telemetry,
   },
 );

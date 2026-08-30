@@ -49,7 +49,7 @@ export function ProjectPreviewPanel({
     <section className="project-preview" aria-label={"Shared preview for " + projectName}>
       <header className="project-preview-head">
         <div className="project-preview-title">
-          <span className="orch-eyebrow">Shared Project</span>
+          <span className="orch-eyebrow">Workspace preview</span>
           <h3>{projectName}</h3>
         </div>
         <span className={"preview-status preview-status-" + status}>
@@ -61,7 +61,7 @@ export function ProjectPreviewPanel({
       {shown && (
         <div className="preview-error" role="alert">
           <div className="preview-error-heading">
-            <strong>Project preview failed</strong>
+            <strong>Workspace preview failed</strong>
             {shown.errorCode && <code className="preview-error-code">{shown.errorCode}</code>}
           </div>
           <p>{shown.message}</p>
@@ -95,12 +95,12 @@ export function ProjectPreviewPanel({
             </div>
             <h3>
               {status === "not_started"
-                ? "No Project preview yet"
-                : "The Project preview is " + statusCopy[status].toLowerCase()}
+                ? "No Workspace preview yet"
+                : "The Workspace preview is " + statusCopy[status].toLowerCase()}
             </h3>
             <p>
               Every Agent on this Team writes to the same workspace. Start the preview to
-              see their combined result.
+              see the combined result.
             </p>
             <button
               type="button"
@@ -108,7 +108,7 @@ export function ProjectPreviewPanel({
               onClick={() => void act(status === "not_started" ? "start" : "restart")}
               disabled={busy !== null}
             >
-              {busy === null ? "Start Project Preview" : <span className="spinner" />}
+              {busy === null ? "Start Workspace Preview" : <span className="spinner" />}
             </button>
           </div>
         )}
@@ -182,7 +182,7 @@ export function ProjectPreviewPanel({
           className="button button-danger"
           onClick={() => void act("stop")}
           disabled={busy !== null || !stoppable}
-          title="Stop the Project preview server. This does not stop the Team."
+          title="Stop the Workspace preview server. This does not stop the Team."
         >
           Stop Server
         </button>

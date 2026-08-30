@@ -18,6 +18,7 @@ interface AgentInspectorProps {
   onLifecycle: (agentId: string, action: AgentLifecycleAction) => void;
   onOpenConversation: () => void;
   onOpenAgent: (agentId: string) => void;
+  onClose?: () => void;
   onApprove: (id: string, scope: "once" | "project") => void;
   onDeny: (id: string) => void;
   /** Cosmetic-only character edit; absent hides the appearance controls. */
@@ -40,6 +41,7 @@ export function AgentInspector({
   onLifecycle,
   onOpenConversation,
   onOpenAgent,
+  onClose = () => undefined,
   onApprove,
   onDeny,
   onAppearanceChange,
@@ -71,6 +73,14 @@ export function AgentInspector({
           <h3>{agent.name}</h3>
           {agent.role && <span className="ws-inspector-role">{agent.role}</span>}
         </div>
+        <button
+          type="button"
+          className="ws-inspector-close"
+          aria-label="Hide Agent details"
+          onClick={onClose}
+        >
+          ×
+        </button>
       </header>
 
       <div className="ws-inspector-status" data-tone={descriptor.tone}>
@@ -153,7 +163,7 @@ export function AgentInspector({
                   disabled={approvalBusyId !== null}
                   onClick={() => onApprove(approval.id, "project")}
                 >
-                  Approve for Project
+                  Approve for Workspace
                 </button>
                 <button
                   type="button"

@@ -8,6 +8,8 @@ export type {
   UsageProjectBreakdown,
   UsageReport,
   UsageReportOptions,
+  UsageRetired,
+  UsageRetiredSummary,
   UsageRunTotals,
   UsageTokenTotals,
   UsageTotals,

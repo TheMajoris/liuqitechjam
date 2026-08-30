@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -56,15 +56,14 @@ async function makeStack() {
     store,
     agents,
     projectBinding: {
-      async bindTeam(projectId, teamId, agentIds) {
-        await projectService.attachTeam(projectId, teamId);
-        const attached = new Set((await projectService.get(projectId)).agentIds);
-        for (const agentId of agentIds) {
-          if (attached.has(agentId)) continue;
-          await projectService.attachAgent(projectId, agentId);
-          attached.add(agentId);
-        }
+      async bindConversation(projectId, conversationId, agentIds) {
+        await projectService.bindConversation(projectId, conversationId, agentIds);
       },
+    },
+  });
+  projectService.setConversationLifecycle({
+    async removeForProject(projectId) {
+      await orchestration.removeSessionsForProject(projectId);
     },
   });
   await orchestration.initialize();
@@ -148,6 +147,40 @@ describe("Team attached to a shared Project", () => {
         perAgentTimeoutMs: 60_000,
       }),
     ).rejects.toMatchObject({ code: "PROJECT_NOT_FOUND" });
+  });
+
+  it("keeps sibling conversations when one is deleted and archives all on Workspace deletion", async () => {
+    const { orchestration, projectService, store } = await makeStack();
+    const project = await projectService.create({ name: "Shared Workspace" });
+
+    const first = await orchestration.createSession({
+      name: "First conversation",
+      originalPrompt: "Set up the project",
+      participants: participants(),
+      projectId: project.id,
+      maxSteps: 4,
+      perAgentTimeoutMs: 60_000,
+    });
+    const sibling = await orchestration.createSession({
+      name: "Second conversation",
+      originalPrompt: "Review the project",
+      participants: participants(),
+      projectId: project.id,
+      maxSteps: 4,
+      perAgentTimeoutMs: 60_000,
+    });
+
+    await orchestration.deleteSession(first.id);
+    expect((await projectService.get(project.id)).status).toBe("active");
+    expect((await orchestration.listSessions()).map((session) => session.id)).toEqual([
+      sibling.id,
+    ]);
+
+    const archived = await projectService.archive(project.id);
+    expect(await orchestration.listSessions()).toEqual([]);
+    expect(store.snapshot().orchestrations).toEqual([]);
+    expect((await projectService.list()).some((item) => item.id === project.id)).toBe(false);
+    expect((await stat(archived.archivedWorkspace)).isDirectory()).toBe(true);
   });
 });
 

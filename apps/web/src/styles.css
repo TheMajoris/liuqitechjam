@@ -5771,47 +5771,707 @@ textarea:focus {
   color: var(--purple-dark);
 }
 
-/* Reusable Agent roles and local skill catalog. */
-.access-view { width: min(1240px, 100%); margin: 0 auto; padding: 20px 0 52px; }
-.access-head, .access-card-title, .access-actions, .skill-search,
-.assignment-project label, .skill-catalog-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.access-head { margin-bottom: 24px; }
-.access-head h1 { margin: 5px 0 7px; font-size: clamp(28px, 4vw, 42px); }
-.access-head p, .access-card p { margin: 0; color: var(--muted); }
-.access-grid { display: grid; grid-template-columns: minmax(220px, .7fr) minmax(380px, 1.3fr); gap: 18px; align-items: start; }
-.access-card { padding: 22px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper); box-shadow: var(--shadow); }
-.access-card h2 { margin: 0 0 15px; font-size: 18px; }
-.role-editor-card { grid-row: span 2; }
-.skills-card { grid-column: 1 / -1; }
-.access-role-list { display: grid; gap: 8px; }
-.access-role-list button { padding: 13px 14px; text-align: left; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--paper); color: inherit; cursor: pointer; }
-.access-role-list button.selected { border-color: var(--purple); background: var(--purple-soft); }
-.access-role-list strong, .access-role-list span { display: block; }
-.access-role-list span { margin-top: 4px; color: var(--muted); font-size: 12px; }
-.role-editor-card > label { display: grid; gap: 7px; margin: 13px 0; font-size: 13px; font-weight: 700; }
-.role-editor-card > label input, .role-editor-card textarea, .skill-search input, .assignment-project select { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--paper); color: inherit; font: inherit; }
-.role-editor-card textarea { min-height: 74px; resize: vertical; }
-.role-editor-card fieldset { margin: 18px 0 0; padding: 0; border: 0; }
-.role-editor-card legend { margin-bottom: 9px; font-size: 13px; font-weight: 800; }
-.access-check { display: flex; align-items: flex-start; gap: 10px; padding: 9px 0; cursor: pointer; }
-.access-check input { margin-top: 3px; }
-.access-check span, .access-check strong, .access-check small { display: block; }
-.access-check small { margin-top: 2px; color: var(--muted); font-weight: 400; }
-.access-actions { justify-content: flex-start; margin-top: 20px; }
-.access-pill { padding: 5px 9px; border-radius: 999px; background: var(--wash); color: var(--muted); font-size: 11px; white-space: nowrap; }
-.assignment-project { padding: 13px 0; border-top: 1px solid var(--line); }
-.assignment-project > strong { display: block; margin-bottom: 9px; }
-.assignment-project label { margin: 8px 0; font-size: 13px; }
-.assignment-project select { width: min(190px, 52%); }
-.skill-search { margin: 14px 0; }
-.skill-search input { flex: 1; }
-.skill-catalog-list { display: grid; gap: 8px; }
-.skill-catalog-row { padding: 13px 0; border-top: 1px solid var(--line); }
-.skill-catalog-row strong, .skill-catalog-row span, .skill-catalog-row small { display: block; }
-.skill-catalog-row span { margin-top: 3px; color: var(--muted); }
-.skill-catalog-row small { margin-top: 5px; color: var(--muted); }
+/* Roles, assignments, and instruction-only skill library. */
+.access-view {
+  width: min(1180px, 100%);
+  margin: 0 auto;
+  padding: clamp(22px, 4vw, 42px) clamp(16px, 3vw, 34px) 58px;
+}
+
+.access-head,
+.access-section-heading,
+.access-panel-heading,
+.assignment-card-heading,
+.access-actions,
+.skill-import-actions,
+.skill-url-form,
+.skill-search-form,
+.skill-discovery-form,
+.skill-catalog-row,
+.skill-title-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+/* The page heading matches every other page's scale; a display-sized title
+   here made this one screen look like a different product. */
+.access-head {
+  align-items: flex-start;
+  gap: 24px;
+  margin-bottom: 20px;
+}
+
+.access-head-copy { min-width: 0; }
+.access-head h1 { margin: 4px 0 6px; font-size: 24px; letter-spacing: -0.02em; }
+.access-head p { max-width: 620px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+/* Counts read as a small stat strip rather than three floating pills. */
+.access-head-stats {
+  display: flex;
+  flex-shrink: 0;
+  gap: 0;
+  margin: 0;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--paper);
+  box-shadow: var(--elevation-1);
+  overflow: hidden;
+}
+
+.access-head-stats > div {
+  padding: 8px 14px;
+  text-align: center;
+}
+
+.access-head-stats > div + div { border-left: 1px solid var(--hairline); }
+
+.access-head-stats dt {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.access-head-stats dd {
+  margin: 2px 0 0;
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Segmented control, matching the Conversation/Timeline tabs elsewhere. */
+.access-tabs {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  margin-bottom: 18px;
+  border-radius: var(--radius-md);
+  background: rgba(120, 120, 128, 0.10);
+}
+
+.access-tabs button {
+  min-width: 0;
+  padding: 6px 16px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 160ms var(--ease-out), color 160ms var(--ease-out);
+}
+
+.access-tabs button:hover:not(.is-active) { color: var(--ink); }
+
+.access-tabs button.is-active {
+  color: var(--ink);
+  background: var(--paper);
+  box-shadow: var(--elevation-1);
+}
+
+.access-tabs button:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 1px;
+}
+
+.access-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 9px 12px;
+  margin: 0 0 18px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: var(--elevation-1);
+}
+
+.access-notice > span { display: grid; width: 22px; height: 22px; place-items: center; border-radius: 50%; background: var(--purple-soft); color: var(--purple-dark); font-size: 12px; font-weight: 800; }
+.access-notice p { flex: 1; margin: 0; font-size: 13px; }
+.access-notice button { width: 28px; height: 28px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 18px; cursor: pointer; }
+.access-notice button:hover { background: #f0efea; color: var(--ink); }
+.access-notice.is-error { border-color: #eac9c5; background: #fff7f5; }
+.access-notice.is-error > span { background: #f5dfdc; color: var(--red); }
+.access-notice.is-success { border-color: #cce4d8; background: #f6fcf8; }
+.access-notice.is-success > span { background: #dcefe4; color: var(--green); }
+
+.access-tab-panel { min-width: 0; }
+
+/* Surfaces use the same hairline + elevation as every other card in the app. */
+.access-card {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+  box-shadow: var(--elevation-1);
+}
+
+.role-layout { display: grid; grid-template-columns: minmax(230px, 280px) minmax(0, 1fr); align-items: start; gap: 16px; }
+.role-index-card { position: sticky; top: 18px; }
+.access-kicker { display: block; margin-bottom: 4px; color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }
+
+/* Headings inside a card sit below the page title, never beside it. */
+.access-section-heading { align-items: flex-start; }
+.access-section-heading h2,
+.access-panel-heading h2 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
+.access-panel-heading { align-items: flex-start; margin-bottom: 16px; }
+.access-panel-heading p,
+.access-section-heading + .access-muted { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.access-panel-heading.compact { margin-bottom: 12px; }
+.access-muted { color: var(--muted); font-size: 12px; line-height: 1.45; }
+.access-count, .access-count-label { flex-shrink: 0; color: var(--muted); font-size: 11px; font-weight: 600; }
+.access-count { display: grid; min-width: 22px; height: 22px; place-items: center; border-radius: var(--radius-sm); background: rgba(120, 120, 128, 0.12); color: var(--muted); }
+.access-count-label { padding: 4px 8px; border-radius: 999px; background: rgba(120, 120, 128, 0.12); }
+
+.role-new-button { width: 100%; margin: 14px 0 12px; }
+.role-new-button span { font-size: 15px; font-weight: 400; }
+.access-role-list { display: grid; gap: 2px; }
+.access-role-list > button {
+  min-width: 0;
+  padding: 10px 11px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: background 150ms var(--ease-out);
+}
+.access-role-list > button:hover { background: rgba(120, 120, 128, 0.08); }
+/* Selection is a quiet fill, not a saturated block. */
+.access-role-list > button.is-selected { background: rgba(120, 120, 128, 0.14); }
+.access-role-list > button.is-selected .access-role-title strong { color: var(--ink); }
+.access-role-list > button:focus-visible { outline: 2px solid var(--purple); outline-offset: -2px; }
+.access-role-title { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.access-role-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.access-role-meta { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.35; }
+.access-mini-tag, .skill-source-tag { display: inline-flex; align-items: center; flex-shrink: 0; min-height: 20px; padding: 3px 7px; border-radius: 999px; background: rgba(120, 120, 128, 0.12); color: var(--muted); font-size: 10px; font-weight: 600; }
+.access-mini-tag.is-purple { background: var(--purple-soft); color: var(--purple-dark); }
+
+.role-form { display: grid; gap: 14px; }
+.role-editor-heading { padding-bottom: 2px; }
+.role-editor-heading h2 { font-size: 16px; }
+.role-form-card { min-width: 0; margin: 0; padding: 14px; border: 1px solid var(--hairline); border-radius: var(--radius-md); background: rgba(120, 120, 128, 0.04); }
+.role-form-card legend { padding: 0 6px; margin-left: -6px; color: var(--ink); font-size: 12px; font-weight: 650; }
+.role-card-hint { margin: 5px 0 8px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.role-details-card { display: grid; grid-template-columns: minmax(0, 0.72fr) minmax(0, 1.28fr); gap: 12px; }
+.role-details-card legend { grid-column: 1 / -1; }
+.access-field { display: grid; gap: 6px; min-width: 0; color: var(--ink); font-size: 12px; font-weight: 700; }
+.access-field span em { margin-left: 5px; color: var(--muted); font-size: 10px; font-style: normal; font-weight: 500; }
+.access-field input, .access-field textarea, .skill-url-form input, .skill-search-form input, .skill-discovery-form input, .assignment-role-field select { width: 100%; min-height: 36px; padding: 8px 11px; border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--paper); color: var(--ink); font: inherit; font-size: 13px; outline: none; }
+.access-field input:focus, .access-field textarea:focus, .skill-url-form input:focus, .skill-search-form input:focus, .skill-discovery-form input:focus, .assignment-role-field select:focus { border-color: var(--purple); box-shadow: 0 0 0 3px var(--purple-soft); }
+.access-field textarea { min-height: 58px; resize: vertical; }
+.role-option-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.role-skills-card { grid-column: 1 / -1; }
+.access-option-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 14px; }
+.access-option { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: start; gap: 10px; min-width: 0; min-height: 44px; padding: 8px 6px; border-radius: 8px; cursor: pointer; }
+.access-option:hover { background: rgba(120, 120, 128, 0.08); }
+.access-option:focus-within { background: rgba(120, 120, 128, 0.08); box-shadow: 0 0 0 2px var(--purple-soft); }
+.access-option input[type="checkbox"] { width: 18px; height: 18px; margin: 1px 0 0; accent-color: var(--purple); cursor: pointer; }
+.access-option > span { min-width: 0; }
+.access-option strong, .access-option small { display: block; }
+.access-option strong { font-size: 12px; line-height: 1.3; }
+.access-option small { margin-top: 3px; color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.35; }
+.access-actions { justify-content: flex-end; flex-wrap: wrap; padding-top: 2px; }
+.role-save-actions {
+  position: sticky;
+  bottom: -18px;
+  z-index: 2;
+  gap: 10px;
+  margin: 4px -18px -18px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--hairline);
+  background: var(--paper);
+}
+.role-save-actions .access-action-note { margin-right: auto; }
+.access-action-note { color: var(--muted); font-size: 11px; }
+.button-danger:disabled { opacity: 0.45; }
+.access-inline-link { padding: 0; border: 0; background: none; color: var(--purple-dark); font: inherit; font-size: inherit; text-decoration: underline; cursor: pointer; }
+.access-empty-inline { margin: 8px 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+
+.role-summary-copy { margin: 10px 0 14px; max-width: 68ch; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.role-summary-note { display: flex; align-items: flex-start; gap: 9px; padding: 11px 12px; border: 1px solid #e4defd; border-radius: 10px; background: #f8f6ff; color: var(--purple-dark); }
+.role-summary-note > span { display: grid; flex-shrink: 0; width: 18px; height: 18px; place-items: center; border-radius: 50%; background: #e4defd; font-size: 11px; font-weight: 800; }
+.role-summary-note p { margin: 0; font-size: 12px; line-height: 1.45; }
+.role-summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 15px; }
+.role-summary-metric { min-width: 0; padding: 12px; border: 1px solid var(--hairline); border-radius: var(--radius-md); background: rgba(120, 120, 128, 0.04); }
+.role-summary-metric > strong { display: inline-block; margin-right: 6px; font-size: 20px; letter-spacing: -0.04em; }
+.role-summary-metric > span { color: var(--muted); font-size: 11px; }
+.role-summary-items { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.role-summary-items code { overflow: hidden; max-width: 100%; padding: 3px 5px; border-radius: 5px; background: #f0efea; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.role-summary-items em { color: var(--muted); font-size: 10px; font-style: normal; }
+.role-summary-assignment { margin: 16px 0 0; color: var(--muted); font-size: 12px; }
+
+.assignments-panel, .skills-panel { display: grid; gap: 16px; }
+.assignment-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.assignment-card { padding: 17px; }
+.assignment-card-heading { align-items: flex-start; padding-bottom: 13px; border-bottom: 1px solid var(--line); }
+.assignment-card-heading h3 { margin: 0; font-size: 16px; letter-spacing: -0.02em; }
+.assignment-card-heading p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.assignment-rows { display: grid; }
+.assignment-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 12px 0 0; }
+.assignment-agent { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.assignment-agent > div { min-width: 0; }
+.assignment-agent strong, .assignment-agent span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assignment-agent strong { font-size: 13px; }
+.assignment-agent span { margin-top: 2px; color: var(--muted); font-size: 11px; }
+.assignment-role-field { width: min(180px, 45%); flex-shrink: 0; }
+.assignment-role-field select { min-height: 38px; padding-top: 7px; padding-bottom: 7px; }
+.access-empty-state { display: grid; place-items: center; min-height: 260px; padding: 32px; border: 1px dashed #cbc8bd; border-radius: 14px; background: rgba(251, 250, 247, 0.6); text-align: center; }
+.access-empty-icon { display: grid; width: 42px; height: 42px; place-items: center; margin-bottom: 10px; border-radius: 12px; background: var(--purple-soft); color: var(--purple-dark); font-size: 24px; }
+.access-empty-state h3 { margin: 0; font-size: 16px; }
+.access-empty-state p { max-width: 44ch; margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+
+.skill-import-card { background: linear-gradient(135deg, #fffefa 0%, #f8f6ff 100%); }
+.skill-import-actions { align-items: stretch; justify-content: flex-start; margin-top: 12px; }
+.skill-import-or { flex-shrink: 0; align-self: center; color: var(--muted); font-size: 11px; }
+.skill-url-form { flex: 1; min-width: 240px; }
+.skill-url-form input { flex: 1; min-width: 0; }
+.skill-import-note { margin: 10px 0 0; color: var(--muted); font-size: 11px; }
+.skill-library-card, .skill-discovery-card { padding-bottom: 18px; }
+.skill-library-heading { align-items: center; }
+.access-safety-chip { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; padding: 6px 9px; border: 1px solid #cce4d8; border-radius: 999px; background: #f3fbf6; color: var(--green); font-size: 10px; font-weight: 700; }
+.skill-search-form { position: relative; margin: 15px 0 9px; }
+.skill-search-form input { padding-left: 33px; }
+.skill-search-icon { position: absolute; left: 12px; color: var(--muted); font-size: 19px; pointer-events: none; }
+.skill-search-form .button, .skill-discovery-form .button { flex-shrink: 0; }
+.skill-filter-row { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 14px; }
+.skill-filter-row button { min-height: 30px; padding: 5px 10px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--muted); font-size: 11px; font-weight: 700; cursor: pointer; }
+.skill-filter-row button:hover { background: #f0efea; color: var(--ink); }
+.skill-filter-row button.is-selected { border-color: #c6bcfb; background: var(--purple-soft); color: var(--purple-dark); }
+.skill-library-sections { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.skill-library-section { min-width: 0; }
+.skill-list-heading { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.skill-list-heading h3 { margin: 0; font-size: 14px; }
+.skill-list-heading span { display: grid; min-width: 20px; height: 20px; place-items: center; border-radius: 6px; background: #f0efea; color: var(--muted); font-size: 10px; font-weight: 800; }
+.skill-catalog-list { display: grid; }
+.skill-catalog-row { align-items: flex-start; padding: 13px 0; border-bottom: 1px solid var(--line); }
+.skill-catalog-row:last-child { border-bottom: 0; }
+.skill-catalog-copy { min-width: 0; }
+.skill-title-line { justify-content: flex-start; gap: 7px; }
+.skill-title-line h3 { overflow: hidden; margin: 0; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.skill-source-tag { min-height: 18px; padding: 2px 6px; background: #f0efea; font-size: 9px; }
+.skill-source-tag.is-built-in { background: var(--purple-soft); color: var(--purple-dark); }
+.skill-catalog-copy p { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.skill-catalog-copy small { display: block; margin-top: 5px; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.skill-catalog-row > .button { flex-shrink: 0; min-height: 32px; padding: 0 10px; font-size: 11px; }
+.access-loading { color: var(--muted); font-size: 12px; }
+.skill-discovery-form { align-items: stretch; }
+.skill-discovery-form input { flex: 1; min-width: 0; }
+.skill-discovery-results { display: grid; margin-top: 14px; border-top: 1px solid var(--line); }
+.skill-discovery-result { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; padding: 13px 0; border-bottom: 1px solid var(--line); }
+.skill-discovery-result h3 { margin: 0; font-size: 13px; }
+.skill-discovery-result p { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.skill-result-domain { display: block; margin-top: 4px; color: var(--purple-dark); font-size: 10px; font-weight: 700; }
+.skill-discovery-result .button { flex-shrink: 0; min-height: 32px; padding: 0 11px; font-size: 11px; }
+
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.access-tabs button:focus-visible, .access-role-list > button:focus-visible, .access-option:focus-within, .skill-filter-row button:focus-visible, .access-notice button:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
+
+@media (max-width: 940px) {
+  .role-layout { grid-template-columns: minmax(210px, 250px) minmax(0, 1fr); }
+  .role-option-grid, .skill-library-sections, .assignment-list { grid-template-columns: 1fr; }
+  .role-skills-card { grid-column: auto; }
+}
+
 @media (max-width: 850px) {
-  .access-grid { grid-template-columns: 1fr; }
-  .role-editor-card { grid-row: auto; }
-  .skills-card { grid-column: auto; }
+  .access-view { padding-top: 24px; }
+  .access-head { align-items: flex-start; flex-direction: column; gap: 14px; }
+  .access-head-stats { align-self: stretch; }
+  .access-head-stats > div { flex: 1; }
+  .role-layout { grid-template-columns: 1fr; }
+  .role-index-card { position: static; }
+  .access-role-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .access-option-list { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 580px) {
+  .access-view { padding-right: 12px; padding-left: 12px; }
+  .sidebar { box-shadow: none; }
+  /* The segmented control stays compact; it scrolls rather than growing. */
+  .access-tabs { display: flex; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .access-tabs::-webkit-scrollbar { display: none; }
+  .access-tabs button { flex: 1 0 auto; padding: 6px 12px; text-align: center; }
+  .access-card { padding: 15px; border-radius: var(--radius-md); }
+  .assignment-card-title { flex-wrap: wrap; }
+  .assignment-archive, .assignment-archive-confirm { margin-left: 0; }
+  .role-details-card { grid-template-columns: 1fr; }
+  .role-details-card legend { grid-column: auto; }
+  .access-role-list { grid-template-columns: 1fr; }
+  .role-summary-grid { grid-template-columns: 1fr; }
+  .skill-import-actions { align-items: stretch; flex-direction: column; }
+  .skill-import-or { align-self: flex-start; }
+  .skill-url-form { flex-direction: column; min-width: 0; }
+  .skill-url-form .button { width: 100%; }
+  .skill-discovery-form { align-items: stretch; flex-direction: column; }
+  .skill-discovery-form .button { width: 100%; }
+  .assignment-row { align-items: flex-start; flex-direction: column; }
+  .assignment-role-field { width: 100%; }
+  .assignment-role-field select { width: 100%; }
+  .access-safety-chip { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .access-tabs button, .access-role-list > button { transition: none; }
+}
+
+/* ============================================================
+   Roles & skills: assignment cards
+   ============================================================ */
+
+.assignment-card-heading {
+  display: block;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.assignment-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.assignment-card-heading h3 {
+  overflow: hidden;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assignment-card-heading p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* A quiet control: retiring a Project is deliberate, not a primary action.
+   It sits in normal flow so the confirmation can grow without covering the
+   Project name. */
+.assignment-archive {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 4px 10px;
+  font-size: 11px;
+}
+
+button.assignment-archive:hover:not(:disabled) {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+/* Confirmation happens in place, so the product keeps its own voice rather
+   than handing the decision to an OS dialog. */
+.assignment-archive-confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.assignment-archive-confirm span {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.assignment-archive-confirm .button {
+  padding: 4px 10px;
+  font-size: 11px;
+}
+
+/* Kept for legacy response consumers; current Insights omits retired rows. */
+.usage-row-retired th,
+.usage-row-retired td {
+  color: var(--muted);
+}
+
+.usage-row-retired th span:first-child {
+  font-weight: 500;
+  font-style: italic;
+}
+
+/* Shown only when two Workspaces share a name, so controls target the right ID. */
+.assignment-discriminator {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: rgba(120, 120, 128, 0.12);
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+/* Agent-centric Assignments: each roster member owns one card, while
+   workspace memberships stay compact and actionable underneath. */
+.assignment-agent-card { display: grid; gap: 0; }
+.assignment-agent-heading { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.assignment-agent-heading .assignment-card-title { display: block; }
+.assignment-agent-status { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+.assignment-add-field { width: min(220px, 42%); flex-shrink: 0; }
+.assignment-add-field select,
+.assignment-workspace-row select {
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.assignment-add-field select:focus,
+.assignment-workspace-row select:focus {
+  border-color: var(--purple);
+  box-shadow: 0 0 0 3px var(--purple-soft);
+}
+.assignment-add-field select:disabled { color: var(--muted); opacity: 0.75; }
+.assignment-workspace-list { display: grid; gap: 8px; padding-top: 13px; }
+.assignment-workspace-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(130px, 180px) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.assignment-workspace-row:last-child { border-bottom: 0; }
+.assignment-workspace-copy { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; min-width: 0; }
+.assignment-workspace-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.assignment-workspace-row .assignment-role-field { width: auto; }
+.assignment-remove { min-height: 34px; padding: 6px 9px; color: var(--muted); font-size: 11px; }
+.assignment-remove:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
+.assignment-empty { margin: 0; padding: 6px 0 0; color: var(--muted); font-size: 12px; }
+
+@media (max-width: 580px) {
+  .assignment-add-field { width: 100%; margin-top: 12px; }
+  .assignment-workspace-row { grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
+  .assignment-workspace-row .assignment-role-field { grid-column: 1 / -1; width: 100%; }
+  .assignment-workspace-row .assignment-remove { grid-column: 2; grid-row: 1; }
+}
+
+/* Workspace-first navigation: one persistent parent, many child Conversations. */
+.workspace-nav-branch {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 4px;
+}
+
+.workspace-nav-row {
+  display: flex;
+  align-items: stretch;
+  gap: 3px;
+}
+
+.workspace-nav-card {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 9px;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-nav-card:hover { background: #2e2e2a; }
+.workspace-nav-card.selected {
+  border-color: #464540;
+  background: #353430;
+  box-shadow: inset 3px 0 #826ff0;
+}
+.workspace-nav-card:focus-visible,
+.workspace-nav-add:focus-visible,
+.workspace-conversation-new:focus-visible {
+  outline: 2px solid #a699ff;
+  outline-offset: 1px;
+}
+.workspace-nav-glyph { color: #b5a9ff; font-size: 15px; text-align: center; }
+.workspace-nav-card .thread-card-copy strong { font-size: 12px; }
+.workspace-nav-card .thread-card-meta { margin-top: 2px; }
+
+.workspace-nav-add {
+  width: 28px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #aaa9a1;
+  background: transparent;
+  cursor: pointer;
+  font-size: 15px;
+}
+.workspace-nav-add:hover { color: #fff; background: #353430; }
+
+.workspace-conversation-list {
+  display: grid;
+  gap: 2px;
+  margin: 0 0 2px 28px;
+  padding: 3px 0 3px 9px;
+  border-left: 1px solid #3d3d38;
+}
+.workspace-conversation-card { padding: 7px 8px; }
+.workspace-conversation-card .thread-card-meta { font-size: 9px; }
+.workspace-conversation-empty,
+.workspace-legacy-label {
+  padding: 6px 8px;
+  color: #85857e;
+  font-size: 10px;
+}
+.workspace-conversation-new {
+  justify-self: start;
+  border: 0;
+  border-radius: 7px;
+  padding: 6px 8px;
+  color: #cfc6ff;
+  background: transparent;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.workspace-conversation-new:hover { background: #353430; }
+.workspace-legacy-branch {
+  margin-top: 10px;
+  padding-top: 5px;
+  border-top: 1px solid #353530;
+}
+
+/* Composer semantics: the same dialog serves Workspace creation and an
+   existing Workspace's next Conversation without exposing Project jargon. */
+.orch-optional { color: var(--orch-muted); font-size: 10px; font-weight: 500; }
+.orch-composer-section {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--orch-line-soft);
+  border-radius: var(--orch-radius-control);
+  padding: 12px;
+  background: rgba(120, 120, 128, 0.04);
+}
+.orch-composer-section-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.orch-composer-section-heading h3 { margin: 4px 0 0; font-size: 13px; }
+.workspace-composer { gap: 14px; }
+.workspace-composer .orch-picker { padding: 0; }
+.orch-workspace-context {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 8px;
+  row-gap: 2px;
+  border: 1px solid var(--orch-line-soft);
+  border-radius: var(--orch-radius-control);
+  padding: 10px 12px;
+  background: rgba(120, 120, 128, 0.05);
+}
+.orch-workspace-context strong { font-size: 13px; }
+.orch-workspace-context .orch-field-help { grid-column: 1 / -1; }
+
+/* Room density: the inspector is opt-in and the stage owns the width by
+   default. Selecting a plate or opening the approval door reveals details. */
+.ws-toolbar {
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ws-inspector-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  border: 1px solid var(--orch-line);
+  border-radius: 9px;
+  padding: 5px 10px;
+  color: var(--orch-ink);
+  background: var(--orch-surface-solid);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ws-inspector-toggle:hover { border-color: var(--orch-accent); }
+.ws-body { grid-template-columns: minmax(0, 1fr); }
+.ws-body.has-inspector { grid-template-columns: minmax(0, 1fr) 288px; }
+.ws-inspector-head { position: relative; padding-right: 28px; }
+.ws-inspector-close {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--orch-muted);
+  background: transparent;
+  font-size: 18px;
+  cursor: pointer;
+}
+.ws-inspector-close:hover { color: var(--orch-ink); background: rgba(120, 120, 128, 0.1); }
+.orch-idle-workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+.orch-idle-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 15px clamp(20px, 5vw, 40px) 12px;
+  border-bottom: 1px solid var(--orch-line-soft);
+  background: rgba(251, 250, 247, 0.86);
+}
+.orch-idle-heading h2 { margin: 4px 0; font-size: 18px; letter-spacing: -0.03em; }
+.orch-idle-heading p { margin: 0; color: var(--orch-muted); font-size: 12px; }
+.orch-idle-workspace > .ws-view { padding-top: 12px; }
+
+/* The header is one compact identity/status/action strip; participant context
+   remains available below without consuming the old card-sized band. */
+.orch-run-view { gap: 7px; padding-block: 10px 9px; }
+.orch-run-heading { min-height: 34px; gap: 10px; }
+.orch-run-heading h2 { margin-top: 2px; font-size: 15px; }
+.orch-project-badge { display: inline-flex; align-items: baseline; gap: 7px; margin-right: 8px; }
+.orch-project-badge .orch-eyebrow { font-size: 9px; }
+.orch-run-summary { font-size: 11px; }
+.orch-participant-bar { gap: 5px; }
+.orch-participant-pill { padding: 3px 9px 3px 4px; font-size: 11px; }
+
+@media (max-width: 1100px) {
+  .ws-body.has-inspector { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(320px, 1fr) auto; }
+}
+
+@media (max-width: 720px) {
+  .ws-topbar { align-items: flex-start; }
+  .ws-toolbar { width: 100%; justify-content: flex-start; }
+  .ws-stations { flex: 1; }
+  .ws-inspector-toggle { flex-shrink: 0; }
+  .orch-idle-heading { flex-direction: column; }
+  .orch-idle-heading .orch-button { width: 100%; }
+  .orch-composer-section-heading { align-items: flex-start; flex-direction: column; gap: 3px; }
 }

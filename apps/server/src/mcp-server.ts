@@ -12,6 +12,7 @@ import type { PermitApprovalService } from "./access/permit-approval-service.js"
 import type { AuditReader } from "./audit/audit-types.js";
 import { correlationAttributes, type RuntimeTelemetry, type TelemetryCarrier } from "./telemetry/telemetry-types.js";
 import type { SearchProvider } from "./tools/search-provider.js";
+import type { WebFetchAdapter } from "./tools/web-fetch-adapter.js";
 
 export interface McpRouteDependencies {
   sessions: McpSessionService;
@@ -26,6 +27,8 @@ export interface McpRouteDependencies {
   auditService?: AuditReader;
   /** The selected provider is exposed only through safe health metadata. */
   searchProvider?: SearchProvider;
+  /** Safe public-only fetcher reused for explicit skill Markdown imports. */
+  webFetch?: Pick<WebFetchAdapter, "fetch">;
   telemetry?: RuntimeTelemetry;
 }
 

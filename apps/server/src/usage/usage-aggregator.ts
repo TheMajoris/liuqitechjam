@@ -173,6 +173,30 @@ function summarizeLatency(samples: readonly number[]): UsageLatency {
   };
 }
 
+function hasActivity(totals: UsageTotals): boolean {
+  const { runs, activity } = totals;
+  return (
+    runs.total > 0 ||
+    totals.messages > 0 ||
+    activity.toolCalls > 0 ||
+    activity.toolFailures > 0 ||
+    activity.approvalsRequired > 0 ||
+    activity.skillInvocations > 0 ||
+    activity.authorizationDenials > 0
+  );
+}
+
+/**
+ * Whether a live subject's row is worth showing.
+ *
+ * Deleting an Agent removes its runs and messages but deliberately leaves the
+ * audit journal intact, so correlation residue alone must not produce an
+ * all-zero row carrying nothing a reader can act on.
+ */
+function keepRow(totals: UsageTotals): boolean {
+  return totals.runs.total > 0 || hasActivity(totals);
+}
+
 function summarize(accumulator: UsageAccumulator): UsageTotals {
   return {
     runs: { ...accumulator.runs },
@@ -329,6 +353,13 @@ export function buildUsageReport(
     if (workspaceId !== undefined) {
       accumulatorFor(byWorkspace, workspaceId).messages += 1;
     }
+    const projectId = runToProject.get(message.runId) ??
+      (workspaceId === undefined ? undefined : workspaceToProject.get(workspaceId));
+    if (projectId !== undefined) {
+      // Messages are part of the same conversation roll-up as their run. The
+      // Project ID is stable even when the child Team session is later removed.
+      accumulatorFor(byProject, projectId).messages += 1;
+    }
   }
 
   for (const event of source.auditEvents) {
@@ -357,25 +388,26 @@ export function buildUsageReport(
   }
 
   const agentsById = new Map(source.agents.map((agent) => [agent.id, agent]));
-  const agents: UsageAgentBreakdown[] = [...byAgent.entries()].map(
-    ([agentId, accumulator]) => {
-      const agent = agentsById.get(agentId);
-      return {
-        agentId,
-        name: agent?.name ?? null,
-        status: agent?.status ?? null,
-        modelLabel: agent?.modelRef?.modelId ?? null,
-        lastActiveAt: accumulator.lastActiveAt,
-        ...summarize(accumulator),
-      };
-    },
-  );
+  // Seed from the complete live roster so a newly created Agent is honest
+  // about having zero usage instead of disappearing from Insights. Stale
+  // audit/run IDs are intentionally not promoted into named rows.
+  const agents: UsageAgentBreakdown[] = [...agentsById.values()].map((agent) => {
+    const accumulator = byAgent.get(agent.id) ?? createAccumulator();
+    return {
+      agentId: agent.id,
+      name: agent.name,
+      status: agent.status,
+      modelLabel: agent.modelRef?.modelId ?? null,
+      lastActiveAt: accumulator.lastActiveAt,
+      ...summarize(accumulator),
+    };
+  });
 
   const sessionsById = new Map(
     source.orchestrations.map((session) => [session.id, session]),
   );
-  const workspaces: UsageWorkspaceBreakdown[] = [...byWorkspace.entries()].map(
-    ([orchestrationId, accumulator]) => {
+  const workspaces: UsageWorkspaceBreakdown[] = [...byWorkspace.entries()]
+    .map(([orchestrationId, accumulator]) => {
       const session = sessionsById.get(orchestrationId);
       return {
         orchestrationId,
@@ -386,18 +418,31 @@ export function buildUsageReport(
         lastActiveAt: accumulator.lastActiveAt,
         ...summarize(accumulator),
       };
-    },
-  );
+    })
+    // A deleted child Conversation no longer has a session row. Keep its
+    // historical spend in totals, but never render a ghost workspace row.
+    .filter((row) => sessionsById.has(row.orchestrationId) && keepRow(row));
 
   const projectsById = new Map(source.projects.map((project) => [project.id, project]));
-  const projects: UsageProjectBreakdown[] = [...byProject.entries()].map(
-    ([projectId, accumulator]) => ({
-      projectId,
-      name: projectsById.get(projectId)?.name ?? null,
-      lastActiveAt: accumulator.lastActiveAt,
-      ...summarize(accumulator),
-    }),
-  );
+  const projects: UsageProjectBreakdown[] = [...byProject.entries()]
+    .map(([projectId, accumulator]) => {
+      const project = projectsById.get(projectId);
+      return {
+        projectId,
+        name: project?.name ?? null,
+        // A workspace breakdown names only currently live Workspaces. Usage
+        // from archived/missing IDs remains in top-level totals.
+        archived: false,
+        lastActiveAt: accumulator.lastActiveAt,
+        ...summarize(accumulator),
+      };
+    })
+    .filter((row) => {
+      const project = projectsById.get(row.projectId);
+      // Older snapshots did not persist status; only an explicit archive is
+      // retired, while missing IDs remain excluded from named rows.
+      return project !== undefined && project.status !== "archived" && keepRow(row);
+    });
 
   const byBusiest = (
     left: { runs: UsageRunTotals; tokens: UsageTokenTotals },
@@ -417,6 +462,13 @@ export function buildUsageReport(
     agents,
     workspaces,
     projects,
+    // Retired subjects are deliberately omitted from all named breakdowns;
+    // totals above remain the historical accounting surface.
+    retired: {
+      agents: null,
+      workspaces: null,
+      projects: null,
+    },
     daily: buildDailySeries(daily, days, now),
   };
 }

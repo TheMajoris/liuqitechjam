@@ -62,6 +62,11 @@ export { APPROVED_SKILL_CATALOG, cloneApprovedSkillCatalog } from "./skill-catal
 
 export { SkillRegistry } from "./skill-registry.js";
 export {
+  MAX_SKILL_MARKDOWN_BYTES,
+  normalizeSkillUrl,
+  parseSkillMarkdown,
+} from "./skill-markdown.js";
+export {
   isSkillError,
   SkillError,
   SkillService,

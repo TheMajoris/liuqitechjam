@@ -1,10 +1,8 @@
 import type {
   Agent,
-  AgentConversation,
   Project,
   SystemInfo,
 } from "../../types";
-import { ConversationRail } from "../ConversationRail";
 import { AgentAvatar } from "../orchestration/AgentAvatar";
 import {
   formatDateTime,
@@ -22,12 +20,7 @@ interface AppSidebarProps {
   agents: Agent[];
   projects: Project[];
   selectedAgentId: string | null;
-  conversations: AgentConversation[];
-  conversationId: string | null;
-  conversationsOpen: boolean;
   system: SystemInfo | null;
-  busy: boolean;
-  runInFlight: boolean;
   orchestration: UseOrchestrationResult;
   onToggleCollapsed: () => void;
   onNewWorkspace: () => void;
@@ -35,13 +28,10 @@ interface AppSidebarProps {
   onSelectInsights: () => void;
   onSelectAccess: () => void;
   onSelectSession: (sessionId: string) => void;
+  onSelectWorkspace: (workspaceId: string) => void;
   onDeleteSession: (sessionId: string) => void;
   onSelectAgent: (agentId: string) => void;
-  onToggleConversations: () => void;
-  onSelectConversation: (conversationId: string) => void;
   onCreateConversation: () => void;
-  onRenameConversation: (conversationId: string, title: string) => void;
-  onDeleteConversation: (conversationId: string) => void;
 }
 
 function agentStatusLabel(status: Agent["status"]): string {
@@ -54,10 +44,9 @@ function agentStatusLabel(status: Agent["status"]): string {
 /**
  * Product navigation.
  *
- * Two collections, because the domain has two: shared workspaces, where a Team
- * of Agents works on one Project, and the Agents themselves. Clicking either
- * decides what the main pane shows, so there is no separate mode switch to
- * keep in your head.
+ * Workspaces are the navigation parents. Their child rows are Conversations,
+ * so opening another task never creates a second copy of the shared artifact.
+ * Agents remain a separate collection because they are reusable members.
  */
 export function AppSidebar({
   collapsed,
@@ -65,12 +54,7 @@ export function AppSidebar({
   agents,
   projects,
   selectedAgentId,
-  conversations,
-  conversationId,
-  conversationsOpen,
   system,
-  busy,
-  runInFlight,
   orchestration,
   onToggleCollapsed,
   onNewWorkspace,
@@ -78,15 +62,12 @@ export function AppSidebar({
   onSelectInsights,
   onSelectAccess,
   onSelectSession,
+  onSelectWorkspace,
   onDeleteSession,
   onSelectAgent,
-  onToggleConversations,
-  onSelectConversation,
   onCreateConversation,
-  onRenameConversation,
-  onDeleteConversation,
 }: AppSidebarProps) {
-  const projectNames = new Map(projects.map((project) => [project.id, project.name]));
+  const activeProjects = projects.filter((project) => project.status === "active");
   const runtimeLabel =
     system?.runtimeProvider === "container" ? "Local container" : "Local process";
 
@@ -163,12 +144,12 @@ export function AppSidebar({
           <button
             type="button"
             className={"rail-item" + (view === "workspace" ? " is-active" : "")}
-            aria-label={`Workspaces (${orchestration.sessions.length})`}
+            aria-label={`Workspaces (${activeProjects.length})`}
             onClick={onToggleCollapsed}
           >
             <span aria-hidden="true">◍</span>
             <span className="rail-tip" aria-hidden="true">
-              Workspaces · {orchestration.sessions.length}
+              Workspaces · {activeProjects.length}
             </span>
           </button>
         </div>
@@ -227,67 +208,141 @@ export function AppSidebar({
 
         <div className="sidebar-label">
           <span>Workspaces</span>
-          <span className="sidebar-count">{orchestration.sessions.length}</span>
+          <span className="sidebar-count">{activeProjects.length}</span>
         </div>
         <nav className="thread-list" aria-label="Shared workspaces">
-          {orchestration.sessions.map((session) => {
-            const projectName = session.projectId
-              ? projectNames.get(session.projectId)
-              : undefined;
+          {activeProjects.map((project) => {
+            const projectSessions = orchestration.sessions
+              .filter((session) => session.projectId === project.id)
+              .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
             const selected =
-              view === "workspace" && session.id === orchestration.selectedSessionId;
+              view === "workspace" && project.id === orchestration.selectedWorkspaceId;
             return (
-              <div className="thread-card-row" key={session.id}>
-                <button
-                  type="button"
-                  className={"thread-card " + (selected ? "selected" : "")}
-                  aria-current={selected ? "page" : undefined}
-                  onClick={() => onSelectSession(session.id)}
-                >
-                  <span className="thread-card-copy">
-                    <strong>{session.name}</strong>
-                    <span className="thread-card-meta">
-                      {projectName ? (
-                        <span className="thread-project">{projectName}</span>
-                      ) : (
-                        <span className="thread-project is-none">No Project</span>
-                      )}
-                      <span>{formatDateTime(session.updatedAt)}</span>
+              <div className={"workspace-nav-branch " + (selected ? "is-selected" : "")} key={project.id}>
+                <div className="workspace-nav-row">
+                  <button
+                    type="button"
+                    className={"workspace-nav-card " + (selected ? "selected" : "")}
+                    aria-current={selected ? "page" : undefined}
+                    onClick={() => onSelectWorkspace(project.id)}
+                  >
+                    <span className="workspace-nav-glyph" aria-hidden="true">◍</span>
+                    <span className="thread-card-copy">
+                      <strong>{project.name}</strong>
+                      <span className="thread-card-meta">
+                        <span>{projectSessions.length} {projectSessions.length === 1 ? "conversation" : "conversations"}</span>
+                        <span>{formatDateTime(project.updatedAt)}</span>
+                      </span>
                     </span>
-                  </span>
-                  <span className={"thread-state thread-state-" + session.status}>
-                    {statusLabel(session.status)}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className="thread-delete"
-                  aria-label={`Delete ${session.name}`}
-                  title={
-                    isOrchestrationActive(session.status)
-                      ? "Stop before deleting"
-                      : "Delete workspace"
-                  }
-                  disabled={
-                    isOrchestrationActive(session.status) || orchestration.action !== null
-                  }
-                  onClick={() => {
-                    if (window.confirm(`Delete "${session.name}" and its Team chat history?`)) {
-                      onDeleteSession(session.id);
-                    }
-                  }}
-                >
-                  ×
-                </button>
+                  </button>
+                  <button
+                    type="button"
+                    className="workspace-nav-add"
+                    aria-label={`New conversation in ${project.name}`}
+                    title="New conversation"
+                    onClick={() => {
+                      onSelectWorkspace(project.id);
+                      onCreateConversation();
+                    }}
+                  >
+                    ＋
+                  </button>
+                </div>
+                {selected && (
+                  <div className="workspace-conversation-list" aria-label={`Conversations in ${project.name}`}>
+                    {projectSessions.map((session) => {
+                      const conversationSelected = session.id === orchestration.selectedSessionId;
+                      return (
+                        <div className="thread-card-row" key={session.id}>
+                          <button
+                            type="button"
+                            className={"thread-card workspace-conversation-card " + (conversationSelected ? "selected" : "")}
+                            aria-current={conversationSelected ? "page" : undefined}
+                            onClick={() => onSelectSession(session.id)}
+                          >
+                            <span className="thread-card-copy">
+                              <strong>{session.name}</strong>
+                              <span className="thread-card-meta">
+                                <span>{formatDateTime(session.updatedAt)}</span>
+                              </span>
+                            </span>
+                            <span className={"thread-state thread-state-" + session.status}>
+                              {statusLabel(session.status)}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className="thread-delete"
+                            aria-label={`Delete conversation ${session.name}`}
+                            title={isOrchestrationActive(session.status) ? "Stop before deleting" : "Delete conversation"}
+                            disabled={isOrchestrationActive(session.status) || orchestration.action !== null}
+                            onClick={() => {
+                              if (window.confirm(`Delete conversation "${session.name}"?`)) {
+                                onDeleteSession(session.id);
+                              }
+                            }}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      );
+                    })}
+                    {projectSessions.length === 0 && (
+                      <div className="workspace-conversation-empty">No conversations yet.</div>
+                    )}
+                    <button
+                      type="button"
+                      className="workspace-conversation-new"
+                      onClick={onCreateConversation}
+                    >
+                      <span aria-hidden="true">＋</span> New conversation
+                    </button>
+                  </div>
+                )}
               </div>
             );
           })}
-          {orchestration.sessions.length === 0 && (
+          {activeProjects.length === 0 && orchestration.sessions.filter((session) => !session.projectId).length === 0 && (
             <div className="empty-sidebar">
               <span aria-hidden="true">◇</span>
               {orchestration.loading
                 ? "Loading workspaces…"
-                : "Create a shared workspace and put your Agents in it."}
+                : "Create a Workspace and put your Agents in it."}
+            </div>
+          )}
+          {orchestration.sessions.some((session) => !session.projectId) && (
+            <div className="workspace-legacy-branch">
+              <div className="workspace-legacy-label">Other conversations</div>
+              {orchestration.sessions
+                .filter((session) => !session.projectId)
+                .map((session) => {
+                  const selected = view === "workspace" && session.id === orchestration.selectedSessionId;
+                  return (
+                    <div className="thread-card-row" key={session.id}>
+                      <button
+                        type="button"
+                        className={"thread-card workspace-conversation-card " + (selected ? "selected" : "")}
+                        aria-current={selected ? "page" : undefined}
+                        onClick={() => onSelectSession(session.id)}
+                      >
+                        <span className="thread-card-copy">
+                          <strong>{session.name}</strong>
+                          <span className="thread-card-meta"><span>{formatDateTime(session.updatedAt)}</span></span>
+                        </span>
+                        <span className={"thread-state thread-state-" + session.status}>{statusLabel(session.status)}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="thread-delete"
+                        aria-label={`Delete conversation ${session.name}`}
+                        disabled={isOrchestrationActive(session.status) || orchestration.action !== null}
+                        onClick={() => {
+                          if (window.confirm(`Delete conversation "${session.name}"?`)) onDeleteSession(session.id);
+                        }}
+                      >×</button>
+                    </div>
+                  );
+                })}
             </div>
           )}
         </nav>
@@ -326,19 +381,6 @@ export function AppSidebar({
                   <span className={"mini-dot mini-" + agent.status} aria-hidden="true" />
                   <span className="orch-sr-only">{agentStatusLabel(agent.status)}</span>
                 </button>
-                {selected && (
-                  <ConversationRail
-                    conversations={conversations}
-                    selectedId={conversationId}
-                    open={conversationsOpen}
-                    busy={busy || runInFlight}
-                    onToggleOpen={onToggleConversations}
-                    onSelect={onSelectConversation}
-                    onCreate={onCreateConversation}
-                    onRename={onRenameConversation}
-                    onDelete={onDeleteConversation}
-                  />
-                )}
               </div>
             );
           })}

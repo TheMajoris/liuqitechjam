@@ -193,6 +193,15 @@ export interface SkillCatalogEntry extends SkillMetadata {
   installable: boolean;
 }
 
+/** A bounded web candidate returned by the backend discovery adapter. */
+export interface SkillDiscoveryResult {
+  title: string;
+  url: string;
+  /** Derived by the client when the provider only returns title/url/description. */
+  domain?: string;
+  description: string;
+}
+
 export interface AgentRole {
   id: string;
   name: string;
@@ -524,6 +533,8 @@ export interface UsageWorkspaceBreakdown extends UsageTotals {
 export interface UsageProjectBreakdown extends UsageTotals {
   projectId: string;
   name: string | null;
+  /** Kept for response compatibility; named rows are always live. */
+  archived: boolean;
   lastActiveAt: string | null;
 }
 
@@ -536,6 +547,16 @@ export interface UsageDailyPoint {
   toolCalls: number;
 }
 
+export interface UsageRetiredSummary extends UsageTotals {
+  subjects: number;
+}
+
+export interface UsageRetired {
+  agents: UsageRetiredSummary | null;
+  workspaces: UsageRetiredSummary | null;
+  projects: UsageRetiredSummary | null;
+}
+
 export interface UsageReport {
   since: string | null;
   generatedAt: string;
@@ -543,6 +564,7 @@ export interface UsageReport {
   agents: UsageAgentBreakdown[];
   workspaces: UsageWorkspaceBreakdown[];
   projects: UsageProjectBreakdown[];
+  retired: UsageRetired;
   daily: UsageDailyPoint[];
 }
 

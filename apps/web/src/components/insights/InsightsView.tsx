@@ -28,7 +28,7 @@ function windowStart(days: number): string {
   return new Date(Date.now() - days * 86_400_000).toISOString();
 }
 
-export function InsightsView({ onSelectAgent, onSelectSession }: InsightsViewProps) {
+export function InsightsView({ onSelectAgent }: InsightsViewProps) {
   const [days, setDays] = useState<number>(30);
   const [report, setReport] = useState<UsageReport | null>(null);
   const [loading, setLoading] = useState(true);
@@ -63,7 +63,7 @@ export function InsightsView({ onSelectAgent, onSelectSession }: InsightsViewPro
       (report?.agents ?? []).map((agent) => ({
         ...agent,
         id: agent.agentId,
-        fallbackName: "Deleted Agent",
+        fallbackName: "Agent",
         meta: agent.modelLabel,
       })),
     [report],
@@ -71,21 +71,10 @@ export function InsightsView({ onSelectAgent, onSelectSession }: InsightsViewPro
 
   const workspaceRows = useMemo<UsageBreakdownRow[]>(
     () =>
-      (report?.workspaces ?? []).map((workspace) => ({
-        ...workspace,
-        id: workspace.orchestrationId,
-        fallbackName: "Deleted workspace",
-        meta: workspace.participants > 0 ? workspace.participants + " Agents" : null,
-      })),
-    [report],
-  );
-
-  const projectRows = useMemo<UsageBreakdownRow[]>(
-    () =>
       (report?.projects ?? []).map((project) => ({
         ...project,
         id: project.projectId,
-        fallbackName: "Deleted Project",
+        fallbackName: "Workspace",
         meta: null,
       })),
     [report],
@@ -212,19 +201,13 @@ export function InsightsView({ onSelectAgent, onSelectSession }: InsightsViewPro
       <UsageBreakdownTable
         caption="By Agent"
         rows={agentRows}
-        emptyMessage="No Agent has run in this window."
+        emptyMessage="No Agent activity in this window."
         onSelect={onSelectAgent}
       />
       <UsageBreakdownTable
-        caption="By workspace"
+        caption="By Workspace"
         rows={workspaceRows}
-        emptyMessage="No shared workspace has run in this window."
-        onSelect={onSelectSession}
-      />
-      <UsageBreakdownTable
-        caption="By Project"
-        rows={projectRows}
-        emptyMessage="No Project-scoped work in this window."
+        emptyMessage="No shared Workspace activity in this window."
       />
 
       <footer className="insights-foot">

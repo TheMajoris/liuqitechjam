@@ -179,7 +179,7 @@ export function WorkspaceStage({
 
       {overflow > 0 && (
         <p className="ws-overflow" role="note">
-          {overflow} more {overflow === 1 ? "Agent is" : "Agents are"} on this Project than the
+          {overflow} more {overflow === 1 ? "Agent is" : "Agents are"} on this Workspace than the
           room seats. They are listed in the sidebar.
         </p>
       )}

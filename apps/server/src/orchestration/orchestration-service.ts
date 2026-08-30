@@ -195,7 +195,9 @@ export class OrchestrationService {
     // Bind the shared Project before the session is visible, so a Team can
     // never be started against a Project its Agents are not attached to.
     if (session.projectId) {
-      await this.projectBinding?.bindTeam(
+      const bindConversation =
+        this.projectBinding?.bindConversation ?? this.projectBinding?.bindTeam;
+      await bindConversation?.(
         session.projectId,
         session.id,
         participants.map((participant) => participant.agentId),
@@ -376,6 +378,68 @@ export class OrchestrationService {
   }
 
   /**
+   * Remove every conversation owned by one Project from active APIs.
+   *
+   * Active child runs are stopped first. The final mutation removes only the
+   * orchestration records and leaves the Project/files for ProjectService to
+   * archive. This is the Workspace-level counterpart to `deleteSession`.
+   */
+  async removeSessionsForProject(projectId: string): Promise<void> {
+    const children = this.store
+      .snapshot()
+      .orchestrations.filter((session) => session.projectId === projectId);
+
+    for (const child of children) {
+      const active = this.activeSessions.get(child.id);
+      if (statusIsActive(child.status) || active) {
+        try {
+          await this.stopSession(child.id);
+        } catch (error) {
+          if (!(error instanceof HttpError) || error.statusCode !== 404) throw error;
+        }
+      }
+      // A terminal session can still have a tiny in-process cleanup tail. Wait
+      // for it before the deletion mutation so no runner can write a child
+      // record after it has been removed from the store.
+      const settled = this.activeSessions.get(child.id)?.execution;
+      if (settled) await settled.catch(() => undefined);
+    }
+
+    await this.store.mutate((database) => {
+      const childIds = new Set(
+        database.orchestrations
+          .filter((session) => session.projectId === projectId)
+          .map((session) => session.id),
+      );
+      for (const childId of childIds) {
+        const session = database.orchestrations.find((item) => item.id === childId);
+        if (session && (statusIsActive(session.status) || this.activeSessions.has(childId))) {
+          throw lifecycleConflict("Stop the active orchestration before archiving its Workspace");
+        }
+      }
+      database.orchestrations = database.orchestrations.filter(
+        (session) => !childIds.has(session.id),
+      );
+      database.orchestrationTurns = database.orchestrationTurns.filter(
+        (turn) => !childIds.has(turn.sessionId),
+      );
+      database.orchestrationEvents = database.orchestrationEvents.filter(
+        (event) => !childIds.has(event.sessionId),
+      );
+      database.orchestrationContinuationPrompts =
+        database.orchestrationContinuationPrompts.filter(
+          (prompt) => !childIds.has(prompt.sessionId),
+        );
+      for (const project of database.projects) {
+        if (project.id === projectId && project.teamId !== null) {
+          project.teamId = null;
+          project.updatedAt = now();
+        }
+      }
+    });
+  }
+
+  /**
    * Permanently remove one Team conversation's application-owned records.
    * Agent catalog entries, Agent messages/runs, workspaces, and private Codex
    * thread state are deliberately outside this mutation and remain intact.
@@ -406,6 +470,17 @@ export class OrchestrationService {
         database.orchestrationContinuationPrompts.filter(
           (item) => item.sessionId !== id,
         );
+      // A Project's `teamId` must never outlive the session it points at, or
+      // the Project keeps claiming a Team that no longer exists.
+      for (const project of database.projects) {
+        if (project.teamId === id) {
+          const replacement = database.orchestrations.find(
+            (item) => item.projectId === project.id,
+          );
+          project.teamId = replacement?.id ?? null;
+          project.updatedAt = now();
+        }
+      }
     });
     return { deleted: true };
   }

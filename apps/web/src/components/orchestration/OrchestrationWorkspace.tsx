@@ -10,7 +10,12 @@ import { NewConversationDialog } from "./NewConversationDialog";
 import { OrchestrationRunView } from "./OrchestrationRunView";
 import { OrchestrationRunTabs, type RunTab } from "./OrchestrationRunTabs";
 import { ProjectPreviewPanel } from "./ProjectPreviewPanel";
-import { isOrchestrationActive, type OrchestrationDraft } from "./orchestration-utils";
+import {
+  isOrchestrationActive,
+  normalizeParticipants,
+  type OrchestrationDraft,
+  type WorkspaceDraft,
+} from "./orchestration-utils";
 import type { UseOrchestrationResult } from "./use-orchestration";
 import { buildWorkspaceViewModel } from "../../workspace/workspace-adapter";
 import { WorkspaceView } from "../../workspace/WorkspaceView";
@@ -21,10 +26,13 @@ import type { AgentLifecycleAction } from "../../workspace/AgentInspector";
 
 interface OrchestrationWorkspaceProps {
   agents: Agent[];
+  projects: Project[];
   /** Owned by the app shell so the sidebar can list the same conversations. */
   orchestration: UseOrchestrationResult;
   composerOpen: boolean;
+  composerMode: "workspace" | "conversation";
   onComposerOpenChange: (open: boolean) => void;
+  onComposerModeChange: (mode: "workspace" | "conversation") => void;
   modelProviders?: ModelProviderDescriptor[];
   /** Lets the room's controls refresh the shell's Agent list after start/stop. */
   onAgentsChanged: () => Promise<void>;
@@ -34,20 +42,35 @@ interface OrchestrationWorkspaceProps {
 
 export function OrchestrationWorkspace({
   agents,
+  projects,
   orchestration,
   composerOpen,
+  composerMode,
   onComposerOpenChange,
+  onComposerModeChange,
   modelProviders = [],
   onAgentsChanged,
   onOpenAgent,
 }: OrchestrationWorkspaceProps) {
-  const { detail, detailLoading, sessions, loading, error } = orchestration;
+  const {
+    detail,
+    detailLoading,
+    sessions,
+    loading,
+    error,
+    selectedWorkspaceId,
+  } = orchestration;
   const replyCount = detail?.turns.length ?? 0;
-  const projectId = detail?.session.projectId ?? null;
+  const projectId = detail?.session.projectId ?? selectedWorkspaceId;
   const [project, setProject] = useState<Project | null>(null);
   const [activeTab, setActiveTab] = useState<RunTab>("workspace");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [lifecyclePending, setLifecyclePending] = useState<AgentLifecycleAction | null>(null);
+  // Use the list projection immediately when switching parents; the detail
+  // request fills in memberships without briefly seeding the composer from
+  // the previously selected Workspace.
+  const listedProject = projects.find((item) => item.id === projectId) ?? null;
+  const workspaceProject = project?.id === projectId ? project : listedProject;
 
   const sessionActive = detail ? isOrchestrationActive(detail.session.status) : false;
   const previewController = useProjectPreview(projectId);
@@ -61,6 +84,8 @@ export function OrchestrationWorkspace({
       setProject(null);
       return;
     }
+    const listed = projects.find((item) => item.id === projectId);
+    if (listed) setProject(listed);
     let active = true;
     void api
       .getProject(projectId)
@@ -73,14 +98,14 @@ export function OrchestrationWorkspace({
     return () => {
       active = false;
     };
-  }, [projectId]);
+  }, [projectId, projects]);
 
   const viewModel = useMemo(
     () =>
       buildWorkspaceViewModel({
         agents,
         detail,
-        project,
+        project: workspaceProject,
         preview: previewController.preview,
         approvals: approvalsController.approvals,
         selectedAgentId,
@@ -94,7 +119,7 @@ export function OrchestrationWorkspace({
       detail,
       modelProviders,
       previewController.preview,
-      project,
+      workspaceProject,
       selectedAgentId,
     ],
   );
@@ -167,28 +192,82 @@ export function OrchestrationWorkspace({
       window.open(previewController.preview.url, "_blank", "noopener,noreferrer");
       return;
     }
-    setActiveTab("preview");
-  }, [previewController.preview?.url]);
+    if (detail) {
+      setActiveTab("preview");
+    } else {
+      void previewController.act("start");
+    }
+  }, [detail, previewController.act, previewController.preview?.url]);
 
-  /**
-   * "Start conversation" is one product action over the two existing lifecycle
-   * calls. If the start half fails the session stays a draft and the
-   * conversation header still offers Start, so nothing is lost.
-   */
-  const handleCreate = useCallback(
+  /** Create a Conversation inside the selected Workspace and then start it. */
+  const handleCreateConversation = useCallback(
     async (input: OrchestrationDraft) => {
-      const session = await orchestration.createSession(input);
+      if (!selectedWorkspaceId) {
+        throw new Error("Select a Workspace before creating a Conversation.");
+      }
+      const session = await orchestration.createConversation(selectedWorkspaceId, input);
       onComposerOpenChange(false);
       await orchestration.startSession(session.id).catch(() => undefined);
       return session;
     },
-    [onComposerOpenChange, orchestration],
+    [onComposerOpenChange, orchestration, selectedWorkspaceId],
   );
 
-  const openComposer = useCallback(() => {
+  const handleCreateWorkspace = useCallback(async (input: WorkspaceDraft) => {
+    await orchestration.createWorkspace(input);
+    onComposerOpenChange(false);
+    onComposerModeChange("workspace");
+    await onAgentsChanged();
+  }, [onAgentsChanged, onComposerModeChange, onComposerOpenChange, orchestration]);
+
+  const openComposer = useCallback((nextMode: "workspace" | "conversation") => {
     orchestration.clearError();
+    onComposerModeChange(nextMode);
     onComposerOpenChange(true);
-  }, [onComposerOpenChange, orchestration]);
+  }, [onComposerModeChange, onComposerOpenChange, orchestration]);
+
+  const initialParticipants = useMemo(
+    () => normalizeParticipants(
+      ((workspaceProject?.memberships && workspaceProject.memberships.length > 0)
+        ? workspaceProject.memberships
+        : workspaceProject?.agentIds.map((agentId) => ({ agentId, role: "" })) ?? [])
+        .map((membership, index) => ({
+          id: `workspace-member-${membership.agentId}-${index}`,
+          agentId: membership.agentId,
+          role: "role" in membership ? membership.role : "",
+          position: index,
+        })),
+    ),
+    [workspaceProject],
+  );
+
+  useEffect(() => {
+    setActiveTab("workspace");
+  }, [detail?.session.id, projectId]);
+
+  const workspaceView = (
+    <WorkspaceView
+      viewModel={viewModel}
+      replies={replyCount}
+      approvals={approvalsController.approvals ?? []}
+      approvalBusyId={approvalsController.busyId}
+      approvalError={approvalsController.error}
+      previewBusy={previewController.busy}
+      lifecyclePending={lifecyclePending}
+      onSelectAgent={setSelectedAgentId}
+      onLifecycle={(agentId, action) => void handleLifecycle(agentId, action)}
+      onOpenConversation={() => {
+        if (detail) setActiveTab("conversation");
+        else openComposer("conversation");
+      }}
+      onOpenPreview={openPreview}
+      onOpenAgent={onOpenAgent}
+      onPreviewAction={(action) => void previewController.act(action)}
+      onApprove={(id, scope) => void approvalsController.approve(id, scope)}
+      onDeny={(id) => void approvalsController.deny(id)}
+      onAppearanceChange={handleAppearanceChange}
+    />
+  );
 
   return (
     <section className="orch-workspace" aria-label="Multi-Agent conversation">
@@ -219,7 +298,7 @@ export function OrchestrationWorkspace({
               onStop={handleStop}
               onDelete={handleDelete}
               modelProviders={modelProviders}
-              project={project}
+              project={workspaceProject}
             />
             <OrchestrationRunTabs
               detail={detail}
@@ -228,36 +307,35 @@ export function OrchestrationWorkspace({
               onContinue={handleContinue}
               activeTab={activeTab}
               onTabChange={setActiveTab}
-              workspace={
-                <WorkspaceView
-                  viewModel={viewModel}
-                  replies={replyCount}
-                  approvals={approvalsController.approvals ?? []}
-                  approvalBusyId={approvalsController.busyId}
-                  approvalError={approvalsController.error}
-                  previewBusy={previewController.busy}
-                  lifecyclePending={lifecyclePending}
-                  onSelectAgent={setSelectedAgentId}
-                  onLifecycle={(agentId, action) => void handleLifecycle(agentId, action)}
-                  onOpenConversation={() => setActiveTab("conversation")}
-                  onOpenPreview={openPreview}
-                  onOpenAgent={onOpenAgent}
-                  onPreviewAction={(action) => void previewController.act(action)}
-                  onApprove={(id, scope) => void approvalsController.approve(id, scope)}
-                  onDeny={(id) => void approvalsController.deny(id)}
-                  onAppearanceChange={handleAppearanceChange}
-                />
-              }
+              workspace={workspaceView}
               preview={
-                project ? (
+                workspaceProject ? (
                   <ProjectPreviewPanel
                     controller={previewController}
-                    projectName={project.name}
+                    projectName={workspaceProject.name}
                   />
                 ) : null
               }
             />
           </>
+        ) : workspaceProject ? (
+          <div className="orch-idle-workspace">
+            <header className="orch-idle-heading">
+              <div>
+                <span className="orch-eyebrow">Workspace</span>
+                <h2>{workspaceProject.name}</h2>
+                <p>{workspaceProject.description || "No Conversations yet. This Workspace is ready when you are."}</p>
+              </div>
+              <button
+                type="button"
+                className="orch-button orch-button-primary"
+                onClick={() => openComposer("conversation")}
+              >
+                <span aria-hidden="true">＋</span> New conversation
+              </button>
+            </header>
+            {workspaceView}
+          </div>
         ) : (
           <div className="orch-intro" role="status">
             <span className="orch-empty-glyph" aria-hidden="true">◎</span>
@@ -266,8 +344,8 @@ export function OrchestrationWorkspace({
               Choose who joins and describe the task. You will see them take turns in a shared
               room, and read exactly what each one said.
             </p>
-            <button type="button" className="button button-primary" onClick={openComposer}>
-              <span aria-hidden="true">＋</span> New conversation
+            <button type="button" className="button button-primary" onClick={() => openComposer("workspace")}>
+              <span aria-hidden="true">＋</span> New workspace
             </button>
             <span className="orch-intro-note">
               {agents.length === 0
@@ -285,7 +363,11 @@ export function OrchestrationWorkspace({
         open={composerOpen}
         agents={agents}
         disabled={orchestration.action !== null}
-        onCreate={handleCreate}
+        mode={composerMode}
+        workspace={workspaceProject}
+        initialParticipants={composerMode === "conversation" ? initialParticipants : []}
+        onCreate={composerMode === "conversation" ? handleCreateConversation : undefined}
+        onCreateWorkspace={composerMode === "workspace" ? handleCreateWorkspace : undefined}
         onClose={() => onComposerOpenChange(false)}
         modelProviders={modelProviders}
       />

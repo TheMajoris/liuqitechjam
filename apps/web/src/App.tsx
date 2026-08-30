@@ -45,7 +45,6 @@ function errorMessage(reason: unknown): string {
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [conversationsOpen, setConversationsOpen] = useState(true);
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -59,6 +58,7 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(readSidebarPreference);
   const [composerOpen, setComposerOpen] = useState(false);
+  const [composerMode, setComposerMode] = useState<"workspace" | "conversation">("workspace");
   const orchestration = useOrchestration();
 
   const selected = useMemo(
@@ -101,13 +101,27 @@ export default function App() {
 
   const newWorkspace = useCallback(() => {
     setView("workspace");
+    setComposerMode("workspace");
     setComposerOpen(true);
   }, []);
 
   const refreshProjects = useCallback(async () => {
     const { projects: next } = await api.listProjects().catch(() => ({ projects: [] }));
-    setProjects(next);
+    // The API is the source of truth and should already omit archived rows;
+    // keep this guard so a stale response can never resurrect a deleted one.
+    setProjects(next.filter((project) => project.status === "active"));
   }, []);
+
+  useEffect(() => {
+    if (projects.length === 0) return;
+    if (
+      orchestration.selectedWorkspaceId === null ||
+      !projects.some((project) => project.id === orchestration.selectedWorkspaceId)
+    ) {
+      orchestration.selectWorkspace(projects[0]!.id);
+      setView("workspace");
+    }
+  }, [orchestration.selectedWorkspaceId, orchestration.selectWorkspace, projects]);
 
   const bootstrap = useCallback(async () => {
     await Promise.all([
@@ -283,12 +297,7 @@ export default function App() {
         agents={agents}
         projects={projects}
         selectedAgentId={selectedId}
-        conversations={workspaceController.conversations}
-        conversationId={workspaceController.conversationId}
-        conversationsOpen={conversationsOpen}
         system={system}
-        busy={busy}
-        runInFlight={workspaceController.runInFlight}
         orchestration={orchestration}
         onToggleCollapsed={() => setSidebarOpen((value) => !value)}
         onNewWorkspace={newWorkspace}
@@ -299,6 +308,15 @@ export default function App() {
           orchestration.selectSession(sessionId);
           setView("workspace");
         }}
+        onSelectWorkspace={(workspaceId) => {
+          orchestration.selectWorkspace(workspaceId);
+          setView("workspace");
+        }}
+        onCreateConversation={() => {
+          setView("workspace");
+          setComposerMode("conversation");
+          setComposerOpen(true);
+        }}
         onDeleteSession={(sessionId) => {
           void orchestration.deleteSession(sessionId).catch(() => undefined);
         }}
@@ -306,11 +324,6 @@ export default function App() {
           setSelectedId(agentId);
           setView("agent");
         }}
-        onToggleConversations={() => setConversationsOpen((value) => !value)}
-        onSelectConversation={(id) => void workspaceController.openConversation(id)}
-        onCreateConversation={() => void workspaceController.createConversation()}
-        onRenameConversation={(id, title) => void workspaceController.renameConversation(id, title)}
-        onDeleteConversation={(id) => void workspaceController.deleteConversation(id)}
       />
 
       <main
@@ -372,8 +385,11 @@ export default function App() {
             agents={agents}
             modelProviders={modelCatalog.providers}
             orchestration={orchestration}
+            projects={projects}
             composerOpen={composerOpen}
+            composerMode={composerMode}
             onComposerOpenChange={setComposerOpen}
+            onComposerModeChange={setComposerMode}
             onAgentsChanged={async () => {
               await refreshAgents();
               await refreshProjects();

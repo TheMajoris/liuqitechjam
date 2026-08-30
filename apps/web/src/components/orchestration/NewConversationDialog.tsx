@@ -1,13 +1,22 @@
 import { useEffect, useRef } from "react";
-import type { Agent, ModelProviderDescriptor } from "../../types";
-import type { OrchestrationDraft } from "./orchestration-utils";
+import type {
+  Agent,
+  ModelProviderDescriptor,
+  OrchestrationParticipant,
+  Project,
+} from "../../types";
+import type { OrchestrationDraft, WorkspaceDraft } from "./orchestration-utils";
 import { OrchestrationComposer } from "./OrchestrationComposer";
 
 interface NewConversationDialogProps {
   open: boolean;
   agents: Agent[];
   disabled?: boolean;
-  onCreate: (input: OrchestrationDraft) => Promise<unknown>;
+  mode?: "workspace" | "conversation";
+  workspace?: Project | null;
+  initialParticipants?: OrchestrationParticipant[];
+  onCreate?: (input: OrchestrationDraft) => Promise<unknown>;
+  onCreateWorkspace?: (input: WorkspaceDraft) => Promise<unknown>;
   onClose: () => void;
   modelProviders?: ModelProviderDescriptor[];
 }
@@ -22,8 +31,12 @@ export function NewConversationDialog({
   agents,
   disabled = false,
   onCreate,
+  onCreateWorkspace,
   onClose,
   modelProviders = [],
+  mode = "conversation",
+  workspace = null,
+  initialParticipants = [],
 }: NewConversationDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
 
@@ -52,8 +65,14 @@ export function NewConversationDialog({
       <div className="orch-dialog-body">
         <div className="orch-dialog-heading">
           <div>
-            <span className="orch-eyebrow">New conversation</span>
-            <h2 id="orch-dialog-heading">Who joins, and what should they do?</h2>
+            <span className="orch-eyebrow">
+              {mode === "workspace" ? "New Workspace" : "New conversation"}
+            </span>
+            <h2 id="orch-dialog-heading">
+              {mode === "workspace"
+                ? "Create a shared home for your work."
+                : `What should ${workspace?.name ?? "this Workspace"} work on?`}
+            </h2>
           </div>
           <button
             type="button"
@@ -71,7 +90,11 @@ export function NewConversationDialog({
             modelProviders={modelProviders}
             disabled={disabled}
             onCreate={onCreate}
+            onCreateWorkspace={onCreateWorkspace}
             onCancel={onClose}
+            mode={mode}
+            workspace={workspace}
+            initialParticipants={initialParticipants}
           />
         )}
       </div>

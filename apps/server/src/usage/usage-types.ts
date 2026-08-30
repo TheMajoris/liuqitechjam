@@ -56,10 +56,10 @@ export interface UsageTotals {
   messages: number;
 }
 
-/** One row of the per-Agent breakdown. */
+/** One row of the per-Agent breakdown, seeded from the live roster. */
 export interface UsageAgentBreakdown extends UsageTotals {
   agentId: string;
-  /** Present for live Agents; deleted Agents keep their runs but lose a name. */
+  /** Live Agent display name; deleted Agent IDs are omitted from this list. */
   name: string | null;
   status: string | null;
   modelLabel: string | null;
@@ -76,10 +76,12 @@ export interface UsageWorkspaceBreakdown extends UsageTotals {
   lastActiveAt: string | null;
 }
 
-/** One row of the per-Project breakdown. */
+/** One row of the persistent Workspace breakdown. */
 export interface UsageProjectBreakdown extends UsageTotals {
   projectId: string;
   name: string | null;
+  /** Kept for response compatibility; named rows are always live. */
+  archived: boolean;
   lastActiveAt: string | null;
 }
 
@@ -93,6 +95,18 @@ export interface UsageDailyPoint {
   toolCalls: number;
 }
 
+/** Legacy response shape; current breakdowns leave retired rows null. */
+export interface UsageRetiredSummary extends UsageTotals {
+  /** How many archived or deleted subjects this row stands for. */
+  subjects: number;
+}
+
+export interface UsageRetired {
+  agents: UsageRetiredSummary | null;
+  workspaces: UsageRetiredSummary | null;
+  projects: UsageRetiredSummary | null;
+}
+
 export interface UsageReport {
   /** Inclusive ISO instant the window starts at, or null when unbounded. */
   since: string | null;
@@ -101,6 +115,8 @@ export interface UsageReport {
   agents: UsageAgentBreakdown[];
   workspaces: UsageWorkspaceBreakdown[];
   projects: UsageProjectBreakdown[];
+  /** Compatibility shape; archived/deleted subjects are not rendered as rows. */
+  retired: UsageRetired;
   daily: UsageDailyPoint[];
 }
 

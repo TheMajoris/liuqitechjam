@@ -17,7 +17,10 @@ export interface Project {
   description: string;
   /** Backend-derived. Never accepted from a client. */
   workspacePath: string;
-  /** Orchestration session currently attached, if any. */
+  /**
+   * Legacy first-conversation pointer. Conversation cardinality comes from
+   * orchestration records whose `projectId` references this Project.
+   */
   teamId: string | null;
   /** Principal ID of the human owner; absent only on pre-Wave 8 records. */
   ownerPrincipalId?: string;
@@ -95,6 +98,7 @@ export interface ProjectView {
   id: string;
   name: string;
   description: string;
+  /** Legacy first-conversation pointer; not a one-conversation constraint. */
   teamId: string | null;
   agentIds: string[];
   memberships: ProjectMembershipView[];
