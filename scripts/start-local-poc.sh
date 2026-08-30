@@ -146,12 +146,27 @@ if [[ "$codex_sandbox_mode" == "workspace-write" ]] \
 fi
 
 export NODE_ENV=production
+# Docker Desktop and the Podman machine expose the host loopback through their
+# host.*.internal aliases below, so keep the local control plane loopback-only
+# by default. Set HOST explicitly when using a native Linux engine.
 export HOST="${HOST:-127.0.0.1}"
 export PORT="${PORT:-3000}"
 export CODEX_SANDBOX_MODE="$codex_sandbox_mode"
 export RUNTIME_PROVIDER=container
 export CONTAINER_ENGINE="$engine"
 export CONTAINER_RUNTIME_IMAGE="$runtime_image"
+if [[ -z "${MCP_CONTAINER_URL:-}" ]]; then
+  case "$(basename "$engine")" in
+    podman)
+      mcp_container_host="host.containers.internal"
+      ;;
+    *)
+      mcp_container_host="host.docker.internal"
+      ;;
+  esac
+  export MCP_CONTAINER_URL="http://${mcp_container_host}:${PORT}/mcp"
+fi
+log "Container MCP endpoint: $MCP_CONTAINER_URL"
 
 cleanup() {
   local container_ids

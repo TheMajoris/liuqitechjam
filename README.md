@@ -96,5 +96,7 @@ observability, failure/recovery, demo hardening, optional expansion.
 - [Wave 5 shared conversation context handoff](docs/WAVE_5_SHARED_CONVERSATION_CONTEXT_HANDOFF.md)
 - [Wave 7 preview runtime](docs/WAVE_7_PREVIEW_RUNTIME.md)
 - [Wave 7 static HTML preview and error UI plan](docs/WAVE_7_STATIC_HTML_PREVIEW_AND_ERROR_UI_IMPLEMENTATION_PLAN.md)
+- [Agent Middleware secure capabilities implementation README](docs/AGENT_MIDDLEWARE_SECURE_CAPABILITIES_README.md)
+- [Permit policy setup and resource scope](docs/PERMIT_POLICY_SETUP.md)
 - [Dockerfile](Dockerfile) · [Dockerfile.runtime](Dockerfile.runtime) · [docker-compose.yml](docker-compose.yml)
 - [Local POC script](scripts/start-local-poc.sh)

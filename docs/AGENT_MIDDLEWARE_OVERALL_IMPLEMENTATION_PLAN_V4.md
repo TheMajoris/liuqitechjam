@@ -27,6 +27,12 @@ What MODEL does the Agent use?
 Wave 7
 What RUNTIME can the Agent interact with?
 
+Wave 7.1
+What SHARED ARTIFACT does a Team collaborate on?
+
+Wave 7.2
+How many CONVERSATIONS can one Agent hold?
+
 Wave 8
 What ROLE, SKILLS, TOOLS, and PERMISSIONS does the Agent have?
 
@@ -173,7 +179,29 @@ Workspace files remain
 
 This means an Agent can create an application, install dependencies, run builds/tests, and preserve the resulting files across later turns.
 
-The current runtime does not yet provide a dedicated long-lived preview/application server after the Codex turn ends.
+Since Wave 7.1 there are two execution scopes, not one:
+
+```text
+Individual execution:
+Agent -> Agent private workspace
+
+Collaborative execution:
+Team -> Project -> shared Project workspace
+
+data/
+    projects/
+        <project-id>/
+            workspace/
+```
+
+A Project-scoped turn mounts the shared Project workspace instead of the Agent's
+private one. The Agent keeps its identity, model assignment, and private
+workspace for non-Project work; only the artifact directory changes. See
+Wave 7.1 for the ownership model, single-writer coordination, and the
+per-(Agent, Project) session scoping this requires.
+
+Wave 7 added the dedicated long-lived preview runtime that outlives a Codex
+turn; Wave 7.1 extended its ownership to Projects.
 
 ---
 
@@ -394,6 +422,25 @@ The Team does not override each participant's worker model.
 
 # 4. Updated Implementation Waves
 
+## Wave status
+
+```text
+Wave 6   Per-Agent Models                          COMPLETE
+Wave 7   Agent Preview Runtime                     COMPLETE
+Wave 7.1 Shared Project Workspace + Preview        IMPLEMENTED
+Wave 7.2 Private Agent Conversations               IMPLEMENTED
+Wave 8   Roles / Skills / Tools / Permissions      NEXT
+Wave 9   Observability
+Wave 10  Failure / Recovery
+Wave 11  Demo Hardening
+Wave 12  Optional Expansion
+```
+
+The Project abstraction is a near-term core wave, not an optional future idea.
+Still deferred: the 2D PixiJS collaborative workspace, parallel shared writes,
+Git branch/merge collaboration, public deployment, production hosting, and
+advanced browser automation.
+
 ## Completed Foundation
 
 Treat the following as completed or substantially implemented:
@@ -412,6 +459,18 @@ Treat the following as completed or substantially implemented:
 - Team deletion lifecycle
 - orchestration timeout and cancellation
 - persistent orchestration turns/events
+- shared Project workspace and canonical Project preview (Wave 7.1)
+- first-class private Agent conversations, one Codex thread each (Wave 7.2)
+
+The target collaboration model is:
+
+```text
+Team conversation + shared Project workspace + Project preview
+```
+
+Team participant preview aggregation is explicitly **not** the final solution:
+it would expose several divergent copies of the same supposed app with no
+canonical Team artifact.
 
 ---
 
@@ -492,6 +551,25 @@ Wave 6 is complete when:
 ---
 
 # 6. Wave 7: Agent Artifact Preview Runtime
+
+## Status
+
+```text
+Wave 7
+Agent Artifact Preview Runtime
+Status: COMPLETE
+```
+
+Shipped in this wave:
+
+- a separate long-lived preview runtime, distinct from the disposable Codex worker
+- Agent-owned preview over the Agent's persistent workspace
+- an embedded iframe preview in a collapsible right-side sidecar, with Open External as fallback
+- start / restart / stop / logs lifecycle controls, with `Stop Server` kept distinct from Agent `Stop`
+- persisted preview state, reconciled to `interrupted` after a control-plane restart
+- bounded, redacted runtime logs
+- read-only preview status injected into the Agent execution context only, never into persisted messages
+- no infrastructure control exposed to the Agent: no ports, runtime IDs, host paths, or container engine access
 
 ## Goal
 
@@ -804,6 +882,230 @@ Wave 7 is complete when:
 - existing Playground and Team orchestration still work
 - `npm run check` passes
 - `git diff --check` passes
+
+---
+
+# 6A. Wave 7.1: Shared Project Workspace and Project Preview
+
+## Status
+
+```text
+Wave 7.1
+Shared Project Workspace + Project Preview
+Status: IMPLEMENTED
+```
+
+## Why this was promoted ahead of Wave 8
+
+Team collaboration is a core product differentiator, and text-only handoff is
+insufficient for artifact collaboration. Before this wave, each Agent owned an
+isolated workspace, so a Team failed in a concrete way:
+
+```text
+Agent A builds the app in Agent A's workspace
+        |
+        v
+Agent A tries to hand off the file path
+        |
+        v
+handoff redaction removes it (correctly)
+        |
+        v
+Agent B's own workspace has no frontend files
+        |
+        v
+collaboration stalls
+```
+
+The fix is a first-class `Project` that owns the shared artifact — not weaker
+redaction, and not per-Agent preview aggregation, which would still leave
+divergent copies with no canonical Team artifact.
+
+## 6A.1 Ownership model
+
+```text
+Agent  -> identity, instructions, worker model, private session, private workspace
+Project -> shared workspace, canonical artifact, Project preview, write coordination
+Team    -> participants, supervisor, conversation, routing
+```
+
+The Team coordinates **who works next**. The Project defines **what shared
+artifact they work on**.
+
+## 6A.2 Workspace model
+
+```text
+Individual execution:
+Agent -> Agent private workspace
+
+Collaborative execution:
+Team -> Project -> shared Project workspace
+```
+
+Agent-private workspaces remain fully supported. A Team without a `projectId`
+behaves exactly as before, and existing Teams are never silently migrated.
+
+## 6A.3 Project-scoped execution
+
+Project turns extend the normal Agent path rather than adding a second worker
+runtime. Mastra still routes through `PlatformAgentInvoker` into `AgentService`;
+only the mounted workspace and the resumed session change.
+
+```text
+Mastra -> PlatformAgentInvoker -> AgentService.sendMessage({ agentId, prompt, projectId })
+       -> AgentRunner -> disposable Codex runtime -> shared Project workspace
+```
+
+Two consequences worth recording, because neither was obvious:
+
+- **Identity.** A directory holds one `AGENTS.md`, and it is the only channel
+  carrying Agent instructions into the worker. The platform rewrites it for the
+  acting Agent at the start of each Project turn, which is what preserves
+  separate identities on one shared artifact. The write lease serializes turns,
+  so this cannot race.
+- **Sessions.** `codexThreadId` is scoped per (Agent, Project). An Agent's
+  private Playground thread is never resumed against the shared filesystem, and
+  the shared thread never leaks back into private work.
+
+## 6A.4 Single-writer coordination
+
+```text
+At most one Agent may perform a Project-scoped mutable turn at a time.
+```
+
+A blocked turn waits briefly for the lease before failing with `PROJECT_BUSY`,
+so ordinary overlap between a Playground turn and a Team run resolves itself.
+The lease is persisted, released on success, failure, and cancellation, and any
+lease found at boot is reconciled as stale.
+
+## 6A.5 Preview ownership
+
+Two preview owners are supported over one shared `PreviewRuntime`:
+
+```text
+Agent Preview   -> an individual Agent's private workspace
+Project Preview -> the shared workspace; canonical for collaborative Team work
+```
+
+The Project preview mounts only the Project workspace, survives participant turn
+changes, and is independent of the currently speaking Agent. Stopping the Team
+does not stop it, matching the existing "closing and stopping are separate"
+preview philosophy.
+
+## 6A.6 Handoff semantics are unchanged
+
+Redaction stays exactly as it was. Collaboration is fixed by giving both Agents
+the same logical workspace, not by leaking host paths into conversation. Handoffs
+carry status, an artifact summary, Project-relative paths, tests run, and the next
+recommended action.
+
+## 6A.7 Playground and Team conversations stay separate
+
+Orchestration-authored prompts still reach `AgentService` and `AgentRunner`
+unchanged, including their execution context. They are tagged at the runtime
+boundary so the Agent Playground never renders them as user-authored messages;
+they remain visible in the Team conversation and timeline, and remain persisted
+for audit.
+
+## 6A.8 Exit criteria
+
+- Project is a persisted first-class resource owning a shared workspace
+- a Team can be attached, and its participant Agents attached with it
+- Agent A's changes are visible to Agent B and vice versa
+- Agents never exchange host workspace paths
+- single-writer coordination prevents unsafe concurrent mutation
+- one canonical Project preview serves the shared workspace
+- Agent-private mode, Agent preview, and existing Teams remain backward compatible
+
+---
+
+# 6B. Wave 7.2: Private Agent Conversations
+
+## Status
+
+```text
+Wave 7.2
+First-class private Agent conversations
+Status: IMPLEMENTED
+```
+
+## Session scopes
+
+An Agent's private Playground is no longer one permanent thread. Direct work is
+organised into conversations, each owning its own Codex session:
+
+```text
+Agent
+├── Private workspace                  (one, shared by every conversation)
+│   ├── Conversation A -> Codex thread A
+│   ├── Conversation B -> Codex thread B
+│   └── Agent Preview                  (Agent-owned, not per conversation)
+│
+└── Project attachments
+    └── per-(Agent, Project) Project thread
+```
+
+There are now three distinct session scopes, and they never borrow each other's
+threads:
+
+```text
+direct turn          -> conversation.codexThreadId
+Project turn         -> projectAgents[].codexThreadId
+Team turn, no Project -> agent.codexThreadId
+```
+
+## What a conversation is and is not
+
+```text
+New conversation
+= fresh messages + fresh Codex thread + THE SAME Agent workspace
+
+Delete conversation
+= that conversation, its messages, and its runs
++ KEEP the Agent, its workspace files, its other conversations,
+  its Project attachments, and all Team history
+```
+
+There is deliberately no workspace per conversation and no preview per
+conversation. Files created in one conversation are visible from the next,
+which is the point: a new conversation is a clean session over the same work.
+
+## Migration
+
+Pre-conversation direct history is adopted into one default conversation per
+Agent, titled from its first user message. The old `Agent.codexThreadId`
+represented that private scope, so it **moves** onto the conversation rather
+than being copied — leaving it on the Agent as well would let a Team turn and a
+private turn resume the same thread. Project threads are never touched.
+
+## Titles
+
+A conversation starts as `New conversation` and is renamed from the user's first
+direct message. This is a deterministic string operation, not a second model
+call. Manual rename is always available.
+
+## Message isolation
+
+Orchestration turns still reach `AgentService` and `AgentRunner` with their full
+execution context; they are tagged `origin: "orchestration"` at the runtime
+boundary and carry no `conversationId`, so they appear in no private
+conversation while remaining visible in the Team conversation and timeline.
+
+## Team conversations
+
+The Team conversation uses the same `StickyComposer` as the Agent Playground, so
+the two cannot drift apart. Only the message region scrolls; the composer is a
+flex sibling, never `position: fixed`. While a participant is executing, the
+composer stays mounted but disabled and names who is working. A follow-up
+continues the same Team, participants, history, Project, shared workspace, and
+Project preview — it never creates a second Team or Project.
+
+## Rendering
+
+Agent output is rendered through one shared `MarkdownMessage` component in both
+the Playground and the Team conversation. It builds React elements — no
+`dangerouslySetInnerHTML`, and raw HTML in model output is not parsed. User
+prompts and status cards such as "Could not finish" stay plain components.
 
 ---
 
