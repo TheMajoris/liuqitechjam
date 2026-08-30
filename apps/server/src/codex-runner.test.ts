@@ -75,6 +75,27 @@ describe("Codex runner protocol", () => {
     expect(args).not.toContain("--model");
   });
 
+  it("binds a per-run MCP URL and env-var name without putting the bearer token in argv", () => {
+    const token = "opaque-run-token";
+    const args = buildCodexArgs(
+      {
+        agentId: "agent",
+        workspacePath: "/tmp/workspace",
+        prompt: "use the available tools",
+        threadId: null,
+        mcp: { url: "http://127.0.0.1:3000/mcp", token },
+      },
+      "workspace-write",
+    );
+
+    expect(args).toContain("mcp_servers.launchpad.url=\"http://127.0.0.1:3000/mcp\"");
+    expect(args).toContain(
+      'mcp_servers.launchpad.bearer_token_env_var="LAUNCHPAD_MCP_BEARER_TOKEN"',
+    );
+    expect(args).not.toContain(token);
+    expect(args.join(" ")).not.toContain(token);
+  });
+
   it("extracts the session, final message and usage", () => {
     const parsed = {
       messages: [] as string[],

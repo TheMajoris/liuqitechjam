@@ -96,10 +96,75 @@ export interface Agent {
   workspacePath: string;
   codexThreadId: string | null;
   lastError: string | null;
+  skillIds?: string[];
   /** Omitted on legacy persisted Agents, which use the runtime default. */
   modelRef?: ModelRef;
   createdAt: string;
   updatedAt: string;
+}
+
+export type ToolRisk = "read" | "write" | "network" | "external_write" | "high_cost";
+export type ToolAvailability = "available" | "approval_required" | "denied";
+
+export interface ToolMetadata {
+  id: string;
+  title: string;
+  description: string;
+  risk: ToolRisk;
+  requiredPermission: string;
+}
+
+export interface CapabilityGrantView {
+  id: string;
+  scope: "once" | "project";
+  usesRemaining: number | null;
+  expiresAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface ToolCapabilityView {
+  tool: ToolMetadata;
+  availability: ToolAvailability;
+  reason: string;
+  grant: CapabilityGrantView | null;
+}
+
+export interface AgentCapabilities {
+  agentId: string;
+  projectId: string | null;
+  tools: ToolCapabilityView[];
+}
+
+export type SkillSource = "built-in";
+
+export interface SkillMetadata {
+  id: string;
+  name: string;
+  description: string;
+  requiredToolIds: string[];
+  capabilityTags: string[];
+  source: SkillSource;
+  version: string;
+}
+
+export interface SkillToolCapability {
+  tool: ToolMetadata | null;
+  toolId: string;
+  availability: ToolAvailability;
+  reason: string;
+  grant: CapabilityGrantView | null;
+}
+
+export interface AssignedSkill extends SkillMetadata {
+  instructions: string;
+  capabilities: SkillToolCapability[];
+}
+
+export interface AgentSkills {
+  agentId: string;
+  projectId: string | null;
+  skillIds: string[];
+  skills: AssignedSkill[];
 }
 
 /** One private conversation with an Agent; each owns its own Codex session. */
@@ -307,9 +372,18 @@ export interface Project {
   description: string;
   teamId: string | null;
   agentIds: string[];
+  /** Added in Wave 8; older API fixtures may still only expose agentIds. */
+  memberships?: ProjectMembership[];
   status: ProjectStatus;
   createdAt: string;
   updatedAt: string;
+}
+
+export type ProjectRole = "owner" | "editor" | "viewer";
+
+export interface ProjectMembership {
+  agentId: string;
+  role: ProjectRole;
 }
 
 export interface ContinueOrchestrationInput {

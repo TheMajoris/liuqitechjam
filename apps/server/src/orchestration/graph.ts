@@ -346,6 +346,7 @@ async function invokeAgentNode(
     const result = await options.invoker.invoke({
       agentId: participant.agentId,
       prompt: handoff.prompt,
+      ...(options.orchestrationId === undefined ? {} : { orchestrationId: options.orchestrationId }),
       timeoutMs: timeoutFor(options),
       signal: runtime.signal,
       onRunAccepted: async (runId) => {

@@ -1,0 +1,177 @@
+import type { Agent, AgentRun, Message } from "../types.js";
+import { JsonStore } from "../store.js";
+import {
+  LangGraphOrchestrator,
+  type LangGraphOrchestrationRunner,
+} from "./langgraph-orchestrator.js";
+import { MastraOrchestrator } from "./mastra/mastra-orchestrator.js";
+import {
+  PlatformAgentInvoker,
+  type PlatformAgentInvokerContract,
+} from "./platform-agent-invoker.js";
+import type {
+  OrchestrationParticipantSelector,
+  Orchestrator,
+} from "./orchestrator.js";
+
+export interface OrchestrationAgentAccess {
+  listAgents(): Agent[] | Promise<Agent[]>;
+}
+
+export type OrchestrationInvokerFactory =
+  | PlatformAgentInvokerContract
+  | (() => PlatformAgentInvokerContract);
+
+export type OrchestrationSelectorFactory =
+  | OrchestrationParticipantSelector
+  | (() => OrchestrationParticipantSelector);
+
+/** Backward-compatible alias for callers that injected the former graph runner. */
+export type OrchestrationGraphRunner = LangGraphOrchestrationRunner;
+
+/** The Project association seam used by shared Team workspaces. */
+export interface OrchestrationProjectBinding {
+  bindTeam(projectId: string, teamId: string, agentIds: string[]): Promise<void>;
+}
+
+export interface OrchestrationServiceDependencies {
+  store: JsonStore;
+  /** Required only for Teams that collaborate on a shared Project. */
+  projectBinding?: OrchestrationProjectBinding;
+  agents?: OrchestrationAgentAccess;
+  /** Descriptive alias for callers wiring the concrete AgentService. */
+  agentService?: OrchestrationAgentAccess;
+  invoker?: PlatformAgentInvokerContract;
+  invokerFactory?: () => PlatformAgentInvokerContract;
+  /** Optional supervisor selector; omitted means deterministic defaults. */
+  selectNextParticipant?: OrchestrationParticipantSelector;
+  selectorFactory?: () => OrchestrationParticipantSelector;
+  supervisorTimeoutMs?: number;
+  orchestrator?: Orchestrator;
+  orchestratorFactory?: () => Orchestrator;
+  graphRunner?: OrchestrationGraphRunner;
+}
+
+/** Runtime state for one queued or running orchestration cycle. */
+export interface ActiveOrchestrationSession {
+  id: string;
+  /** Prompt for this internal cycle; the persisted session task is immutable. */
+  cyclePrompt: string;
+  /** Number added to internal step indexes before persistence. */
+  stepOffset: number;
+  /** One-based continuation number; zero identifies the initial cycle. */
+  cycleIndex: number;
+  controller: AbortController;
+  invoker: PlatformAgentInvokerContract;
+  selector?: OrchestrationParticipantSelector;
+  supervisorTimeoutMs: number | undefined;
+  orchestrator: Orchestrator;
+  currentRunId: string | null;
+  cancellationRequestedRunId: string | null;
+  execution: Promise<void> | null;
+}
+
+interface PlatformAgentServiceBridge extends OrchestrationAgentAccess {
+  sendMessage(
+    agentId: string,
+    content: string,
+  ): Promise<{ run: AgentRun; message: Message }>;
+  waitForRun(
+    runId: string,
+    options: { timeoutMs: number; signal?: AbortSignal },
+  ): Promise<AgentRun>;
+  cancelRun(runId: string): Promise<AgentRun>;
+}
+
+export interface NormalizedOrchestrationDependencies {
+  store: JsonStore;
+  agents: OrchestrationAgentAccess;
+  invokerFactory: () => PlatformAgentInvokerContract;
+  selectorFactory: () => OrchestrationParticipantSelector | undefined;
+  supervisorTimeoutMs: number | undefined;
+  orchestratorFactory: () => Orchestrator;
+  projectBinding: OrchestrationProjectBinding | undefined;
+}
+
+/**
+ * Resolve both supported constructor forms in one place. Keeping this
+ * compatibility logic outside the lifecycle module makes the public service
+ * small without changing the legacy injection seam.
+ */
+export function normalizeOrchestrationDependencies(
+  value: JsonStore | OrchestrationServiceDependencies,
+  agents?: OrchestrationAgentAccess,
+  invoker?: OrchestrationInvokerFactory,
+  graphRunner?: OrchestrationGraphRunner,
+): NormalizedOrchestrationDependencies {
+  if (!(value instanceof JsonStore)) {
+    const configured = value;
+    const agentAccess = configured.agents ?? configured.agentService;
+    if (!agentAccess) {
+      throw new TypeError("OrchestrationService requires Agent access");
+    }
+    const factory = configured.invokerFactory
+      ? configured.invokerFactory
+      : configured.invoker
+        ? () => configured.invoker as PlatformAgentInvokerContract
+        : undefined;
+    const orchestratorFactory = configured.orchestratorFactory
+      ? configured.orchestratorFactory
+      : configured.orchestrator
+        ? () => configured.orchestrator as Orchestrator
+        : configured.graphRunner
+          ? () => new LangGraphOrchestrator(configured.graphRunner)
+          : () => new MastraOrchestrator();
+    const selectorFactory = configured.selectorFactory
+      ? configured.selectorFactory
+      : configured.selectNextParticipant
+        ? () => configured.selectNextParticipant as OrchestrationParticipantSelector
+        : () => undefined;
+    return {
+      store: configured.store,
+      agents: agentAccess,
+      invokerFactory: factory ?? (() => createPlatformInvoker(agentAccess)),
+      selectorFactory,
+      supervisorTimeoutMs: configured.supervisorTimeoutMs,
+      orchestratorFactory,
+      projectBinding: configured.projectBinding,
+    };
+  }
+
+  if (!agents) {
+    throw new TypeError("OrchestrationService requires Agent access");
+  }
+  const factory =
+    typeof invoker === "function"
+      ? invoker
+      : invoker
+        ? () => invoker
+        : () => createPlatformInvoker(agents);
+  return {
+    store: value,
+    agents,
+    invokerFactory: factory,
+    selectorFactory: () => undefined,
+    supervisorTimeoutMs: undefined,
+    orchestratorFactory: graphRunner
+      ? () => new LangGraphOrchestrator(graphRunner)
+      : () => new MastraOrchestrator(),
+    projectBinding: undefined,
+  };
+}
+
+function createPlatformInvoker(
+  agents: OrchestrationAgentAccess,
+): PlatformAgentInvokerContract {
+  const bridge = agents as unknown as PlatformAgentServiceBridge;
+  if (
+    typeof bridge.sendMessage !== "function" ||
+    typeof bridge.waitForRun !== "function" ||
+    typeof bridge.cancelRun !== "function"
+  ) {
+    throw new TypeError(
+      "OrchestrationService requires an invoker or AgentService run methods",
+    );
+  }
+  return new PlatformAgentInvoker(bridge);
+}

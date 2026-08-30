@@ -74,6 +74,10 @@ export class LangGraphOrchestrator implements Orchestrator {
       ...(options.perAgentTimeoutMs === undefined
         ? {}
         : { perAgentTimeoutMs: options.perAgentTimeoutMs }),
+      ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
+      ...(options.orchestrationId === undefined
+        ? {}
+        : { orchestrationId: options.orchestrationId }),
       ...(options.handoffLimits === undefined
         ? {}
         : { handoffLimits: options.handoffLimits }),

@@ -1,7 +1,12 @@
 import { createServer } from "node:net";
 import { randomUUID } from "node:crypto";
 import { redactSensitiveText } from "../orchestration/handoff.js";
-import type { AuthorizationService } from "../access/authorization-service.js";
+import {
+  DEMO_HUMAN_PRINCIPAL,
+  isAuthorizationError,
+  type AuthorizationService,
+} from "../access/authorization-service.js";
+import type { Principal } from "../access/access-types.js";
 import type { PermissionId } from "../access/permission-types.js";
 import type { AppConfig } from "../config.js";
 import type { Agent } from "../types.js";
@@ -29,6 +34,7 @@ import type {
   ResolvedPreviewCommand,
 } from "./preview-command-resolver.js";
 import type { JsonStore } from "../store.js";
+import { correlationAttributes, type RuntimeTelemetry } from "../telemetry/telemetry-types.js";
 
 const DEFAULT_RESOURCE_LIMITS: PreviewResourceLimits = {
   memoryMb: 2_048,
@@ -91,6 +97,7 @@ export interface PreviewServiceOptions {
   resourceLimits?: PreviewResourceLimits;
   /** Required only to serve Project-owned previews. */
   ownerResolver?: PreviewOwnerResolver;
+  telemetry?: RuntimeTelemetry;
 }
 
 export interface PreviewLogsView {
@@ -202,6 +209,7 @@ export class PreviewService implements PreviewLifecycleCleanup {
   private readonly locks = new Map<string, Promise<void>>();
   private readonly terminalLogs = new Map<string, PreviewLogResult>();
   private readonly ownerResolver: PreviewOwnerResolver;
+  private readonly telemetry: RuntimeTelemetry | undefined;
 
   constructor(
     private readonly store: JsonStore,
@@ -222,6 +230,7 @@ export class PreviewService implements PreviewLifecycleCleanup {
         );
       },
     };
+    this.telemetry = options.telemetry;
   }
 
   /** Mark in-flight records interrupted after a control-plane restart. */
@@ -263,13 +272,21 @@ export class PreviewService implements PreviewLifecycleCleanup {
     );
   }
 
-  async start(owner: PreviewOwnerRef): Promise<PreviewView> {
-    await this.requirePermission(owner, "start");
-    return this.withLock(owner, () => this.startInternal(owner));
+  async start(
+    owner: PreviewOwnerRef,
+    principal: Principal = DEMO_HUMAN_PRINCIPAL,
+  ): Promise<PreviewView> {
+    await this.requirePermission(owner, "start", principal);
+    return this.withPreviewSpan("preview.start", owner, principal, () =>
+      this.withLock(owner, () => this.startInternal(owner)),
+    );
   }
 
-  async get(owner: PreviewOwnerRef): Promise<PreviewView> {
-    await this.requirePermission(owner, "inspect");
+  async get(
+    owner: PreviewOwnerRef,
+    principal: Principal = DEMO_HUMAN_PRINCIPAL,
+  ): Promise<PreviewView> {
+    await this.requirePermission(owner, "inspect", principal);
     await this.resolveOwner(owner);
     const current = this.latest(owner);
     if (!current) {
@@ -278,31 +295,66 @@ export class PreviewService implements PreviewLifecycleCleanup {
     return publicPreview(await this.refreshStatus(current));
   }
 
-  async restart(owner: PreviewOwnerRef): Promise<PreviewView> {
-    await this.requirePermission(owner, "restart");
-    return this.withLock(owner, async () => {
-      const current = this.latest(owner);
-      if (current && (isActiveStatus(current.status) || current.runtimeId)) {
-        await this.stopInternal(current);
-      }
-      return this.startInternal(owner);
-    });
+  async restart(
+    owner: PreviewOwnerRef,
+    principal: Principal = DEMO_HUMAN_PRINCIPAL,
+  ): Promise<PreviewView> {
+    await this.requirePermission(owner, "restart", principal);
+    return this.withPreviewSpan("preview.restart", owner, principal, () =>
+      this.withLock(owner, async () => {
+        const current = this.latest(owner);
+        if (current && (isActiveStatus(current.status) || current.runtimeId)) {
+          await this.stopInternal(current);
+        }
+        return this.startInternal(owner);
+      }),
+    );
   }
 
-  async stop(owner: PreviewOwnerRef): Promise<PreviewView> {
-    await this.requirePermission(owner, "stop");
-    return this.withLock(owner, async () => {
-      await this.resolveOwner(owner);
-      const current = this.latest(owner);
-      if (!current) {
-        throw new PreviewError("PREVIEW_NOT_FOUND", 404, "Preview not found");
-      }
-      return publicPreview(await this.stopInternal(current));
-    });
+  async stop(
+    owner: PreviewOwnerRef,
+    principal: Principal = DEMO_HUMAN_PRINCIPAL,
+  ): Promise<PreviewView> {
+    await this.requirePermission(owner, "stop", principal);
+    return this.withPreviewSpan("preview.stop", owner, principal, () =>
+      this.withLock(owner, async () => {
+        await this.resolveOwner(owner);
+        const current = this.latest(owner);
+        if (!current) {
+          throw new PreviewError("PREVIEW_NOT_FOUND", 404, "Preview not found");
+        }
+        return publicPreview(await this.stopInternal(current));
+      }),
+    );
   }
 
-  async logs(owner: PreviewOwnerRef, tail = 100): Promise<PreviewLogsView> {
-    await this.requirePermission(owner, "logs");
+  private withPreviewSpan<T>(
+    name: string,
+    owner: PreviewOwnerRef,
+    principal: Principal,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (!this.telemetry) return operation();
+    return this.telemetry.withSpan(
+      name,
+      {
+        ...correlationAttributes({
+          principalKind: principal.kind,
+          principalId: principal.id,
+          ...(owner.kind === "agent" ? { agentId: owner.agentId } : { projectId: owner.projectId }),
+        }),
+        "preview.owner_kind": owner.kind,
+      },
+      operation,
+    );
+  }
+
+  async logs(
+    owner: PreviewOwnerRef,
+    tail = 100,
+    principal: Principal = DEMO_HUMAN_PRINCIPAL,
+  ): Promise<PreviewLogsView> {
+    await this.requirePermission(owner, "logs", principal);
     await this.resolveOwner(owner);
     const current = this.latest(owner);
     if (!current) {
@@ -674,21 +726,25 @@ export class PreviewService implements PreviewLifecycleCleanup {
   private async requirePermission(
     owner: PreviewOwnerRef,
     action: "inspect" | "start" | "restart" | "stop" | "logs",
+    principal: Principal,
   ): Promise<void> {
     const permission = (
       owner.kind === "agent" ? "preview." + action : "project.preview." + action
     ) as PermissionId;
     try {
-      await this.authorization.require(
-        owner.kind === "agent"
-          ? { agentId: owner.agentId, permission }
-          : { projectId: owner.projectId, permission },
-      );
+      await this.authorization.require({
+        principal,
+        permission,
+        resource: { kind: "preview", owner },
+        ...(owner.kind === "agent"
+          ? { agentId: owner.agentId }
+          : { projectId: owner.projectId }),
+      });
     } catch (error) {
       // Authorization implementations are allowed to use their own internal
       // error type, but the HTTP boundary always receives a safe normalized
       // preview denial without an implementation detail or stack trace.
-      if (error instanceof PreviewError) throw error;
+      if (error instanceof PreviewError || isAuthorizationError(error)) throw error;
       throw new PreviewError(
         "PREVIEW_PERMISSION_DENIED",
         403,

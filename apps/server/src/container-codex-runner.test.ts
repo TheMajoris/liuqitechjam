@@ -3,6 +3,7 @@ import { loadConfig } from "./config.js";
 import {
   buildContainerRunArgs,
   containerName,
+  probeMcpEndpoint,
 } from "./container-codex-runner.js";
 
 describe("Container Codex runner", () => {
@@ -59,6 +60,7 @@ describe("Container Codex runner", () => {
     );
     expect(args.slice(-3)).toEqual(["resume", "thread-123", "continue"]);
     expect(args).not.toContain("keep-id");
+    expect(args).toContain("host.docker.internal:host-gateway");
   });
 
   it("passes a resolved model into Codex without exposing credentials", () => {
@@ -87,5 +89,47 @@ describe("Container Codex runner", () => {
     expect(args).toContain("--model");
     expect(args[args.indexOf("--model") + 1]).toBe("ep-worker-b");
     expect(args).not.toContain("secret-that-must-not-appear-in-argv");
+  });
+
+  it("passes only the dedicated MCP bearer env binding to the container", () => {
+    const token = "opaque-run-token";
+    const config = loadConfig({
+      NODE_ENV: "test",
+      CODEX_HOME: "/tmp/codex-home",
+      RUNTIME_PROVIDER: "container",
+    });
+    const args = buildContainerRunArgs(
+      {
+        agentId: "agent",
+        workspacePath: "/tmp/workspace",
+        prompt: "use the available tools",
+        threadId: null,
+        mcp: { url: "http://host.docker.internal:3000/mcp", token },
+      },
+      config,
+    );
+
+    expect(args).toContain("LAUNCHPAD_MCP_BEARER_TOKEN");
+    expect(args).toContain(
+      'mcp_servers.launchpad.bearer_token_env_var="LAUNCHPAD_MCP_BEARER_TOKEN"',
+    );
+    expect(args.join(" ")).not.toContain(token);
+  });
+
+  it("treats an HTTP MCP response as reachable but fails closed on network errors", async () => {
+    const httpResponse = await probeMcpEndpoint("http://host.docker.internal:3000/mcp", {
+      fetchImpl: async (_input, init) => {
+        expect(init?.headers).toBeUndefined();
+        return new Response(null, { status: 401 });
+      },
+    });
+    expect(httpResponse).toBe(true);
+
+    const networkFailure = await probeMcpEndpoint("http://host.docker.internal:3000/mcp", {
+      fetchImpl: async () => {
+        throw new Error("connection refused");
+      },
+    });
+    expect(networkFailure).toBe(false);
   });
 });

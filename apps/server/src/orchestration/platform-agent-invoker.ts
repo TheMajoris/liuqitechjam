@@ -5,6 +5,8 @@ export interface PlatformAgentInvokerInput {
   prompt: string;
   /** Scopes the child Run to a shared Project workspace when present. */
   projectId?: string | undefined;
+  /** Correlates this child Run with its parent orchestration. */
+  orchestrationId?: string | undefined;
   timeoutMs: number;
   signal?: AbortSignal;
   /** Called after the platform accepts the child Run, before waiting for it. */
@@ -39,6 +41,7 @@ export class PlatformAgentInvoker implements PlatformAgentInvokerContract {
     const accepted = await this.service.sendMessage(input.agentId, input.prompt, {
       origin: "orchestration",
       ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
+      ...(input.orchestrationId === undefined ? {} : { orchestrationId: input.orchestrationId }),
     });
     let run;
     try {

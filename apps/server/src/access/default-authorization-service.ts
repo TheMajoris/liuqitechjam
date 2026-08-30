@@ -1,4 +1,5 @@
 import type {
+  AuthorizationDecision,
   AuthorizationRequest,
   AuthorizationService,
 } from "./authorization-service.js";
@@ -9,6 +10,10 @@ import type {
  * operation cross a stable authorization seam.
  */
 export class DefaultAuthorizationService implements AuthorizationService {
+  async decide(_input: AuthorizationRequest): Promise<AuthorizationDecision> {
+    return { result: "allow", reason: "Default authorization allows operation" };
+  }
+
   async require(_input: AuthorizationRequest): Promise<void> {
     return;
   }

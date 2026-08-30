@@ -224,6 +224,30 @@ describe("Shared Project collaboration", () => {
     expect(executed).not.toMatch(/\/var\/folders|\/tmp\//);
   });
 
+  it("uses the Project-bound Preview status without querying private Agent context", async () => {
+    const runner = new FileWritingRunner();
+    const { agentService, projectService } = await makeStack(runner);
+    const privatePreviewRequests: string[] = [];
+    agentService.setPreviewContextProvider({
+      async getForAgent(agentId) {
+        privatePreviewRequests.push(agentId);
+        return { status: "stopped" };
+      },
+    });
+    agentService.setProjectExecutionScope(
+      new ProjectServiceExecutionScope(projectService, async () => "running"),
+    );
+    const fe = await agentService.createAgent({ name: "fe" });
+    const project = await projectService.create({ name: "Todo App" });
+    await projectService.attachAgent(project.id, fe.id);
+
+    await runProjectTurn(agentService, fe.id, project.id, "use the shared preview");
+
+    expect(privatePreviewRequests).toEqual([]);
+    expect(runner.requests[0]?.prompt).toContain('preview.status = "running"');
+    expect(runner.requests[0]?.prompt).toContain('project_preview.status = "running"');
+  });
+
   it("persists the user message exactly as typed on a Project turn", async () => {
     const { agentService, projectService } = await makeStack();
     const fe = await agentService.createAgent({ name: "fe" });

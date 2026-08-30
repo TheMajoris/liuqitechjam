@@ -4,6 +4,9 @@
  * boundaries that enforce them.
  */
 export type PermissionId =
+  | "agent.invoke"
+  | "project.manage"
+  | "project.members.manage"
   | "preview.inspect"
   | "preview.start"
   | "preview.restart"
@@ -15,4 +18,9 @@ export type PermissionId =
   | "project.preview.start"
   | "project.preview.restart"
   | "project.preview.stop"
-  | "project.preview.logs";
+  | "project.preview.logs"
+  | "skill.read"
+  | "skill.assign"
+  | "tool.execute:web.search"
+  | "tool.execute:project.preview.inspect"
+  | "tool.execute:project.preview.restart";

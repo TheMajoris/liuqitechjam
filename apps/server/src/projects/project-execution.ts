@@ -22,7 +22,7 @@ export interface ProjectRunBinding {
  */
 export interface ProjectExecutionScope {
   /** Throws unless this Agent may currently run against this Project. */
-  assertRunnable(projectId: string, agentId: string): void;
+  assertRunnable(projectId: string, agentId: string): void | Promise<void>;
   /**
    * Takes the single-writer lease and prepares the shared workspace for the
    * acting Agent. Callers must pair this with `endTurn` in a `finally`.
@@ -57,8 +57,8 @@ export class ProjectServiceExecutionScope implements ProjectExecutionScope {
     private readonly previewStatus: ProjectPreviewStatusReader = () => "not_started",
   ) {}
 
-  assertRunnable(projectId: string, agentId: string): void {
-    this.projects.projectRunScope(projectId, agentId);
+  async assertRunnable(projectId: string, agentId: string): Promise<void> {
+    await this.projects.authorizeAgentExecution(projectId, agentId);
   }
 
   async beginTurn(
@@ -66,11 +66,20 @@ export class ProjectServiceExecutionScope implements ProjectExecutionScope {
     projectId: string,
     runId: string,
   ): Promise<ProjectRunBinding> {
+    // This check is deliberately before the lease mutation. A denied or
+    // revoked Agent must never occupy the Project's single-writer slot.
+    await this.projects.authorizeAgentExecution(projectId, agent.id);
     // Lease first: preparing the workspace writes AGENTS.md, which must never
     // race another Agent's turn.
-    await this.projects.acquireWriteLease(projectId, agent.id, runId);
+    await this.projects.acquireWriteLease(projectId, agent.id, runId, {
+      principal: { kind: "agent", id: agent.id },
+    });
     try {
       const scope = this.projects.projectRunScope(projectId, agent.id);
+      // The role may have changed while waiting for the single-writer lease.
+      // Recheck before writing AGENTS.md so a revoked Agent never changes the
+      // shared workspace.
+      await this.projects.authorizeAgentExecution(projectId, agent.id);
       await this.projects.prepareTurn(scope.project, agent);
       return {
         projectId,
