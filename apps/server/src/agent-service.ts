@@ -16,6 +16,7 @@ import type {
 import { JsonStore } from "./store.js";
 import type {
   Agent,
+  AgentAppearance,
   AgentConversation,
   AgentRun,
   AgentRunner,
@@ -45,6 +46,7 @@ import type { McpSessionService } from "./tools/mcp-session-service.js";
 import type { PermitDirectoryReconciliationSink } from "./access/permit-directory-reconciler.js";
 import { buildUsageReport } from "./usage/usage-aggregator.js";
 import type { UsageReport, UsageReportOptions } from "./usage/usage-types.js";
+import { normalizeAppearance } from "./agent-appearance.js";
 
 const now = () => new Date().toISOString();
 
@@ -140,6 +142,7 @@ export class AgentService {
 
   async initialize(): Promise<void> {
     await this.store.initialize();
+    await this.skillService?.reconcileInstalledSkills(this.store);
     await this.skillService?.reconcileAgentSkillIds(this.store);
     await this.workspaces.initialize();
     await this.store.mutate((database) => {
@@ -230,12 +233,14 @@ export class AgentService {
     }
     const modelRef = this.resolveModelRefForCreate(input.modelRef);
     const skillIds = this.normalizeSkillIds(input.skillIds);
+    const appearance = normalizeAppearance(input.appearance);
     const agent: Agent = {
       id,
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
       instructions: input.instructions?.trim() ?? "",
       skillIds,
+      ...(appearance === undefined ? {} : { appearance }),
       status: "ready",
       ...(modelRef === undefined ? {} : { modelRef }),
       workspacePath: this.workspaces.workspacePath(id),
@@ -357,6 +362,34 @@ export class AgentService {
         .catch(() => undefined);
       throw error;
     }
+  }
+
+  /**
+   * Cosmetic character update.
+   *
+   * Deliberately not part of `updateAgent`: appearance is never in the runtime
+   * prompt and never in the authorization directory, so a recolour must not
+   * rewrite AGENTS.md, must not reconcile Permit, and must not be rolled back
+   * when either of those is unavailable. It is also allowed while the Agent is
+   * busy, because restyling a working Agent changes nothing about the run.
+   */
+  async updateAgentAppearance(
+    id: string,
+    appearance: AgentAppearance,
+  ): Promise<Agent> {
+    return this.store.mutate((database) => {
+      const agent = database.agents.find((item) => item.id === id);
+      if (!agent) throw new HttpError(404, "Agent not found");
+      // Merged field by field, so setting one knob keeps the other choices.
+      const merged = normalizeAppearance({
+        ...(agent.appearance ?? {}),
+        ...appearance,
+      });
+      if (merged === undefined) delete agent.appearance;
+      else agent.appearance = merged;
+      agent.updatedAt = now();
+      return structuredClone(agent);
+    });
   }
 
   /** Replaces the Agent-global skill assignment at a trusted server boundary. */

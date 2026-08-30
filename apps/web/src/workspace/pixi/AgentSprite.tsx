@@ -13,6 +13,7 @@ import { ACCESSORY_OFFSET, FACE_OFFSET, HANDS_OFFSET } from "./art/sprites";
 import { agentPresentation } from "./agent-presentation";
 import { useReducedMotion } from "./use-reduced-motion";
 import { AgentIndicator } from "./AgentIndicator";
+import { nextIdleAction, WANDER_INTERVAL_MS } from "./idle-behaviour";
 import { SCENE } from "./scene-theme";
 import {
   walkRoute,
@@ -51,19 +52,38 @@ export function AgentSprite({
   onSelect,
   onHoverChange,
 }: AgentSpriteProps) {
-  const look = avatarLook(agent.agentId);
+  const look = avatarLook(agent.agentId, agent.appearance);
   const presentation = agentPresentation(agent.activity);
   const reducedMotion = useReducedMotion();
 
   const containerRef = useRef<Container>(null);
   const bodyRef = useRef<Sprite>(null);
   const handsRef = useRef<Sprite>(null);
+  const faceRef = useRef<Sprite>(null);
+  const sleepBadgeRef = useRef<Container>(null);
   const pulseRef = useRef<Graphics>(null);
 
   const position = useRef<WorldPoint>({ ...seat.anchor });
   const route = useRef<WorldPoint[]>([]);
   const clock = useRef(0);
   const celebrateUntil = useRef(0);
+  /** When the Agent last had something to do. Drives wander, then dozing. */
+  const idleSince = useRef(performance.now());
+  const nextWanderAt = useRef(0);
+  const dozing = useRef(false);
+
+  // `idle` is the only activity that decays into wandering and then sleep, so
+  // every other activity resets the clock and wakes the Agent up.
+  const isIdle = agent.activity === "idle";
+  useEffect(() => {
+    if (isIdle) {
+      idleSince.current = performance.now();
+      nextWanderAt.current = performance.now() + WANDER_INTERVAL_MS;
+      return;
+    }
+    idleSince.current = performance.now();
+    dozing.current = false;
+  }, [isIdle, agent.station]);
 
   // A change of station — or of seat, when the roster grows — is the only
   // thing that makes an Agent walk. The route is recomputed from wherever the
@@ -109,8 +129,37 @@ export function AgentSprite({
       remaining = 0;
     }
 
+    // Idle life: drift around the pod for a while, then go and sleep. The
+    // decision itself is a pure function, so the behaviour is unit-tested
+    // rather than only observable by watching the room.
+    if (!reducedMotion) {
+      const now = performance.now();
+      const action = nextIdleAction({
+        isIdle,
+        atDesk: agent.station === "desk",
+        walking: route.current.length > 0,
+        dozing: dozing.current,
+        idleForMs: now - idleSince.current,
+        now,
+        nextWanderAt: nextWanderAt.current,
+        wander: seat.wander,
+        random: Math.random,
+      });
+      if (action.kind === "wander") {
+        nextWanderAt.current = now + WANDER_INTERVAL_MS;
+        route.current = [action.point];
+      } else if (action.kind === "doze") {
+        dozing.current = true;
+        route.current = walkRoute(seat, position.current, "lounge");
+      } else if (action.kind === "wake") {
+        dozing.current = false;
+        route.current = walkRoute(seat, position.current, agent.station);
+      }
+    }
+
     container.label = agent.name + '|' + agent.station + '|' + route.current.length + '|' + Math.round(position.current.x) + ',' + Math.round(position.current.y);
     const walking = route.current.length > 0;
+    const asleep = dozing.current && !walking;
     const body = bodyRef.current;
     if (body) {
       const frame = walking
@@ -118,7 +167,7 @@ export function AgentSprite({
           ? "walkA"
           : "walkB"
         : "stand";
-      const texture = bodyTexture(agent.agentId, frame);
+      const texture = bodyTexture(agent.agentId, frame, agent.appearance);
       if (body.texture !== texture) body.texture = texture;
     }
 
@@ -129,14 +178,15 @@ export function AgentSprite({
         const texture = handsTexture(
           agent.agentId,
           Math.floor(clock.current / 130) % 2 === 0 ? "a" : "b",
+          agent.appearance,
         );
         if (hands.texture !== texture) hands.texture = texture;
       }
     }
 
-    let offsetY = presentation.slumped ? 1 : 0;
+    let offsetY = presentation.slumped || asleep ? 1 : 0;
     if (!walking && !reducedMotion && presentation.breathing !== "none") {
-      const period = presentation.breathing === "slow" ? 2600 : 1700;
+      const period = asleep ? 3400 : presentation.breathing === "slow" ? 2600 : 1700;
       offsetY += Math.sin((clock.current / period) * Math.PI * 2) > 0 ? -1 : 0;
     }
     const celebrating = performance.now() < celebrateUntil.current;
@@ -148,6 +198,18 @@ export function AgentSprite({
     container.x = Math.round(position.current.x);
     container.y = Math.round(position.current.y + offsetY);
     container.zIndex = Math.round(position.current.y);
+
+    const face = faceRef.current;
+    if (face) {
+      const texture = faceTexture(
+        agent.agentId,
+        asleep ? "sleep" : presentation.face,
+        agent.appearance,
+      );
+      if (face.texture !== texture) face.texture = texture;
+    }
+    const sleepBadge = sleepBadgeRef.current;
+    if (sleepBadge) sleepBadge.visible = asleep;
 
     const pulse = pulseRef.current;
     if (pulse) {
@@ -203,28 +265,32 @@ export function AgentSprite({
       <pixiGraphics draw={drawGround} />
       <pixiSprite
         ref={bodyRef}
-        texture={bodyTexture(agent.agentId, "stand")}
+        texture={bodyTexture(agent.agentId, "stand", agent.appearance)}
         anchor={{ x: 0.5, y: 1 }}
       />
       <pixiSprite
-        texture={accessoryTexture(agent.agentId)}
+        texture={accessoryTexture(agent.agentId, agent.appearance)}
         x={ACCESSORY_OFFSET.x - 8}
         y={ACCESSORY_OFFSET.y - 24}
       />
       <pixiSprite
-        texture={faceTexture(agent.agentId, presentation.face)}
+        ref={faceRef}
+        texture={faceTexture(agent.agentId, presentation.face, agent.appearance)}
         x={FACE_OFFSET.x - 8}
         y={FACE_OFFSET.y - 24}
       />
       <pixiSprite
         ref={handsRef}
-        texture={handsTexture(agent.agentId, "a")}
+        texture={handsTexture(agent.agentId, "a", agent.appearance)}
         x={HANDS_OFFSET.x - 8}
         y={HANDS_OFFSET.y - 24}
         visible={false}
       />
       <pixiContainer y={-28}>
         <AgentIndicator kind={presentation.indicator} />
+      </pixiContainer>
+      <pixiContainer ref={sleepBadgeRef} y={-28} visible={false}>
+        <AgentIndicator kind="sleep" />
       </pixiContainer>
     </pixiContainer>
   );

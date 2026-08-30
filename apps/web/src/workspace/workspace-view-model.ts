@@ -1,4 +1,5 @@
 import type {
+  AgentAppearance,
   OrchestrationStatus,
   PreviewStatus,
   ProjectRole,
@@ -25,8 +26,26 @@ export type WorkspaceAgentActivity =
   | "failed"
   | "stopped";
 
-/** Where an Agent stands in the room. Purely visual. */
-export type WorkspaceStation = "desk" | "board" | "door";
+/** Where an Agent stands in the office. Purely visual. */
+export type WorkspaceStation =
+  | "desk"
+  | "board"
+  | "door"
+  | "library"
+  | "server"
+  | "lounge";
+
+/**
+ * The tool an Agent is running right now, as reported by the audit journal.
+ *
+ * Derived from a `tool_started` with no matching outcome yet. It only decides
+ * which way the character walks; the tool itself already ran (or was blocked)
+ * on the server long before this reaches the room.
+ */
+export interface WorkspaceToolActivity {
+  toolId: string;
+  startedAt: string;
+}
 
 export interface WorkspaceAgentViewModel {
   agentId: string;
@@ -52,6 +71,10 @@ export interface WorkspaceAgentViewModel {
   /** Deterministic seat, so an Agent keeps its desk across refreshes. */
   seatIndex: number;
   station: WorkspaceStation;
+  /** Live tool, when the audit journal shows one still running. */
+  activeTool: WorkspaceToolActivity | null;
+  /** Cosmetic character choices; absent means the ID-derived look. */
+  appearance: AgentAppearance | null;
 }
 
 export type WorkspacePreviewActivity =

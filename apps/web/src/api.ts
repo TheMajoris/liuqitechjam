@@ -19,6 +19,8 @@ import type {
   ApprovalRecord,
   ApprovalStatus,
   SkillMetadata,
+  SkillCatalogEntry,
+  AgentRole,
 } from "./types";
 
 export class ApiError extends Error {
@@ -88,8 +90,55 @@ export const api = {
       "/api/model-providers/" + encodeURIComponent(providerId) + "/models",
     ),
   listAgents: () => request<{ agents: Agent[] }>("/api/agents"),
+  projectActivity: (projectId: string, limit = 200) =>
+    request<{ events: import("./types").AuditEventRecord[] }>(
+      "/api/projects/" + encodeURIComponent(projectId) + "/activity?limit=" + limit,
+    ),
+  runActivity: (runId: string, limit = 100) =>
+    request<{ events: import("./types").AuditEventRecord[] }>(
+      "/api/runs/" + encodeURIComponent(runId) + "/activity?limit=" + limit,
+    ),
   listTools: () => request<{ tools: import("./types").ToolMetadata[] }>("/api/tools"),
   listSkills: () => request<{ skills: SkillMetadata[] }>("/api/skills"),
+  searchSkills: (query = "", installed?: boolean) => {
+    const params = new URLSearchParams({ q: query });
+    if (installed !== undefined) params.set("installed", String(installed));
+    return request<{ query: string; skills: SkillCatalogEntry[] }>(
+      "/api/skills/search?" + params.toString(),
+    );
+  },
+  installSkill: (skillId: string) =>
+    request<{ skill: SkillMetadata }>("/api/skills/install", {
+      method: "POST",
+      body: JSON.stringify({ skillId }),
+    }),
+  uninstallSkill: (skillId: string) =>
+    request<{ removed: true }>("/api/skills/" + encodeURIComponent(skillId) + "/install", {
+      method: "DELETE",
+    }),
+  listRoles: () => request<{ roles: AgentRole[] }>("/api/roles"),
+  createRole: (body: {
+    name: string;
+    description?: string;
+    skillIds: string[];
+    toolIds: string[];
+    permissionIds: string[];
+  }) => request<{ role: AgentRole }>("/api/roles", {
+    method: "POST",
+    body: JSON.stringify(body),
+  }),
+  updateRole: (id: string, body: Partial<Pick<AgentRole, "name" | "description" | "skillIds" | "toolIds" | "permissionIds">> & { confirmPropagation?: boolean }) =>
+    request<{ role: AgentRole }>("/api/roles/" + encodeURIComponent(id), {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  deleteRole: (id: string) =>
+    request<{ removed: true }>("/api/roles/" + encodeURIComponent(id), { method: "DELETE" }),
+  assignProjectRole: (projectId: string, agentId: string, roleId: string) =>
+    request<{ assignment: { projectId: string; agentId: string; roleId: string; role: AgentRole } }>(
+      "/api/projects/" + encodeURIComponent(projectId) + "/agents/" + encodeURIComponent(agentId) + "/role",
+      { method: "PUT", body: JSON.stringify({ roleId }) },
+    ),
   getSkill: (id: string) =>
     request<{ skill: SkillMetadata }>("/api/skills/" + encodeURIComponent(id)),
   agentSkills: (id: string, projectId?: string) =>
@@ -153,6 +202,15 @@ export const api = {
     request<{ agent: Agent }>("/api/agents/" + id, {
       method: "PATCH",
       body: JSON.stringify(body),
+    }),
+  /** Cosmetic-only; never touches the runtime prompt or the access directory. */
+  updateAgentAppearance: (
+    id: string,
+    appearance: import("./types").AgentAppearance,
+  ) =>
+    request<{ agent: Agent }>("/api/agents/" + id + "/appearance", {
+      method: "PATCH",
+      body: JSON.stringify(appearance),
     }),
   deleteAgent: (id: string) =>
     request<{ archivedWorkspace: string }>("/api/agents/" + id, {

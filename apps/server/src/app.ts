@@ -17,6 +17,7 @@ import { registerMcpRoute, type McpRouteDependencies } from "./mcp-server.js";
 import { ToolApprovalRequiredError, ToolError } from "./tools/tool-errors.js";
 import { PermitApprovalError } from "./access/permit-approval-service.js";
 import { isSkillError } from "./skills/skill-service.js";
+import { isRoleError } from "./roles/role-service.js";
 import { isPreviewError } from "./preview/preview-service.js";
 import type { PreviewLogsView } from "./preview/preview-service.js";
 import type { PreviewOwnerRef, PreviewView } from "./preview/preview-types.js";
@@ -90,12 +91,21 @@ export interface PreviewServiceContract {
   logs(owner: PreviewOwnerRef, tail?: number): Promise<PreviewLogsView>;
 }
 
+/** Cosmetic only. Every field is optional; absent means the ID-derived look. */
+const appearanceBody = z.object({
+  hue: z.number().int().min(0).max(359).optional(),
+  hair: z.number().int().min(0).max(5).optional(),
+  skin: z.number().int().min(0).max(3).optional(),
+  accessory: z.enum(["none", "glasses", "headset", "cap"]).optional(),
+}).strict();
+
 const createAgentBody = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().max(500).optional(),
   instructions: z.string().max(10_000).optional(),
   modelRef: ModelRefSchema.optional(),
   skillIds: z.array(z.string().min(1)).max(32).optional(),
+  appearance: appearanceBody.optional(),
 });
 const updateAgentBody = createAgentBody.partial().refine(
   (value) => Object.keys(value).length > 0,
@@ -372,6 +382,17 @@ export async function createApp(
       modelRegistry.validateWorkerModelRef(body.modelRef);
     }
     return { agent: await service.updateAgent(id, body) };
+  });
+
+  /**
+   * Cosmetic-only. Separate from the Agent PATCH because appearance never
+   * reaches the runtime prompt or the authorization directory, so it must not
+   * share their failure modes.
+   */
+  app.patch("/api/agents/:id/appearance", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const appearance = appearanceBody.parse(request.body);
+    return { agent: await service.updateAgentAppearance(id, appearance) };
   });
 
   app.delete("/api/agents/:id", async (request) => {
@@ -684,6 +705,7 @@ export async function createApp(
     const previewError = isPreviewError(error) ? error : null;
     const projectError = isProjectError(error) ? error : null;
     const skillError = isSkillError(error) ? error : null;
+    const roleError = isRoleError(error) ? error : null;
     const permitApprovalError = error instanceof PermitApprovalError ? error : null;
     const validationError = error instanceof z.ZodError;
     const details = validationError
@@ -722,6 +744,7 @@ export async function createApp(
       previewError?.code ??
       projectError?.code ??
       skillError?.code ??
+      roleError?.code ??
       permitApprovalError?.code;
     return reply.code(statusCode).send({
       error: responseMessage,

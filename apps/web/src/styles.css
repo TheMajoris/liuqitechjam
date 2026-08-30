@@ -5682,3 +5682,136 @@ textarea:focus {
     transition: none;
   }
 }
+
+/* ============================================================
+   Workspace: character customization
+   ============================================================ */
+
+.ws-skin-note {
+  margin: 0 0 10px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.ws-skin-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.ws-skin-label {
+  flex-shrink: 0;
+  width: 62px;
+  padding-top: 4px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.ws-skin-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.ws-skin-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.ws-skin-chip {
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--paper);
+  font: inherit;
+  font-size: 10px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.ws-skin-chip.is-wide {
+  min-width: 40px;
+}
+
+/* Selection is carried by both a ring and a weight change, never colour alone. */
+.ws-skin-swatch.is-active,
+.ws-skin-chip.is-active {
+  border-color: var(--purple);
+  box-shadow: 0 0 0 2px var(--purple-soft);
+  color: var(--purple-dark);
+  font-weight: 600;
+}
+
+.ws-skin-swatch:disabled,
+.ws-skin-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ws-skin-swatch:focus-visible,
+.ws-skin-chip:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 1px;
+}
+
+.ws-inspector-tool code {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--purple-soft);
+  color: var(--purple-dark);
+}
+
+/* Reusable Agent roles and local skill catalog. */
+.access-view { width: min(1240px, 100%); margin: 0 auto; padding: 20px 0 52px; }
+.access-head, .access-card-title, .access-actions, .skill-search,
+.assignment-project label, .skill-catalog-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.access-head { margin-bottom: 24px; }
+.access-head h1 { margin: 5px 0 7px; font-size: clamp(28px, 4vw, 42px); }
+.access-head p, .access-card p { margin: 0; color: var(--muted); }
+.access-grid { display: grid; grid-template-columns: minmax(220px, .7fr) minmax(380px, 1.3fr); gap: 18px; align-items: start; }
+.access-card { padding: 22px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper); box-shadow: var(--shadow); }
+.access-card h2 { margin: 0 0 15px; font-size: 18px; }
+.role-editor-card { grid-row: span 2; }
+.skills-card { grid-column: 1 / -1; }
+.access-role-list { display: grid; gap: 8px; }
+.access-role-list button { padding: 13px 14px; text-align: left; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--paper); color: inherit; cursor: pointer; }
+.access-role-list button.selected { border-color: var(--purple); background: var(--purple-soft); }
+.access-role-list strong, .access-role-list span { display: block; }
+.access-role-list span { margin-top: 4px; color: var(--muted); font-size: 12px; }
+.role-editor-card > label { display: grid; gap: 7px; margin: 13px 0; font-size: 13px; font-weight: 700; }
+.role-editor-card > label input, .role-editor-card textarea, .skill-search input, .assignment-project select { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--paper); color: inherit; font: inherit; }
+.role-editor-card textarea { min-height: 74px; resize: vertical; }
+.role-editor-card fieldset { margin: 18px 0 0; padding: 0; border: 0; }
+.role-editor-card legend { margin-bottom: 9px; font-size: 13px; font-weight: 800; }
+.access-check { display: flex; align-items: flex-start; gap: 10px; padding: 9px 0; cursor: pointer; }
+.access-check input { margin-top: 3px; }
+.access-check span, .access-check strong, .access-check small { display: block; }
+.access-check small { margin-top: 2px; color: var(--muted); font-weight: 400; }
+.access-actions { justify-content: flex-start; margin-top: 20px; }
+.access-pill { padding: 5px 9px; border-radius: 999px; background: var(--wash); color: var(--muted); font-size: 11px; white-space: nowrap; }
+.assignment-project { padding: 13px 0; border-top: 1px solid var(--line); }
+.assignment-project > strong { display: block; margin-bottom: 9px; }
+.assignment-project label { margin: 8px 0; font-size: 13px; }
+.assignment-project select { width: min(190px, 52%); }
+.skill-search { margin: 14px 0; }
+.skill-search input { flex: 1; }
+.skill-catalog-list { display: grid; gap: 8px; }
+.skill-catalog-row { padding: 13px 0; border-top: 1px solid var(--line); }
+.skill-catalog-row strong, .skill-catalog-row span, .skill-catalog-row small { display: block; }
+.skill-catalog-row span { margin-top: 3px; color: var(--muted); }
+.skill-catalog-row small { margin-top: 5px; color: var(--muted); }
+@media (max-width: 850px) {
+  .access-grid { grid-template-columns: 1fr; }
+  .role-editor-card { grid-row: auto; }
+  .skills-card { grid-column: auto; }
+}

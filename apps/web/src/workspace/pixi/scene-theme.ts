@@ -35,4 +35,16 @@ export const SCENE = {
   amber: 0xd89a3a,
   white: 0xfbfaf7,
   shadow: 0x3c3524,
+  /* Partitioned office fixtures. */
+  partition: 0xb9ad95,
+  partitionCap: 0xd5cbb6,
+  zoneFloor: 0xe6dac2,
+  shelf: 0x9c805f,
+  shelfLine: 0x7d6549,
+  bookA: 0xc55353,
+  bookB: 0x6954d9,
+  couch: 0x8f8fb8,
+  couchBack: 0x7676a4,
+  rack: 0x3c4250,
+  rackLight: 0x6c8bd0,
 } as const;

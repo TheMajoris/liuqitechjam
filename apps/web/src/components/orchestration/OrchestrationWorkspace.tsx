@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../api";
-import type { Agent, ModelProviderDescriptor, Project, ProjectRole } from "../../types";
+import type {
+  Agent,
+  AgentAppearance,
+  ModelProviderDescriptor,
+  Project,
+} from "../../types";
 import { NewConversationDialog } from "./NewConversationDialog";
 import { OrchestrationRunView } from "./OrchestrationRunView";
 import { OrchestrationRunTabs, type RunTab } from "./OrchestrationRunTabs";
@@ -11,6 +16,7 @@ import { buildWorkspaceViewModel } from "../../workspace/workspace-adapter";
 import { WorkspaceView } from "../../workspace/WorkspaceView";
 import { useProjectPreview } from "../../workspace/use-project-preview";
 import { useWorkspaceApprovals } from "../../workspace/use-workspace-approvals";
+import { useWorkspaceActivity } from "../../workspace/use-workspace-activity";
 import type { AgentLifecycleAction } from "../../workspace/AgentInspector";
 
 interface OrchestrationWorkspaceProps {
@@ -46,6 +52,7 @@ export function OrchestrationWorkspace({
   const sessionActive = detail ? isOrchestrationActive(detail.session.status) : false;
   const previewController = useProjectPreview(projectId);
   const approvalsController = useWorkspaceApprovals(projectId, sessionActive);
+  const activity = useWorkspaceActivity(projectId, sessionActive);
 
   // The Team stores only the Project ID; its name and membership live with the
   // Project itself, so they are fetched rather than duplicated into the session.
@@ -78,8 +85,10 @@ export function OrchestrationWorkspace({
         approvals: approvalsController.approvals,
         selectedAgentId,
         modelProviders,
+        activity,
       }),
     [
+      activity,
       agents,
       approvalsController.approvals,
       detail,
@@ -126,13 +135,13 @@ export function OrchestrationWorkspace({
     [orchestration],
   );
 
-  const handleProjectRoleChange = useCallback(
-    async (agentId: string, role: ProjectRole) => {
-      if (!projectId) return;
-      const { project: next } = await api.updateProjectAgentRole(projectId, agentId, role);
-      setProject(next);
+  /** Cosmetic-only edit. Refreshes the Agent list so the room repaints. */
+  const handleAppearanceChange = useCallback(
+    async (agentId: string, appearance: AgentAppearance) => {
+      await api.updateAgentAppearance(agentId, appearance);
+      await onAgentsChanged();
     },
-    [projectId],
+    [onAgentsChanged],
   );
 
   /** Agent lifecycle from the room reuses the platform's own endpoints. */
@@ -236,7 +245,7 @@ export function OrchestrationWorkspace({
                   onPreviewAction={(action) => void previewController.act(action)}
                   onApprove={(id, scope) => void approvalsController.approve(id, scope)}
                   onDeny={(id) => void approvalsController.deny(id)}
-                  {...(project ? { onProjectRoleChange: handleProjectRoleChange } : {})}
+                  onAppearanceChange={handleAppearanceChange}
                 />
               }
               preview={

@@ -3,7 +3,8 @@ import type { Principal } from "../access/access-types.js";
 import type { PreviewOwnerRef, PreviewView } from "../preview/preview-types.js";
 import { redactSensitiveText } from "../orchestration/handoff.js";
 import { isHttpUrl } from "./brave-search-adapter.js";
-import type { BraveSearchResult } from "./brave-search-adapter.js";
+import type { SearchResult } from "./search-provider.js";
+import type { WebFetchResult } from "./web-fetch-adapter.js";
 import { ToolRegistry } from "./tool-registry.js";
 import { ToolError } from "./tool-errors.js";
 import type {
@@ -28,6 +29,23 @@ const SearchResultSchema = z.object({
   description: z.string().trim().max(1_000),
 });
 const SearchOutputSchema = z.object({ results: SearchResultSchema.array().max(20) });
+const FetchInputSchema = z.object({
+  url: z
+    .string()
+    .trim()
+    .min(1)
+    .max(2_048)
+    .url()
+    .refine(isHttpUrl, "Only HTTP(S) URLs can be fetched"),
+  maxBytes: z.coerce.number().int().min(4_096).max(4 * 1024 * 1024).optional(),
+});
+const FetchOutputSchema = z.object({
+  url: z.string().url(),
+  finalUrl: z.string().url(),
+  status: z.number().int().min(200).max(299),
+  contentType: z.string().trim().min(1).max(128),
+  content: z.string().max(4 * 1024 * 1024),
+});
 
 const PreviewViewSchema = z.object({
   id: z.string(),
@@ -53,11 +71,16 @@ export interface ToolPreviewService {
 
 /** Narrow search seam keeps definitions independent of the provider adapter. */
 export interface ToolSearchService {
-  search(query: string, count?: number): Promise<BraveSearchResult[]>;
+  search(query: string, count?: number): Promise<SearchResult[]>;
+}
+
+export interface ToolFetchService {
+  fetch(url: string, maxBytes?: number): Promise<WebFetchResult>;
 }
 
 export interface BuiltInToolDependencies {
   search: ToolSearchService;
+  fetch: ToolFetchService;
   preview: ToolPreviewService;
 }
 
@@ -131,6 +154,19 @@ export function createBuiltInToolDefinitions(
         const parsed = SearchInputSchema.parse(input);
         const results = await dependencies.search.search(parsed.query, parsed.count);
         return { results };
+      },
+    },
+    {
+      id: "web.fetch",
+      title: "Fetch Web Page",
+      description: "Read a bounded public HTTP(S) page supplied by the caller.",
+      risk: "network",
+      requiredPermission: "tool.execute:web.fetch",
+      inputSchema: FetchInputSchema,
+      outputSchema: FetchOutputSchema,
+      async execute(_context, input) {
+        const parsed = FetchInputSchema.parse(input);
+        return dependencies.fetch.fetch(parsed.url, parsed.maxBytes);
       },
     },
   ];

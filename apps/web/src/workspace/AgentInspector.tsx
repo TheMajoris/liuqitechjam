@@ -1,6 +1,7 @@
-import { useState } from "react";
-import type { ApprovalRecord, ProjectRole } from "../types";
+import type { AgentAppearance, ApprovalRecord } from "../types";
 import { AgentAvatar } from "../components/orchestration/AgentAvatar";
+import { AgentSkinEditor } from "./AgentSkinEditor";
+import { MarkdownMessage } from "../components/MarkdownMessage";
 import {
   WORKSPACE_ACTIVITY,
   type WorkspaceAgentViewModel,
@@ -19,8 +20,8 @@ interface AgentInspectorProps {
   onOpenAgent: (agentId: string) => void;
   onApprove: (id: string, scope: "once" | "project") => void;
   onDeny: (id: string) => void;
-  /** Supplied only when a shared Project owns this Agent's membership. */
-  onProjectRoleChange?: (agentId: string, role: ProjectRole) => Promise<void>;
+  /** Cosmetic-only character edit; absent hides the appearance controls. */
+  onAppearanceChange?: (agentId: string, appearance: AgentAppearance) => Promise<void>;
 }
 
 /**
@@ -41,9 +42,8 @@ export function AgentInspector({
   onOpenAgent,
   onApprove,
   onDeny,
-  onProjectRoleChange,
+  onAppearanceChange,
 }: AgentInspectorProps) {
-  const [roleError, setRoleError] = useState<string | null>(null);
   if (!agent) {
     return (
       <aside className="ws-inspector is-empty" aria-label="Agent inspector">
@@ -81,11 +81,31 @@ export function AgentInspector({
         </div>
       </div>
 
+      {agent.activeTool && (
+        <section className="ws-inspector-block">
+          <h4>Running now</h4>
+          <p className="ws-inspector-tool">
+            <code>{agent.activeTool.toolId}</code>
+          </p>
+        </section>
+      )}
+
       {agent.safeSummary && (
         <section className="ws-inspector-block">
           <h4>Latest safe summary</h4>
-          <p className="ws-inspector-summary">{agent.safeSummary}</p>
+          {/* Agent output, so it goes through the one markdown renderer. */}
+          <MarkdownMessage className="ws-inspector-summary" content={agent.safeSummary} />
         </section>
+      )}
+
+      {onAppearanceChange && agent.available && (
+        <AgentSkinEditor
+          agentId={agent.agentId}
+          agentName={agent.name}
+          appearance={agent.appearance}
+          disabled={pending !== null}
+          onChange={(appearance) => onAppearanceChange(agent.agentId, appearance)}
+        />
       )}
 
       <dl className="ws-inspector-facts">
@@ -99,35 +119,8 @@ export function AgentInspector({
         </div>
         {projectName && (
           <div>
-            <dt>Project role</dt>
-            <dd>
-              {agent.projectRole && onProjectRoleChange ? (
-                <select
-                  className="ws-inspector-select"
-                  aria-label={`Project role for ${agent.name}`}
-                  value={agent.projectRole}
-                  onChange={(event) => {
-                    setRoleError(null);
-                    void onProjectRoleChange(
-                      agent.agentId,
-                      event.target.value as ProjectRole,
-                    ).catch((reason) => {
-                      setRoleError(
-                        reason instanceof Error
-                          ? reason.message
-                          : "Unable to update the Project role",
-                      );
-                    });
-                  }}
-                >
-                  <option value="owner">Owner</option>
-                  <option value="editor">Editor</option>
-                  <option value="viewer">Viewer</option>
-                </select>
-              ) : (
-                (agent.projectRole ?? "Not attached")
-              )}
-            </dd>
+            <dt>Access preset</dt>
+            <dd>Manage in Roles &amp; skills</dd>
           </div>
         )}
         <div>
@@ -135,12 +128,6 @@ export function AgentInspector({
           <dd className="ws-inspector-mono">{agent.currentRunId ?? "None"}</dd>
         </div>
       </dl>
-
-      {roleError && (
-        <p className="ws-inline-error" role="alert">
-          {roleError}
-        </p>
-      )}
 
       {agentApprovals.length > 0 && (
         <section className="ws-inspector-block ws-inspector-approvals">

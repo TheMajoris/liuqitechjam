@@ -32,6 +32,8 @@ const emptyDatabase = (): Database => ({
   capabilityGrants: [],
   auditEvents: [],
   permitApprovalCorrelations: [],
+  roles: [],
+  installedSkills: [],
 });
 
 const ORCHESTRATION_COLLECTIONS = [
@@ -47,6 +49,7 @@ const ACCESS_COLLECTIONS = [
   "auditEvents",
   "permitApprovalCorrelations",
 ] as const;
+const ROLE_COLLECTIONS = ["roles", "installedSkills"] as const;
 // Core Agent data, validated by shape like agents/messages/runs rather than
 // by a Zod projection, so additive fields survive a round trip.
 const AGENT_COLLECTIONS = ["agentConversations"] as const;
@@ -55,6 +58,7 @@ const ADDITIVE_COLLECTIONS = [
   "previews",
   ...PROJECT_COLLECTIONS,
   ...ACCESS_COLLECTIONS,
+  ...ROLE_COLLECTIONS,
   ...AGENT_COLLECTIONS,
 ] as const;
 

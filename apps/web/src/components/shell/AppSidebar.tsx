@@ -14,7 +14,7 @@ import {
 import type { UseOrchestrationResult } from "../orchestration/use-orchestration";
 
 /** What the main pane is showing. The sidebar selection decides it. */
-export type ShellView = "workspace" | "agent" | "insights";
+export type ShellView = "workspace" | "agent" | "insights" | "access";
 
 interface AppSidebarProps {
   collapsed: boolean;
@@ -33,6 +33,7 @@ interface AppSidebarProps {
   onNewWorkspace: () => void;
   onNewAgent: () => void;
   onSelectInsights: () => void;
+  onSelectAccess: () => void;
   onSelectSession: (sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
   onSelectAgent: (agentId: string) => void;
@@ -75,6 +76,7 @@ export function AppSidebar({
   onNewWorkspace,
   onNewAgent,
   onSelectInsights,
+  onSelectAccess,
   onSelectSession,
   onDeleteSession,
   onSelectAgent,
@@ -140,6 +142,16 @@ export function AppSidebar({
         <div className="rail-foot">
           <button
             type="button"
+            className={"rail-item" + (view === "access" ? " is-active" : "")}
+            aria-label="Roles and skills"
+            aria-current={view === "access" ? "page" : undefined}
+            onClick={onSelectAccess}
+          >
+            <span aria-hidden="true">⚙</span>
+            <span className="rail-tip" aria-hidden="true">Roles &amp; skills</span>
+          </button>
+          <button
+            type="button"
             className={"rail-item" + (view === "insights" ? " is-active" : "")}
             aria-label="Insights"
             aria-current={view === "insights" ? "page" : undefined}
@@ -201,6 +213,15 @@ export function AppSidebar({
           >
             <span aria-hidden="true">◔</span>
             Insights
+          </button>
+          <button
+            type="button"
+            className={"shell-nav-item" + (view === "access" ? " selected" : "")}
+            aria-current={view === "access" ? "page" : undefined}
+            onClick={onSelectAccess}
+          >
+            <span aria-hidden="true">⚙</span>
+            Roles &amp; skills
           </button>
         </nav>
 

@@ -4,6 +4,7 @@ import { OrchestrationWorkspace } from "./components/orchestration/Orchestration
 import { AuthScreen } from "./components/playground/AuthScreen";
 import { AppSidebar, type ShellView } from "./components/shell/AppSidebar";
 import { InsightsView } from "./components/insights/InsightsView";
+import { RolesAndSkillsView } from "./components/access/RolesAndSkillsView";
 import { AgentWorkspaceView } from "./components/playground/AgentWorkspaceView";
 import { CreateAgentModal } from "./components/playground/CreateAgentModal";
 import { useOrchestration } from "./components/orchestration/use-orchestration";
@@ -293,6 +294,7 @@ export default function App() {
         onNewWorkspace={newWorkspace}
         onNewAgent={openCreate}
         onSelectInsights={() => setView("insights")}
+        onSelectAccess={() => setView("access")}
         onSelectSession={(sessionId) => {
           orchestration.selectSession(sessionId);
           setView("workspace");
@@ -314,7 +316,7 @@ export default function App() {
       <main
         className={
           "main " +
-          (view === "insights"
+          (view === "insights" || view === "access"
             ? "main-insights"
             : view === "workspace"
               ? "main-chat"
@@ -348,7 +350,13 @@ export default function App() {
           </div>
         )}
 
-        {view === "insights" ? (
+        {view === "access" ? (
+          <RolesAndSkillsView
+            agents={agents}
+            projects={projects}
+            onProjectsChanged={refreshProjects}
+          />
+        ) : view === "insights" ? (
           <InsightsView
             onSelectAgent={(agentId) => {
               setSelectedId(agentId);

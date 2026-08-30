@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
-import type { ApprovalRecord, ProjectRole } from "../types";
+import type { AgentAppearance, ApprovalRecord } from "../types";
 import { AgentInspector, type AgentLifecycleAction } from "./AgentInspector";
 import { WorkspaceStage } from "./WorkspaceStage";
 import {
@@ -25,7 +25,7 @@ interface WorkspaceViewProps {
   onPreviewAction: (action: PreviewAction) => void;
   onApprove: (id: string, scope: "once" | "project") => void;
   onDeny: (id: string) => void;
-  onProjectRoleChange?: (agentId: string, role: ProjectRole) => Promise<void>;
+  onAppearanceChange?: (agentId: string, appearance: AgentAppearance) => Promise<void>;
 }
 
 /**
@@ -48,7 +48,7 @@ export function WorkspaceView({
   onPreviewAction,
   onApprove,
   onDeny,
-  onProjectRoleChange,
+  onAppearanceChange,
 }: WorkspaceViewProps) {
   const approvalsRef = useRef<HTMLDivElement>(null);
   const selected =
@@ -178,7 +178,7 @@ export function WorkspaceView({
           onOpenAgent={onOpenAgent}
           onApprove={onApprove}
           onDeny={onDeny}
-          {...(onProjectRoleChange ? { onProjectRoleChange } : {})}
+          {...(onAppearanceChange ? { onAppearanceChange } : {})}
         />
       </div>
     </div>

@@ -1,4 +1,5 @@
 import type { Texture } from "pixi.js";
+import type { AgentAppearance } from "../../../types";
 import { agentHue } from "../../../components/orchestration/orchestration-utils";
 import { pixelTexture, type PixelPalette } from "./pixel-texture";
 import {
@@ -14,10 +15,12 @@ import {
 } from "./sprites";
 
 /**
- * Every Agent's appearance is derived from its ID, so the same Agent always
- * looks the same, in every browser, with no artwork to author or store. The
- * shirt hue is the one the rest of the product already uses for that Agent,
- * so a face in the room matches its avatar in the conversation.
+ * An Agent's appearance is derived from its ID unless it has been customized.
+ *
+ * The ID-derived look is the default, so an Agent nobody has styled still has
+ * a stable character in every browser with nothing stored. A saved
+ * `AgentAppearance` overrides field by field, so choosing a hat keeps the hair
+ * and skin the Agent already had.
  */
 export interface AvatarLook {
   hue: number;
@@ -76,15 +79,53 @@ function hueToNumber(hue: number, saturation: number, lightness: number): number
   return (channel(red) << 16) + (channel(green) << 8) + channel(blue);
 }
 
+export const HAIR_COUNT = HAIR.length;
+export const SKIN_COUNT = SKIN.length;
+
+/** The look an Agent has when nobody has customized it. */
+export function defaultAppearance(agentId: string): Required<AgentAppearance> {
+  return {
+    hue: agentHue(agentId),
+    hair: hash(agentId, 7) % HAIR.length,
+    skin: hash(agentId, 31) % SKIN.length,
+    accessory: ACCESSORY_ORDER[hash(agentId, 97) % ACCESSORY_ORDER.length]!,
+  };
+}
+
+/** Merge a saved appearance over the ID-derived default. */
+export function resolveAppearance(
+  agentId: string,
+  appearance: AgentAppearance | null | undefined,
+): Required<AgentAppearance> {
+  const base = defaultAppearance(agentId);
+  if (!appearance) return base;
+  return {
+    hue: appearance.hue ?? base.hue,
+    hair: appearance.hair ?? base.hair,
+    skin: appearance.skin ?? base.skin,
+    accessory: appearance.accessory ?? base.accessory,
+  };
+}
+
 const lookCache = new Map<string, AvatarLook>();
 
-export function avatarLook(agentId: string): AvatarLook {
-  const cached = lookCache.get(agentId);
+/** Cache key covers every visible choice, so an edit repaints immediately. */
+function lookKey(agentId: string, resolved: Required<AgentAppearance>): string {
+  return `${agentId}:${resolved.hue}:${resolved.hair}:${resolved.skin}:${resolved.accessory}`;
+}
+
+export function avatarLook(
+  agentId: string,
+  appearance?: AgentAppearance | null,
+): AvatarLook {
+  const resolved = resolveAppearance(agentId, appearance);
+  const key = lookKey(agentId, resolved);
+  const cached = lookCache.get(key);
   if (cached) return cached;
-  const hue = agentHue(agentId);
-  const hair = HAIR[hash(agentId, 7) % HAIR.length]!;
-  const skin = SKIN[hash(agentId, 31) % SKIN.length]!;
-  const accessory = ACCESSORY_ORDER[hash(agentId, 97) % ACCESSORY_ORDER.length]!;
+  const hue = resolved.hue;
+  const hair = HAIR[resolved.hair % HAIR.length]!;
+  const skin = SKIN[resolved.skin % SKIN.length]!;
+  const accessory = resolved.accessory;
   const look: AvatarLook = {
     hue,
     accessory,
@@ -106,26 +147,64 @@ export function avatarLook(agentId: string): AvatarLook {
       g: "#4f8a5c",
     },
   };
-  lookCache.set(agentId, look);
+  lookCache.set(key, look);
   return look;
 }
 
-export function bodyTexture(agentId: string, body: AvatarBody): Texture {
-  return pixelTexture(`body:${agentId}:${body}`, AVATAR_BODIES[body], avatarLook(agentId).palette);
+/** Texture cache keys include the look, so a restyle never reuses old pixels. */
+function textureKey(
+  kind: string,
+  agentId: string,
+  variant: string,
+  appearance: AgentAppearance | null | undefined,
+): string {
+  const resolved = resolveAppearance(agentId, appearance);
+  return `${kind}:${agentId}:${variant}:${resolved.hue}:${resolved.hair}:${resolved.skin}`;
 }
 
-export function faceTexture(agentId: string, face: AvatarFace): Texture {
-  return pixelTexture(`face:${agentId}:${face}`, AVATAR_FACES[face], avatarLook(agentId).palette);
-}
-
-export function handsTexture(agentId: string, hands: AvatarHands): Texture {
-  return pixelTexture(`hands:${agentId}:${hands}`, AVATAR_HANDS[hands], avatarLook(agentId).palette);
-}
-
-export function accessoryTexture(agentId: string): Texture {
-  const look = avatarLook(agentId);
+export function bodyTexture(
+  agentId: string,
+  body: AvatarBody,
+  appearance?: AgentAppearance | null,
+): Texture {
   return pixelTexture(
-    `accessory:${agentId}:${look.accessory}`,
+    textureKey("body", agentId, body, appearance),
+    AVATAR_BODIES[body],
+    avatarLook(agentId, appearance).palette,
+  );
+}
+
+export function faceTexture(
+  agentId: string,
+  face: AvatarFace,
+  appearance?: AgentAppearance | null,
+): Texture {
+  return pixelTexture(
+    textureKey("face", agentId, face, appearance),
+    AVATAR_FACES[face],
+    avatarLook(agentId, appearance).palette,
+  );
+}
+
+export function handsTexture(
+  agentId: string,
+  hands: AvatarHands,
+  appearance?: AgentAppearance | null,
+): Texture {
+  return pixelTexture(
+    textureKey("hands", agentId, hands, appearance),
+    AVATAR_HANDS[hands],
+    avatarLook(agentId, appearance).palette,
+  );
+}
+
+export function accessoryTexture(
+  agentId: string,
+  appearance?: AgentAppearance | null,
+): Texture {
+  const look = avatarLook(agentId, appearance);
+  return pixelTexture(
+    textureKey("accessory", agentId, look.accessory, appearance),
     AVATAR_ACCESSORIES[look.accessory],
     look.palette,
   );

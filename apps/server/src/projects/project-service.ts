@@ -22,6 +22,7 @@ import {
   type UpdateProjectInput,
   ProjectRoleSchema,
 } from "./project-types.js";
+import { LEGACY_ROLE_IDS } from "../roles/role-types.js";
 
 const now = (): string => new Date().toISOString();
 
@@ -55,6 +56,7 @@ export function publicProject(
       : {
           agentId: item.agentId,
           role: item.role ?? "editor",
+          ...(item.roleId === undefined ? {} : { roleId: item.roleId }),
         },
   );
   return {
@@ -381,6 +383,7 @@ export class ProjectService {
       codexThreadId: null,
       attachedAt,
       role: "editor",
+      roleId: LEGACY_ROLE_IDS.editor,
       toolGrants: [],
       updatedAt: attachedAt,
     };
@@ -564,6 +567,7 @@ export class ProjectService {
         );
       }
       attachment.role = parsedRole.data;
+      attachment.roleId = LEGACY_ROLE_IDS[parsedRole.data];
       attachment.updatedAt = now();
       const project = database.projects.find((item) => item.id === projectId);
       if (!project) throw new ProjectError("PROJECT_NOT_FOUND", 404, "Project not found");
@@ -735,7 +739,11 @@ export class ProjectService {
       .snapshot()
       .projectAgents.filter((item) => item.projectId === projectId)
       .sort((left, right) => left.attachedAt.localeCompare(right.attachedAt))
-      .map((item) => ({ agentId: item.agentId, role: item.role ?? "editor" }));
+      .map((item) => ({
+        agentId: item.agentId,
+        role: item.role ?? "editor",
+        ...(item.roleId === undefined ? {} : { roleId: item.roleId }),
+      }));
   }
 
   private requireProject(projectId: string): Project {

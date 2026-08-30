@@ -9,6 +9,35 @@ export type {
   BraveSearchResult,
 } from "./brave-search-adapter.js";
 export {
+  SearXngSearchAdapter,
+  SearXngSearchError,
+  SearXNGSearchAdapter,
+  SearXNGSearchError,
+} from "./searxng-search-adapter.js";
+export type { SearXngSearchAdapterOptions } from "./searxng-search-adapter.js";
+export {
+  DisabledSearchProvider,
+  SearchProviderError,
+} from "./search-provider.js";
+export type {
+  SearchProvider,
+  SearchProviderHealth,
+  SearchProviderHealthStatus,
+  SearchProviderId,
+  SearchResult,
+} from "./search-provider.js";
+export { createSearchProvider } from "./search-provider-factory.js";
+export {
+  WebFetchAdapter,
+  WebFetchError,
+} from "./web-fetch-adapter.js";
+export type {
+  LookupAddress,
+  LookupImpl,
+  WebFetchAdapterOptions,
+  WebFetchResult,
+} from "./web-fetch-adapter.js";
+export {
   MCP_BEARER_TOKEN_ENV,
   McpSessionService,
 } from "./mcp-session-service.js";
@@ -31,6 +60,7 @@ export {
 } from "./tool-service.js";
 export type {
   BuiltInToolDependencies,
+  ToolFetchService,
   CreateCapabilityGrantInput,
   ToolApprovalGateway,
   ToolPreviewService,

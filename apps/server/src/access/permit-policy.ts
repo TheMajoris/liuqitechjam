@@ -46,10 +46,16 @@ const ACTIONS: Readonly<Record<PermissionId, string>> = {
   "project.preview.logs": "project.preview.logs",
   "skill.read": "skill.read",
   "skill.assign": "skill.assign",
+  "skill.search": "skill.search",
+  "skill.install": "skill.install",
+  "skill.remove": "skill.remove",
+  "role.read": "role.read",
+  "role.manage": "role.manage",
   // Tool action keys are stable policy identifiers. Project-scoped calls use
   // the reconciled Project resource below; they do not depend on a separate
   // Permit tool-instance directory that the repository never synchronizes.
   "tool.execute:web.search": "tool.execute.web_search",
+  "tool.execute:web.fetch": "tool.execute.web_fetch",
   "tool.execute:project.preview.inspect": "tool.execute.preview_inspect",
   "tool.execute:project.preview.restart": "tool.execute.preview_restart",
 };

@@ -87,12 +87,24 @@ export interface ProviderModelsResponse {
   models: ModelDescriptor[];
 }
 
+export type AgentAccessory = "none" | "glasses" | "headset" | "cap";
+
+/** Cosmetic character choices for the 2D workspace. Never an authorization input. */
+export interface AgentAppearance {
+  hue?: number;
+  hair?: number;
+  skin?: number;
+  accessory?: AgentAccessory;
+}
+
 export interface Agent {
   id: string;
   name: string;
   description: string;
   instructions: string;
   status: AgentStatus;
+  /** Omitted until someone customizes this Agent's character. */
+  appearance?: AgentAppearance;
   workspacePath: string;
   codexThreadId: string | null;
   lastError: string | null;
@@ -164,7 +176,7 @@ export interface AgentCapabilities {
   tools: ToolCapabilityView[];
 }
 
-export type SkillSource = "built-in";
+export type SkillSource = "built-in" | "user" | "installed";
 
 export interface SkillMetadata {
   id: string;
@@ -174,6 +186,25 @@ export interface SkillMetadata {
   capabilityTags: string[];
   source: SkillSource;
   version: string;
+}
+
+export interface SkillCatalogEntry extends SkillMetadata {
+  installed: boolean;
+  installable: boolean;
+}
+
+export interface AgentRole {
+  id: string;
+  name: string;
+  description: string;
+  skillIds: string[];
+  toolIds: string[];
+  permissionIds: string[];
+  source: "system" | "user";
+  createdAt: string;
+  updatedAt: string;
+  assignedAgentCount: number;
+  assignedProjectCount: number;
 }
 
 export interface SkillToolCapability {
@@ -413,6 +444,7 @@ export type ProjectRole = "owner" | "editor" | "viewer";
 export interface ProjectMembership {
   agentId: string;
   role: ProjectRole;
+  roleId?: string;
 }
 
 export interface ContinueOrchestrationInput {
@@ -512,4 +544,19 @@ export interface UsageReport {
   workspaces: UsageWorkspaceBreakdown[];
   projects: UsageProjectBreakdown[];
   daily: UsageDailyPoint[];
+}
+
+/** Safe audit projection the workspace polls to see live tool activity. */
+export interface AuditEventRecord {
+  id: string;
+  type: string;
+  status: "success" | "failure";
+  summary: string;
+  createdAt: string;
+  agentId?: string;
+  projectId?: string;
+  runId?: string;
+  orchestrationId?: string;
+  permission?: string;
+  resource?: { kind: string; id: string };
 }

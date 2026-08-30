@@ -40,6 +40,8 @@ export interface ProjectAgentAttachment {
   attachedAt: string;
   /** Missing legacy roles are normalized to `editor`. */
   role?: ProjectRole;
+  /** Reusable role-template reference. Missing on legacy attachments. */
+  roleId?: string;
   /** Reserved for later capability grants; never inferred from a role. */
   toolGrants?: string[];
   updatedAt?: string;
@@ -76,6 +78,7 @@ export const ProjectAgentAttachmentSchema = z.object({
   codexThreadId: z.string().nullable(),
   attachedAt: z.string(),
   role: ProjectRoleSchema.optional(),
+  roleId: z.string().min(1).optional(),
   toolGrants: z.array(z.string()).optional(),
   updatedAt: z.string().optional(),
 });
@@ -103,6 +106,8 @@ export interface ProjectView {
 export interface ProjectMembershipView {
   agentId: string;
   role: ProjectRole;
+  /** Reusable role-template reference when one is assigned. */
+  roleId?: string;
 }
 
 export interface CreateProjectInput {

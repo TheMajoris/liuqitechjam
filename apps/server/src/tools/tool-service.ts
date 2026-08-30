@@ -64,6 +64,10 @@ export interface CreateCapabilityGrantInput {
   scope: "once" | "project";
 }
 
+export interface ProjectRoleToolResolver {
+  getAssignedRole(projectId: string, agentId: string): { toolIds: string[] } | undefined;
+}
+
 export type ToolApprovalGateway = Pick<
   PermitApprovalService,
   | "isAvailable"
@@ -85,6 +89,7 @@ export type ToolApprovalGateway = Pick<
  * read or written by this class.
  */
 export class ToolService {
+  private roleTools?: ProjectRoleToolResolver;
   constructor(
     private readonly registry: ToolRegistry,
     private readonly authorization: AuthorizationService,
@@ -96,6 +101,17 @@ export class ToolService {
 
   getRegistry(): ToolRegistry {
     return this.registry;
+  }
+
+  /** Attach reusable role tools after RoleService has been constructed. */
+  setProjectRoleToolResolver(resolver: ProjectRoleToolResolver): void {
+    this.roleTools = resolver;
+  }
+
+  private roleAllowsTool(agentId: string, projectId: string | undefined, toolId: string): boolean {
+    if (!projectId || !this.roleTools) return true;
+    const role = this.roleTools.getAssignedRole(projectId, agentId);
+    return role?.toolIds.includes(toolId) ?? false;
   }
 
   listMetadata(): ToolMetadata[] {
@@ -120,6 +136,12 @@ export class ToolService {
         403,
         "A Project-scoped Agent run is required for this tool",
       );
+    }
+    if (
+      context.principal.kind === "agent" &&
+      !this.roleAllowsTool(context.agentId, context.projectId, toolId)
+    ) {
+      throw new ToolError("PERMISSION_DENIED", 403, "The assigned Project role does not include this tool");
     }
     // Check the raw payload before Zod object parsing (which may strip
     // unknown keys), so a caller cannot smuggle a different Project selector
@@ -152,12 +174,13 @@ export class ToolService {
       context: { ...contextForAuthorization(context), toolId },
     });
     if (decision.result !== "allow") {
-      // Only web.search is approval-eligible in this wave.  Its baseline
+      // Network research tools are approval-eligible when a Permit policy
+      // requires a temporary grant. Their baseline
       // Project read permission is checked independently, so an approval can
       // never elevate an Agent without the underlying role.
       if (
         context.principal.kind === "agent" &&
-        toolId === "web.search" &&
+        (toolId === "web.search" || toolId === "web.fetch") &&
         context.projectId !== undefined
       ) {
         const baseline = await this.authorization.decide({
@@ -367,6 +390,14 @@ export class ToolService {
   ): Promise<ToolCapabilitiesView> {
     const tools = await Promise.all(
       this.registry.metadata().map(async (tool) => {
+        if (projectId !== undefined && !this.roleAllowsTool(agentId, projectId, tool.id)) {
+          return {
+            tool,
+            availability: "denied",
+            reason: "The assigned Project role does not include this tool",
+            grant: null,
+          } satisfies ToolCapabilityView;
+        }
         let decision: AuthorizationDecision;
         try {
           decision = await this.authorization.decide({
@@ -389,7 +420,7 @@ export class ToolService {
         }
         if (decision.result === "deny") {
           if (
-            tool.id === "web.search" &&
+            (tool.id === "web.search" || tool.id === "web.fetch") &&
             projectId !== undefined &&
             this.approvals?.isAvailable()
           ) {
@@ -537,6 +568,7 @@ export class ToolService {
 }
 
 export type { BraveSearchResult } from "./brave-search-adapter.js";
+export type { SearchResult } from "./search-provider.js";
 // Compatibility exports keep existing composition roots stable while the
 // code-owned definitions live in their focused module.
 export {
@@ -546,6 +578,7 @@ export {
 } from "./built-in-tools.js";
 export type {
   BuiltInToolDependencies,
+  ToolFetchService,
   ToolPreviewService,
   ToolSearchService,
 } from "./built-in-tools.js";

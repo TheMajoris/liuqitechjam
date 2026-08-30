@@ -23,11 +23,24 @@ import type {
   ProjectAgentAttachment,
   ProjectWriteLease,
 } from "./projects/project-types.js";
+import type { AgentRole } from "./roles/role-types.js";
+import type { InstalledSkillRecord } from "./skills/skill-types.js";
+
+export type {
+  AgentRole,
+  AgentRoleSource,
+  AgentRoleView,
+  CreateRoleInput,
+  ProjectRoleAssignmentView,
+  UpdateRoleInput,
+} from "./roles/role-types.js";
 
 export type { ModelRef, WorkerRuntimeModelConfig } from "./models/types.js";
 export type {
   AgentSkillsView,
   AssignedSkillView,
+  InstalledSkillRecord,
+  SkillCatalogEntry,
   SkillDefinition,
   SkillMetadata,
   SkillRuntimeContext,
@@ -39,6 +52,26 @@ export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
 
+/**
+ * Cosmetic character choices for the 2D workspace.
+ *
+ * Purely presentational: nothing here is an input to authorization, routing,
+ * or a run. Every field is optional, and an absent field falls back to the
+ * deterministic look derived from the Agent's ID, so records written before
+ * appearance existed keep the exact character they already had.
+ */
+export interface AgentAppearance {
+  /** Shirt hue in degrees; absent means the ID-derived product hue. */
+  hue?: number | undefined;
+  /** Index into the client's hair palette. */
+  hair?: number | undefined;
+  /** Index into the client's skin palette. */
+  skin?: number | undefined;
+  accessory?: AgentAccessory | undefined;
+}
+
+export type AgentAccessory = "none" | "glasses" | "headset" | "cap";
+
 export interface Agent {
   id: string;
   name: string;
@@ -46,6 +79,8 @@ export interface Agent {
   instructions: string;
   /** Omitted on legacy records; normalized stores expose an empty list. */
   skillIds?: string[];
+  /** Omitted until someone customizes this Agent's character. */
+  appearance?: AgentAppearance;
   status: AgentStatus;
   /** Omitted on legacy records; those resolve to the configured default. */
   modelRef?: ModelRef;
@@ -141,6 +176,10 @@ export interface Database {
   auditEvents: AuditEvent[];
   /** Permit request IDs and safe local correlation only; never authorization. */
   permitApprovalCorrelations: PermitApprovalCorrelation[];
+  /** Additive role-template collection; absent in pre-role stores. */
+  roles: AgentRole[];
+  /** Additive instruction-only skill installation collection. */
+  installedSkills: InstalledSkillRecord[];
 }
 
 export interface CreateAgentInput {
@@ -150,6 +189,7 @@ export interface CreateAgentInput {
   modelRef?: ModelRef | undefined;
   /** Agent-global declarative skills; skills never grant tools. */
   skillIds?: string[] | undefined;
+  appearance?: AgentAppearance | undefined;
 }
 
 export interface UpdateAgentInput {

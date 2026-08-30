@@ -385,3 +385,76 @@ describe("workspace view model", () => {
     expect(model.previewStatus).toBe("unavailable");
   });
 });
+
+describe("safe summary clipping", () => {
+  function summaryOf(safeOutput: string): string | null {
+    const model = build(
+      detailFor("completed", {
+        turns: [turn({ agentId: "a1", status: "completed", safeOutput })],
+      }),
+    );
+    return model.agents.find((item) => item.agentId === "a1")?.safeSummary ?? null;
+  }
+
+  it("keeps line structure so a list stays a list", () => {
+    // Collapsing newlines here is what flattened a numbered list into a
+    // run-on sentence in the inspector.
+    const summary = summaryOf("Key points:\n\n1. **First**\n2. **Second**");
+    expect(summary).toContain("\n");
+    expect(summary).toContain("1. **First**");
+  });
+
+  it("normalizes horizontal whitespace and blank-line runs", () => {
+    const summary = summaryOf("one   two\n\n\n\nthree");
+    expect(summary).toBe("one two\n\nthree");
+  });
+
+  it("closes bold left open by truncation", () => {
+    const summary = summaryOf("**" + "a".repeat(400));
+    expect(summary?.endsWith("…**")).toBe(true);
+    // The marker count must be even, or the asterisks render literally.
+    expect((summary ?? "").split("**").length - 1).toBe(2);
+  });
+
+  it("closes inline code left open by truncation", () => {
+    const summary = summaryOf("`" + "a".repeat(400));
+    expect(summary?.endsWith("…`")).toBe(true);
+  });
+
+  it("closes a fenced block, keeping the fence last", () => {
+    const summary = summaryOf("```\n" + "a".repeat(400));
+    expect(summary?.endsWith("…\n```")).toBe(true);
+    expect((summary ?? "").split("```").length - 1).toBe(2);
+  });
+
+  it("closes emphasis around the fragment that survived the cut", () => {
+    const summary = summaryOf("a".repeat(150) + " **bold text here**");
+    expect(summary?.endsWith("…**")).toBe(true);
+    expect((summary ?? "").split("**").length - 1).toBe(2);
+  });
+
+  it("drops a marker sitting at the very end, which opened nothing", () => {
+    const summary = summaryOf("a".repeat(155) + " **" + "b".repeat(40) + "**");
+    expect((summary ?? "").split("**").length - 1 % 2).toBe(0);
+    expect(summary).not.toMatch(/\*\*…$/);
+  });
+
+  it("never leaves an odd marker count, for any cut position", () => {
+    // The exact cut point depends on where the words fall, so sweep it.
+    for (let pad = 140; pad < 180; pad += 1) {
+      const summary = summaryOf("x".repeat(pad) + " **emphasised words** tail") ?? "";
+      expect(summary.split("**").length - 1, `pad ${pad}`).toBe(
+        summary.includes("**") ? 2 : 0,
+      );
+      expect(summary.split("`").length - 1, `pad ${pad}`).toBe(0);
+    }
+  });
+
+  it("leaves balanced markdown untouched when it fits", () => {
+    expect(summaryOf("**Done** with `code`.")).toBe("**Done** with `code`.");
+  });
+
+  it("returns null for empty output", () => {
+    expect(summaryOf("   \n  ")).toBeNull();
+  });
+});

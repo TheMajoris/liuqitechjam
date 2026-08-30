@@ -1,6 +1,7 @@
 import type {
   Agent,
   ApprovalRecord,
+  AuditEventRecord,
   ModelDescriptor,
   ModelProviderDescriptor,
   OrchestrationEvent,
@@ -22,6 +23,7 @@ import type {
   WorkspaceHandoffViewModel,
   WorkspacePreviewActivity,
   WorkspaceStation,
+  WorkspaceToolActivity,
   WorkspaceViewModel,
 } from "./workspace-view-model";
 
@@ -35,6 +37,8 @@ export interface WorkspaceSource {
   selectedAgentId: string | null;
   modelProviders?: ModelProviderDescriptor[];
   models?: ModelDescriptor[];
+  /** Safe audit projection; absent when the activity API is not configured. */
+  activity?: AuditEventRecord[];
 }
 
 const SUMMARY_LIMIT = 160;
@@ -91,10 +95,48 @@ function busyActivity(role: string | null): WorkspaceAgentActivity {
   return "working";
 }
 
+function occurrences(text: string, token: string): number {
+  return text.split(token).length - 1;
+}
+
+/**
+ * Close any emphasis or code marker left hanging by truncation.
+ *
+ * Cutting inside `**bold**` would otherwise render the literal asterisks, so
+ * the visible fragment keeps its emphasis instead of showing the syntax.
+ */
+function closeMarkers(text: string): string {
+  let result = text;
+  if (occurrences(result, "```") % 2 === 1) return result + "\n```";
+  if (occurrences(result, "`") % 2 === 1) result += "`";
+  if (occurrences(result, "**") % 2 === 1) result += "**";
+  return result;
+}
+
+/**
+ * Bound Agent output for a preview surface without breaking its markdown.
+ *
+ * Line structure is preserved — collapsing newlines would flatten a list into
+ * a run-on sentence — while runs of blank lines and horizontal whitespace are
+ * still normalized so one reply cannot stretch the panel.
+ */
 function clip(value: string | null | undefined): string | null {
-  const text = (value ?? "").replace(/\s+/g, " ").trim();
+  const text = (value ?? "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/ \n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
   if (!text) return null;
-  return text.length <= SUMMARY_LIMIT ? text : text.slice(0, SUMMARY_LIMIT - 1).trimEnd() + "…";
+  if (text.length <= SUMMARY_LIMIT) return closeMarkers(text);
+  const cut = text.slice(0, SUMMARY_LIMIT - 1);
+  // Prefer a word boundary, but never throw away most of the budget for one.
+  const boundary = cut.lastIndexOf(" ");
+  const body = boundary > SUMMARY_LIMIT * 0.6 ? cut.slice(0, boundary) : cut;
+  // A marker at the very end opened something that was cut away entirely.
+  const trimmed = body.trimEnd().replace(/[*_`~]+$/, "").trimEnd();
+  // The ellipsis goes inside the markers, so a closing fence stays last.
+  return closeMarkers(trimmed + "…");
 }
 
 interface ActivityInput {
@@ -139,11 +181,78 @@ export function resolveActivity({
   return "idle";
 }
 
-/** Where the visual state machine parks this Agent. Never a security fact. */
-export function resolveStation(activity: WorkspaceAgentActivity): WorkspaceStation {
+/**
+ * Which zone a running tool sends the Agent to.
+ *
+ * Keyed by prefix so a tool added later lands somewhere sensible without this
+ * table having to know its exact id. An unmapped tool keeps the Agent at its
+ * desk rather than guessing.
+ */
+const TOOL_STATIONS: ReadonlyArray<readonly [string, WorkspaceStation]> = [
+  ["web.", "library"],
+  ["project.preview.", "server"],
+];
+
+export function stationForTool(toolId: string): WorkspaceStation | null {
+  for (const [prefix, station] of TOOL_STATIONS) {
+    if (toolId.startsWith(prefix)) return station;
+  }
+  return null;
+}
+
+/**
+ * Where the visual state machine parks this Agent. Never a security fact.
+ *
+ * A live tool wins over the activity, because it is the more specific truth:
+ * an Agent that is "working" *and* running `web.search` is at the shelves, not
+ * at its desk. Approval and turn selection still outrank it — being stopped at
+ * the boundary is the thing a viewer most needs to see.
+ */
+export function resolveStation(
+  activity: WorkspaceAgentActivity,
+  activeTool: WorkspaceToolActivity | null = null,
+): WorkspaceStation {
   if (activity === "blocked") return "door";
   if (activity === "thinking") return "board";
+  if (activeTool !== null) {
+    const station = stationForTool(activeTool.toolId);
+    if (station !== null) return station;
+  }
   return "desk";
+}
+
+/**
+ * The tool each Agent still has open.
+ *
+ * A `tool_started` with no later `tool_succeeded`/`tool_failed` for the same
+ * run is treated as in flight. Events arrive newest-first from the API, so the
+ * first outcome seen for a run closes it.
+ */
+export function resolveActiveTools(
+  events: readonly AuditEventRecord[],
+): Map<string, WorkspaceToolActivity> {
+  const active = new Map<string, WorkspaceToolActivity>();
+  const closed = new Set<string>();
+  const ordered = [...events].sort((left, right) =>
+    right.createdAt.localeCompare(left.createdAt),
+  );
+  for (const event of ordered) {
+    const agentId = event.agentId;
+    const toolId = event.resource?.id;
+    if (agentId === undefined || toolId === undefined) continue;
+    const key = agentId + "|" + (event.runId ?? "") + "|" + toolId;
+    if (event.type === "tool_succeeded" || event.type === "tool_failed") {
+      closed.add(key);
+      continue;
+    }
+    if (event.type !== "tool_started") continue;
+    if (closed.has(key)) continue;
+    // Newest-first, so the first open start per Agent is the current one.
+    if (!active.has(agentId)) {
+      active.set(agentId, { toolId, startedAt: event.createdAt });
+    }
+  }
+  return active;
 }
 
 function latestEventOfType(
@@ -264,9 +373,16 @@ export function buildWorkspaceViewModel(source: WorkspaceSource): WorkspaceViewM
     ? session.participants.find((item) => item.id === session.currentParticipantId) ?? null
     : null;
 
+  const activeTools = resolveActiveTools(source.activity ?? []);
+
   const agents: WorkspaceAgentViewModel[] = rosterAgentIds(source).map(
     ({ agentId, participant }, index) => {
       const agent = byId.get(agentId);
+      // Only a running Agent can have a tool open; a stale start must not
+      // strand a finished Agent in the library.
+      const activeTool = agent?.status === "busy"
+        ? activeTools.get(agentId) ?? null
+        : null;
       const activity = resolveActivity({
         agent,
         participant,
@@ -297,7 +413,9 @@ export function buildWorkspaceViewModel(source: WorkspaceSource): WorkspaceViewM
         available: agent !== undefined,
         lifecycle: agent?.status ?? "unknown",
         seatIndex: index,
-        station: resolveStation(activity),
+        station: resolveStation(activity, activeTool),
+        activeTool,
+        appearance: agent?.appearance ?? null,
       };
     },
   );

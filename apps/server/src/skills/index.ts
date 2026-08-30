@@ -42,7 +42,9 @@ export const BUILT_IN_SKILLS: readonly SkillDefinition[] = [
     name: "Research",
     description: "Gather bounded external information and distinguish evidence from inference.",
     instructions:
-      "When the task needs current external facts, use the platform web search capability when it is available. Distinguish sourced facts from inference, keep research bounded and relevant, and say when the capability is unavailable or approval is required. Never invent a source or claim a search you did not perform.",
+      "When the task needs current external facts, use web.fetch for a supplied HTTP(S) URL and web.search for bounded keyword research when available. Distinguish sourced facts from inference, keep research bounded and relevant, and say when a capability is unavailable or approval is required. Never invent a source or claim a search or fetch you did not perform.",
+    // Search remains the explicit research capability; web.fetch is a
+    // separately selectable tool for URL-focused research.
     requiredToolIds: ["web.search"],
     capabilityTags: ["research", "web", "evidence"],
     source: "built-in",
@@ -56,6 +58,8 @@ export function createBuiltInSkillRegistry(): SkillRegistry {
 
 export const createSkillRegistry = createBuiltInSkillRegistry;
 
+export { APPROVED_SKILL_CATALOG, cloneApprovedSkillCatalog } from "./skill-catalog.js";
+
 export { SkillRegistry } from "./skill-registry.js";
 export {
   isSkillError,
@@ -64,12 +68,19 @@ export {
 } from "./skill-service.js";
 export type { SkillCapabilityResolver } from "./skill-service.js";
 export type {
+  CreateSkillInput,
+  SkillSearchOptions,
+  SkillServiceOptions,
+  UpdateSkillInput,
+} from "./skill-service.js";
+export type {
   AgentSkillsView,
   AssignedSkillView,
+  InstalledSkillRecord,
+  SkillCatalogEntry,
   SkillDefinition,
   SkillMetadata,
   SkillRuntimeContext,
   SkillSource,
   SkillToolCapability,
 } from "./skill-types.js";
-

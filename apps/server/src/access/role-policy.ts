@@ -44,6 +44,7 @@ export function roleAllows(role: ProjectRole, permission: PermissionId): boolean
   // applies the separate explicit Agent–Project grant/approval gate after
   // this role check succeeds.
   if (permission === "tool.execute:web.search") return permissions.includes("project.read");
+  if (permission === "tool.execute:web.fetch") return permissions.includes("project.read");
   if (permission === "tool.execute:project.preview.inspect") {
     return permissions.includes("project.preview.inspect");
   }

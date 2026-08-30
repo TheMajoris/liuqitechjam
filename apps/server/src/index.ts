@@ -20,6 +20,7 @@ import {
   createPermitAuthorizationAdapter,
 } from "./access/permit-authorization-adapter.js";
 import { RepositoryAuthorizationService } from "./access/repository-authorization-service.js";
+import { RoleTemplateAuthorizationService } from "./access/role-template-authorization-service.js";
 import { LocalPocApprovalGateway } from "./access/local-poc-approval-gateway.js";
 import { PermitSynchronizationGate } from "./access/permit-synchronization-gate.js";
 import {
@@ -35,13 +36,15 @@ import { PreviewCommandResolver } from "./preview/preview-command-resolver.js";
 import { StorePreviewContextProvider } from "./preview/preview-context-provider.js";
 import { ProjectService } from "./projects/project-service.js";
 import { ProjectServiceExecutionScope } from "./projects/project-execution.js";
-import { BraveSearchAdapter } from "./tools/brave-search-adapter.js";
+import { createSearchProvider } from "./tools/search-provider-factory.js";
+import { WebFetchAdapter } from "./tools/web-fetch-adapter.js";
 import { McpSessionService } from "./tools/mcp-session-service.js";
 import {
   createBuiltInToolRegistry,
   ToolService,
 } from "./tools/tool-service.js";
 import { createBuiltInSkillRegistry, SkillService } from "./skills/index.js";
+import { RoleService } from "./roles/index.js";
 import { ProjectWorkspaceManager } from "./projects/project-workspace.js";
 import {
   PreviewService,
@@ -78,7 +81,7 @@ const permitMode = config.authorizationMode === "permit";
 // Permit is the only authorization authority in the production graph. Local
 // POC mode uses the repository's fixed role policy and never constructs a
 // Permit adapter, directory reconciler, or external approval service.
-const authorization = permitMode
+const policyAuthorization = permitMode
   ? createPermitAuthorizationAdapter(
       config,
       permitSynchronizationGate,
@@ -86,6 +89,7 @@ const authorization = permitMode
       telemetry,
     )
   : new RepositoryAuthorizationService(store);
+const authorization = new RoleTemplateAuthorizationService(store, policyAuthorization);
 const projectWorkspaces = new ProjectWorkspaceManager(
   path.join(config.dataDirectory, "projects"),
 );
@@ -145,11 +149,13 @@ service.setProjectExecutionScope(
     previewContext.getForProject(projectId).then((context) => context.status),
   ),
 );
+const searchProvider = createSearchProvider(config);
 const toolRegistry = createBuiltInToolRegistry({
-  search: new BraveSearchAdapter({
-    apiKey: config.braveSearchApiKey,
-    timeoutMs: config.braveSearchTimeoutMs,
-    maxResults: config.braveSearchMaxResults,
+  search: searchProvider,
+  fetch: new WebFetchAdapter({
+    timeoutMs: config.webFetchTimeoutMs,
+    maxResponseBytes: config.webFetchMaxResponseBytes,
+    maxRedirects: config.webFetchMaxRedirects,
   }),
   preview: previewService,
 });
@@ -166,10 +172,15 @@ const skillService = new SkillService(
   toolService,
   authorization,
   audit,
+  { store },
 );
+const roleService = new RoleService(store, toolService, skillService, authorization);
+toolService.setProjectRoleToolResolver(roleService);
+skillService.setProjectRoleSkillResolver(roleService);
 service.setSkillService(skillService);
 projectService.setSkillService(skillService);
 await service.initialize();
+await roleService.initialize();
 await projectService.initialize();
 // Reconcile existing repository facts before accepting privileged lifecycle
 // mutations. A development Permit graph may be inspected without credentials;
@@ -228,8 +239,10 @@ const app = await createApp(
     sessions: mcpSessions,
     toolService,
     skillService,
+    roleService,
     ...(permitApprovalService === undefined ? {} : { approvalService: permitApprovalService }),
     auditService: audit,
+    searchProvider,
     telemetry,
   },
 );
