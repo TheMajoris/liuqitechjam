@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { AuthorizationService } from "../access/authorization-service.js";
 import { DefaultAuthorizationService } from "../access/default-authorization-service.js";
 import { HttpError } from "../errors.js";
 import { JsonStore } from "../store.js";
@@ -39,7 +40,10 @@ const directory = {
   },
 };
 
-async function makeService(onEvent?: ProjectEventSink) {
+async function makeService(
+  onEvent?: ProjectEventSink,
+  authorization: AuthorizationService = new DefaultAuthorizationService(),
+) {
   const root = await mkdtemp(path.join(tmpdir(), "project-service-"));
   roots.push(root);
   const store = new JsonStore(path.join(root, "data", "db.json"));
@@ -49,7 +53,7 @@ async function makeService(onEvent?: ProjectEventSink) {
     store,
     workspaces,
     directory,
-    new DefaultAuthorizationService(),
+    authorization,
     onEvent,
   );
   await service.initialize();
@@ -97,6 +101,39 @@ describe("Project lifecycle", () => {
     const archived = await service.get(project.id);
     expect(archived.status).toBe("archived");
     expect(archived.agentIds).toEqual([]);
+  });
+
+  it("stops the Project Preview before moving the workspace", async () => {
+    const { service, workspaces } = await makeService();
+    const project = await service.create({ name: "Todo App" });
+    let cleanupSawWorkspace = false;
+    service.setProjectPreviewLifecycle({
+      async stopForProject(projectId) {
+        await expect(stat(workspaces.workspacePath(projectId))).resolves.toBeDefined();
+        cleanupSawWorkspace = true;
+      },
+    });
+
+    await service.archive(project.id);
+
+    expect(cleanupSawWorkspace).toBe(true);
+  });
+
+  it("rejects archiving while a Project write lease is active", async () => {
+    const { service, workspaces } = await makeService();
+    const project = await service.create({ name: "Todo App" });
+    await service.attachAgent(project.id, "fe");
+    await service.acquireWriteLease(project.id, "fe", "run-1");
+
+    await expect(service.archive(project.id)).rejects.toMatchObject({
+      code: "PROJECT_BUSY",
+      statusCode: 409,
+    });
+    expect(service.writeLeaseHolder(project.id)).toEqual({
+      agentId: "fe",
+      runId: "run-1",
+    });
+    await expect(stat(workspaces.workspacePath(project.id))).resolves.toBeDefined();
   });
 });
 
@@ -212,6 +249,8 @@ describe("Project write lease", () => {
   it("admits one writer and blocks the second until release", async () => {
     const { service } = await makeService();
     const project = await service.create({ name: "Todo App" });
+    await service.attachAgent(project.id, "fe");
+    await service.attachAgent(project.id, "fe-builder2");
 
     await service.acquireWriteLease(project.id, "fe", "run-1");
     expect(service.writeLeaseHolder(project.id)).toEqual({ agentId: "fe", runId: "run-1" });
@@ -224,6 +263,8 @@ describe("Project write lease", () => {
   it("lets a blocked writer proceed once the lease is released", async () => {
     const { service } = await makeService();
     const project = await service.create({ name: "Todo App" });
+    await service.attachAgent(project.id, "fe");
+    await service.attachAgent(project.id, "fe-builder2");
     await service.acquireWriteLease(project.id, "fe", "run-1");
 
     const queued = service.acquireWriteLease(project.id, "fe-builder2", "run-2", {
@@ -241,6 +282,7 @@ describe("Project write lease", () => {
   it("release is idempotent and only clears the matching run", async () => {
     const { service } = await makeService();
     const project = await service.create({ name: "Todo App" });
+    await service.attachAgent(project.id, "fe");
     await service.acquireWriteLease(project.id, "fe", "run-1");
 
     await service.releaseWriteLease(project.id, "other-run");
@@ -254,6 +296,7 @@ describe("Project write lease", () => {
   it("reconciles leases orphaned by a server restart", async () => {
     const { service, store, workspaces, root } = await makeService();
     const project = await service.create({ name: "Todo App" });
+    await service.attachAgent(project.id, "fe");
     await service.acquireWriteLease(project.id, "fe", "run-1");
 
     const events: string[] = [];
@@ -269,6 +312,58 @@ describe("Project write lease", () => {
     expect(restarted.writeLeaseHolder(project.id)).toBeNull();
     expect(events).toContain("project_write_lease_released:reconciled");
     expect(root).toContain("project-service-");
+  });
+
+  it("refuses a write lease for an Agent that is not attached", async () => {
+    const { service } = await makeService();
+    const project = await service.create({ name: "Todo App" });
+
+    await expect(service.acquireWriteLease(project.id, "fe", "run-1")).rejects.toMatchObject({
+      code: "PROJECT_AGENT_NOT_ATTACHED",
+    });
+    expect(service.writeLeaseHolder(project.id)).toBeNull();
+  });
+
+  it("reauthorizes a waiting writer after its role is revoked", async () => {
+    let revoked = false;
+    let secondLeaseChecks = 0;
+    let secondLeaseCheck!: () => void;
+    const secondLeaseChecked = new Promise<void>((resolve) => {
+      secondLeaseCheck = resolve;
+    });
+    const authorization: AuthorizationService = {
+      async decide() {
+        return { result: "allow", reason: "test" };
+      },
+      async require(input) {
+        if (revoked && input.principal?.kind === "agent") {
+          throw new Error("Permission revoked");
+        }
+        if (
+          input.principal?.kind === "agent" &&
+          input.principal.id === "fe-builder2" &&
+          input.permission === "project.write"
+        ) {
+          secondLeaseChecks += 1;
+          if (secondLeaseChecks === 2) secondLeaseCheck();
+        }
+      },
+    };
+    const { service } = await makeService(undefined, authorization);
+    const project = await service.create({ name: "Todo App" });
+    await service.attachAgent(project.id, "fe");
+    await service.attachAgent(project.id, "fe-builder2");
+    await service.acquireWriteLease(project.id, "fe", "run-1");
+
+    const waiting = service.acquireWriteLease(project.id, "fe-builder2", "run-2", {
+      waitMs: 2_000,
+    });
+    await secondLeaseChecked;
+    revoked = true;
+    await service.releaseWriteLease(project.id, "run-1");
+
+    await expect(waiting).rejects.toThrow("Permission revoked");
+    expect(service.writeLeaseHolder(project.id)).toBeNull();
   });
 
   it("emits collaboration evidence for lease handover", async () => {

@@ -1,5 +1,6 @@
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { SkillRuntimeContext } from "./skills/skill-types.js";
 import type { Agent } from "./types.js";
 
 export class WorkspaceManager {
@@ -14,9 +15,9 @@ export class WorkspaceManager {
     await mkdir(path.join(this.root, ".deleted"), { recursive: true });
   }
 
-  async create(agent: Agent): Promise<void> {
+  async create(agent: Agent, skillContext?: SkillRuntimeContext): Promise<void> {
     await mkdir(agent.workspacePath, { recursive: false });
-    await this.writeInstructions(agent);
+    await this.writeInstructions(agent, skillContext);
     await writeFile(
       path.join(agent.workspacePath, ".gitignore"),
       [".codex/", "node_modules/", "dist/", ".env", "*.log", ""].join("\n"),
@@ -35,7 +36,7 @@ export class WorkspaceManager {
     );
   }
 
-  async writeInstructions(agent: Agent): Promise<void> {
+  async writeInstructions(agent: Agent, skillContext?: SkillRuntimeContext): Promise<void> {
     const content = [
       "# Platform-managed Agent instructions",
       "",
@@ -46,6 +47,7 @@ export class WorkspaceManager {
       "",
       agent.instructions ||
         "Help the user complete coding tasks in this workspace. Explain material results concisely.",
+      ...skillInstructionLines(skillContext),
       "",
       "## Workspace rules",
       "",
@@ -72,4 +74,36 @@ export class WorkspaceManager {
     await rename(agent.workspacePath, destination);
     return destination;
   }
+
+  /** Restore an archive when a subsequent privileged reconciliation fails. */
+  async restore(agent: Agent, archivedWorkspace: string): Promise<void> {
+    await rename(archivedWorkspace, agent.workspacePath);
+  }
+}
+
+function skillInstructionLines(context: SkillRuntimeContext | undefined): string[] {
+  if (!context || context.skills.length === 0) return [];
+  const lines = ["", "## Assigned platform skills", ""];
+  for (const skill of context.skills) {
+    lines.push("### " + skill.name);
+    lines.push(skill.instructions);
+    if (skill.capabilities.length > 0) {
+      lines.push("");
+      lines.push("Capability availability:");
+      for (const capability of skill.capabilities) {
+        lines.push(
+          "- " +
+            capability.toolId +
+            ": " +
+            capability.availability.replaceAll("_", " ") +
+            " (" +
+            capability.reason +
+            ")",
+        );
+      }
+    }
+    lines.push("");
+  }
+  lines.push("Skill assignment never grants tools; use only capabilities marked available.");
+  return lines;
 }

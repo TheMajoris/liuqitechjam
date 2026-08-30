@@ -3,6 +3,10 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
+import type {
+  AuthorizationRequest,
+  AuthorizationService,
+} from "./access/authorization-service.js";
 import { loadConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
 import { JsonStore } from "./store.js";
@@ -13,6 +17,8 @@ import type {
   AgentPreviewContext,
   PreviewContextProvider,
 } from "./preview/preview-context-provider.js";
+import { createBuiltInSkillRegistry, SkillService } from "./skills/index.js";
+import type { ToolCapabilitiesView } from "./tools/tool-types.js";
 
 class FakeRunner implements AgentRunner {
   async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -102,6 +108,7 @@ async function makeService(
     arkModel?: string;
     previewLifecycle?: PreviewLifecycleCleanup;
     previewContext?: PreviewContextProvider;
+    skillService?: SkillService;
   } = {},
 ): Promise<AgentService> {
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
@@ -124,6 +131,7 @@ async function makeService(
     undefined,
     options.previewLifecycle,
     options.previewContext,
+    options.skillService,
   );
   await service.initialize();
   serviceStores.set(service, store);
@@ -199,6 +207,79 @@ describe("Agent lifecycle", () => {
     expect((await service.startAgent(agent.id)).status).toBe("ready");
     await service.deleteAgent(agent.id);
     expect(service.listAgents()).toHaveLength(0);
+  });
+
+  it("authorizes every affected skill resource and leaves assignment unchanged on denial", async () => {
+    const requests: AuthorizationRequest[] = [];
+    let denyCodeReview = false;
+    const authorization: AuthorizationService = {
+      decide: async () => ({ result: "allow", reason: "test" }),
+      require: async (request) => {
+        requests.push(request);
+        if (
+          denyCodeReview &&
+          request.resource?.kind === "skill" &&
+          request.resource.id === "code-review"
+        ) {
+          throw new Error("skill denied");
+        }
+      },
+    };
+    const skillService = new SkillService(
+      createBuiltInSkillRegistry(),
+      {
+        listMetadata: () => [],
+        listCapabilities: async (): Promise<ToolCapabilitiesView> => ({
+          agentId: "agent",
+          projectId: null,
+          tools: [],
+        }),
+      },
+      authorization,
+    );
+    const service = await makeService(new FakeRunner(), { skillService });
+    const agent = await service.createAgent({ name: "Skill owner" });
+    await service.updateAgent(agent.id, { skillIds: ["research"] });
+
+    requests.length = 0;
+    denyCodeReview = true;
+    await expect(
+      service.updateAgent(agent.id, { skillIds: ["code-review"] }),
+    ).rejects.toThrow("skill denied");
+
+    expect(requests.map((request) => request.resource)).toEqual([
+      { kind: "skill", id: "research" },
+      { kind: "skill", id: "code-review" },
+    ]);
+    expect(service.getAgent(agent.id).skillIds).toEqual(["research"]);
+  });
+
+  it("removes Project attachments and stale leases when deleting an Agent", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Project builder" });
+    const store = serviceStores.get(service)!;
+    await store.mutate((database) => {
+      database.projectAgents.push({
+        projectId: "project-1",
+        agentId: agent.id,
+        codexThreadId: null,
+        attachedAt: agent.createdAt,
+        role: "editor",
+        toolGrants: [],
+        updatedAt: agent.updatedAt,
+      });
+      database.projectLeases.push({
+        projectId: "project-1",
+        agentId: agent.id,
+        runId: "run-1",
+        acquiredAt: agent.createdAt,
+      });
+    });
+
+    await service.deleteAgent(agent.id);
+
+    expect(store.snapshot().projectAgents).toEqual([]);
+    expect(store.snapshot().projectLeases).toEqual([]);
   });
 
   it("closes the preview start gate before stop and delete cleanup", async () => {
@@ -326,6 +407,24 @@ describe("Agent lifecycle", () => {
     await expect(cancelledService.waitForRun(cancelled.run.id, { timeoutMs: 1_000 })).resolves.toMatchObject({
       status: "cancelled",
     });
+  });
+
+  it("persists only a safe runtime error when a runner returns raw diagnostics", async () => {
+    const service = await makeService({
+      run: async () => {
+        throw new Error(
+          'Codex exited with code 1: stderr: {"token":"secret-value","cwd":"/Users/private/workspace"}',
+        );
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Safe failure" });
+    const failed = await service.sendMessage(agent.id, "fail safely");
+
+    await expect.poll(() => service.getRun(failed.run.id).status).toBe("failed");
+    expect(service.getRun(failed.run.id).error).toBe("Agent runtime failed");
+    expect(service.getAgent(agent.id).lastError).toBe("Agent runtime failed");
   });
 
   it("rejects a wait on timeout and abort while cleaning up the poll", async () => {

@@ -1,6 +1,9 @@
 import { z } from "zod";
+import type { ProjectRole } from "../access/access-types.js";
 
 export type ProjectStatus = "active" | "archived";
+export type { ProjectRole } from "../access/access-types.js";
+export const ProjectRoleSchema = z.enum(["owner", "editor", "viewer"]);
 
 /**
  * A Project owns the shared collaborative workspace that a Team's Agents edit.
@@ -16,6 +19,8 @@ export interface Project {
   workspacePath: string;
   /** Orchestration session currently attached, if any. */
   teamId: string | null;
+  /** Principal ID of the human owner; absent only on pre-Wave 8 records. */
+  ownerPrincipalId?: string;
   status: ProjectStatus;
   createdAt: string;
   updatedAt: string;
@@ -33,6 +38,11 @@ export interface ProjectAgentAttachment {
   agentId: string;
   codexThreadId: string | null;
   attachedAt: string;
+  /** Missing legacy roles are normalized to `editor`. */
+  role?: ProjectRole;
+  /** Reserved for later capability grants; never inferred from a role. */
+  toolGrants?: string[];
+  updatedAt?: string;
 }
 
 /**
@@ -54,6 +64,7 @@ export const ProjectSchema = z.object({
   description: z.string(),
   workspacePath: z.string().min(1),
   teamId: z.string().nullable(),
+  ownerPrincipalId: z.string().min(1).optional(),
   status: z.enum(["active", "archived"]),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -64,6 +75,9 @@ export const ProjectAgentAttachmentSchema = z.object({
   agentId: z.string().min(1),
   codexThreadId: z.string().nullable(),
   attachedAt: z.string(),
+  role: ProjectRoleSchema.optional(),
+  toolGrants: z.array(z.string()).optional(),
+  updatedAt: z.string().optional(),
 });
 
 export const ProjectWriteLeaseSchema = z.object({
@@ -80,9 +94,15 @@ export interface ProjectView {
   description: string;
   teamId: string | null;
   agentIds: string[];
+  memberships: ProjectMembershipView[];
   status: ProjectStatus;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ProjectMembershipView {
+  agentId: string;
+  role: ProjectRole;
 }
 
 export interface CreateProjectInput {

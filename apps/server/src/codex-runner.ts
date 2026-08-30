@@ -1,8 +1,12 @@
 import { execFile } from "node:child_process";
-import { spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
+import {
+  startChildProcessExecution,
+  type ChildProcessExecution,
+} from "./child-process-execution.js";
 import type { AppConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
+import { MCP_BEARER_TOKEN_ENV } from "./tools/mcp-session-service.js";
 import type {
   AgentRunner,
   RunUsage,
@@ -39,6 +43,17 @@ export function buildCodexArgs(
   // through argv; only the resolver-produced Codex model id is accepted here.
   if (request.model && !request.model.usesDefaultModel) {
     args.push("--model", request.model.codexModel);
+  }
+  if (request.mcp) {
+    // Codex reads the token from a dedicated child environment variable. The
+    // literal bearer token is intentionally absent from argv and config text.
+    args.push(
+      "-c",
+      "mcp_servers.launchpad.url=" + JSON.stringify(request.mcp.url),
+      "-c",
+      "mcp_servers.launchpad.bearer_token_env_var=" +
+        JSON.stringify(MCP_BEARER_TOKEN_ENV),
+    );
   }
   if (request.threadId) {
     args.push("resume", request.threadId, request.prompt);
@@ -94,17 +109,7 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
 }
 
 export class CodexRunner implements AgentRunner {
-  private readonly active = new Map<
-    string,
-    {
-      child: ChildProcess;
-      cancelled: boolean;
-      timedOut: boolean;
-      outputExceeded: boolean;
-      settled: Promise<void>;
-      forceKillTimer: NodeJS.Timeout | null;
-    }
-  >();
+  private readonly active = new Map<string, ChildProcessExecution>();
 
   constructor(private readonly config: AppConfig) {}
 
@@ -125,9 +130,7 @@ export class CodexRunner implements AgentRunner {
     if (!active) {
       return false;
     }
-    active.cancelled = true;
-    this.terminate(active);
-    await active.settled;
+    await active.cancel();
     return true;
   }
 
@@ -137,86 +140,46 @@ export class CodexRunner implements AgentRunner {
     }
 
     const args = buildCodexArgs(request, this.config.codexSandboxMode);
-    const child = spawn(this.config.codexBin, args, {
-      cwd: request.workspacePath,
-      env: this.childEnvironment(),
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const settled = new Promise<void>((resolve) => {
-      child.once("close", () => resolve());
-      child.once("error", () => resolve());
-    });
-    const active = {
-      child,
-      cancelled: false,
-      timedOut: false,
-      outputExceeded: false,
-      settled,
-      forceKillTimer: null as NodeJS.Timeout | null,
-    };
-    this.active.set(request.agentId, active);
-
     const parsed: ParsedEvents = {
       messages: [],
       threadId: request.threadId,
       usage: null,
       errors: [],
     };
-    let stdout = "";
-    let stderr = "";
-    let totalBytes = 0;
-
-    const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
-      totalBytes += chunk.byteLength;
-      if (totalBytes > this.config.codexMaxOutputBytes) {
-        active.outputExceeded = true;
-        this.terminate(active);
-        return;
-      }
-      if (target === "stdout") {
-        stdout += chunk.toString("utf8");
-        const lines = stdout.split(/\r?\n/);
-        stdout = lines.pop() ?? "";
-        for (const line of lines) {
-          parseCodexEventLine(line, parsed);
+    let forceKillTimer: NodeJS.Timeout | null = null;
+    const execution = startChildProcessExecution({
+      command: this.config.codexBin,
+      args,
+      cwd: request.workspacePath,
+      env: this.childEnvironment(request),
+      timeoutMs: this.config.codexTimeoutMs,
+      maxOutputBytes: this.config.codexMaxOutputBytes,
+      startErrorMessage: "Codex could not start",
+      onLine: (line) => parseCodexEventLine(line, parsed),
+      stop: (child) => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        child.kill("SIGTERM");
+        if (!forceKillTimer) {
+          forceKillTimer = setTimeout(() => child.kill("SIGKILL"), 3_000);
+          forceKillTimer.unref();
         }
-      } else {
-        stderr += chunk.toString("utf8");
-        if (stderr.length > 16_384) {
-          stderr = stderr.slice(-16_384);
-        }
-      }
-    };
-
-    child.stdout.on("data", (chunk: Buffer) => consume(chunk, "stdout"));
-    child.stderr.on("data", (chunk: Buffer) => consume(chunk, "stderr"));
-
-    const timeout = setTimeout(() => {
-      active.timedOut = true;
-      this.terminate(active);
-    }, this.config.codexTimeoutMs);
-    timeout.unref();
+      },
+    });
+    this.active.set(request.agentId, execution);
 
     try {
-      const exitCode = await new Promise<number>((resolve, reject) => {
-        child.once("error", reject);
-        child.once("close", (code) => resolve(code ?? 1));
-      });
-      if (stdout.trim()) {
-        parseCodexEventLine(stdout.trim(), parsed);
-      }
-      if (active.cancelled) {
+      const result = await execution.completed;
+      if (result.cancelled) {
         throw new RunCancelledError();
       }
-      if (active.timedOut) {
+      if (result.timedOut) {
         throw new Error("Codex timed out after " + this.config.codexTimeoutMs + " ms");
       }
-      if (active.outputExceeded) {
+      if (result.outputExceeded) {
         throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
       }
-      if (exitCode !== 0) {
-        const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";
-        throw new Error("Codex exited with code " + exitCode + ": " + detail);
+      if (result.exitCode !== 0) {
+        throw new Error("Codex exited with code " + result.exitCode);
       }
       const output = parsed.messages.at(-1)?.trim();
       if (!output) {
@@ -228,25 +191,12 @@ export class CodexRunner implements AgentRunner {
         usage: parsed.usage,
       };
     } finally {
-      clearTimeout(timeout);
-      if (active.forceKillTimer) clearTimeout(active.forceKillTimer);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
       this.active.delete(request.agentId);
     }
   }
 
-  private terminate(active: {
-    child: ChildProcess;
-    forceKillTimer: NodeJS.Timeout | null;
-  }): void {
-    if (active.child.exitCode !== null || active.child.signalCode !== null) return;
-    active.child.kill("SIGTERM");
-    if (!active.forceKillTimer) {
-      active.forceKillTimer = setTimeout(() => active.child.kill("SIGKILL"), 3_000);
-      active.forceKillTimer.unref();
-    }
-  }
-
-  private childEnvironment(): NodeJS.ProcessEnv {
+  private childEnvironment(request?: { mcp?: { token: string; traceparent?: string } }): NodeJS.ProcessEnv {
     const inheritedNames = [
       "PATH",
       "HOME",
@@ -266,6 +216,12 @@ export class CodexRunner implements AgentRunner {
       ARK_API_KEY: this.config.arkApiKey,
       NO_COLOR: "1",
     };
+    if (request?.mcp) {
+      environment[MCP_BEARER_TOKEN_ENV] = request.mcp.token;
+      if (request.mcp.traceparent !== undefined) {
+        environment.TRACEPARENT = request.mcp.traceparent;
+      }
+    }
     for (const name of inheritedNames) {
       if (process.env[name] !== undefined) environment[name] = process.env[name];
     }

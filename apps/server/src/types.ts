@@ -7,12 +7,33 @@ import type {
 import type { ModelRef, WorkerRuntimeModelConfig } from "./models/types.js";
 import type { PreviewRecord } from "./preview/preview-types.js";
 import type {
+  ApprovalRequest,
+  AuditEvent,
+  CapabilityGrant,
+  PermitApprovalCorrelation,
+} from "./access/access-types.js";
+export type {
+  AuthorizationContext,
+  AuthorizationDecision,
+  Principal,
+  ResourceRef,
+} from "./access/access-types.js";
+import type {
   Project,
   ProjectAgentAttachment,
   ProjectWriteLease,
 } from "./projects/project-types.js";
 
 export type { ModelRef, WorkerRuntimeModelConfig } from "./models/types.js";
+export type {
+  AgentSkillsView,
+  AssignedSkillView,
+  SkillDefinition,
+  SkillMetadata,
+  SkillRuntimeContext,
+  SkillSource,
+  SkillToolCapability,
+} from "./skills/skill-types.js";
 
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
@@ -23,6 +44,8 @@ export interface Agent {
   name: string;
   description: string;
   instructions: string;
+  /** Omitted on legacy records; normalized stores expose an empty list. */
+  skillIds?: string[];
   status: AgentStatus;
   /** Omitted on legacy records; those resolve to the configured default. */
   modelRef?: ModelRef;
@@ -112,6 +135,12 @@ export interface Database {
   projects: Project[];
   projectAgents: ProjectAgentAttachment[];
   projectLeases: ProjectWriteLease[];
+  /** Additive Wave 8+ collections; absent in legacy v1 stores. */
+  approvalRequests: ApprovalRequest[];
+  capabilityGrants: CapabilityGrant[];
+  auditEvents: AuditEvent[];
+  /** Permit request IDs and safe local correlation only; never authorization. */
+  permitApprovalCorrelations: PermitApprovalCorrelation[];
 }
 
 export interface CreateAgentInput {
@@ -119,6 +148,8 @@ export interface CreateAgentInput {
   description?: string | undefined;
   instructions?: string | undefined;
   modelRef?: ModelRef | undefined;
+  /** Agent-global declarative skills; skills never grant tools. */
+  skillIds?: string[] | undefined;
 }
 
 export interface UpdateAgentInput {
@@ -126,12 +157,22 @@ export interface UpdateAgentInput {
   description?: string | undefined;
   instructions?: string | undefined;
   modelRef?: ModelRef | undefined;
+  /** Replaces Agent-global skill assignment when supplied. */
+  skillIds?: string[] | undefined;
 }
 
 export interface RunnerResult {
   output: string;
   threadId: string | null;
   usage: RunUsage | null;
+}
+
+/** Per-run MCP settings. The bearer token is consumed only by the child env. */
+export interface RunnerMcpConfig {
+  url: string;
+  token: string;
+  /** W3C trace context propagated across the worker process boundary. */
+  traceparent?: string;
 }
 
 export interface RunnerRequest {
@@ -143,6 +184,8 @@ export interface RunnerRequest {
   threadId: string | null;
   /** Resolved worker settings; never contains credentials. */
   model?: WorkerRuntimeModelConfig;
+  /** Omitted for isolated/test runs where MCP is disabled. */
+  mcp?: RunnerMcpConfig;
 }
 
 export interface AgentRunner {

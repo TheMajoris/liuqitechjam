@@ -38,6 +38,8 @@ export interface MastraExecutionState {
 export interface MastraOrchestrationStepOptions {
   /** Scopes every child Run to this shared Project workspace. */
   projectId?: string | undefined;
+  /** Correlates child Agent Runs with their parent orchestration. */
+  orchestrationId?: string | undefined;
   invoker: PlatformAgentInvokerContract;
   perAgentTimeoutMs: number;
   supervisorTimeoutMs?: number;

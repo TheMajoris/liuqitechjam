@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
-import { HttpError, RunCancelledError } from "./errors.js";
+import { HttpError } from "./errors.js";
 import { ModelCatalogError } from "./models/errors.js";
 import {
   createWorkerModelResolver,
@@ -20,57 +20,31 @@ import type {
   AgentRun,
   AgentRunner,
   CreateAgentInput,
-  Database,
   Message,
   MessageOrigin,
   UpdateAgentInput,
 } from "./types.js";
+import {
+  AgentConversationService,
+  DEFAULT_CONVERSATION_TITLE,
+  deriveConversationTitle,
+} from "./agent-conversation-service.js";
+export { deriveConversationTitle } from "./agent-conversation-service.js";
 import { WorkspaceManager } from "./workspace.js";
 import type { PreviewLifecycleCleanup } from "./preview/preview-service.js";
+import type { PreviewContextProvider } from "./preview/preview-context-provider.js";
 import {
-  composeRuntimeContextPrompt,
-  type PreviewContextProvider,
-} from "./preview/preview-context-provider.js";
-import {
-  projectRuntimeContextLines,
   type ProjectExecutionScope,
-  type ProjectRunBinding,
 } from "./projects/project-execution.js";
+import { AgentRunCoordinator } from "./agent-run-coordinator.js";
+import type { SkillRuntimeContext } from "./skills/skill-types.js";
+import type { SkillService } from "./skills/skill-service.js";
+import { AgentRuntimePromptComposer } from "./agent-runtime-prompt.js";
+import type { RuntimeTelemetry } from "./telemetry/telemetry-types.js";
+import type { McpSessionService } from "./tools/mcp-session-service.js";
+import type { PermitDirectoryReconciliationSink } from "./access/permit-directory-reconciler.js";
 
 const now = () => new Date().toISOString();
-const RUN_POLL_INTERVAL_MS = 50;
-const DEFAULT_CONVERSATION_TITLE = "New conversation";
-const MAX_CONVERSATION_TITLE_LENGTH = 80;
-
-/**
- * Derives a conversation title from the user's first message.
- *
- * Deliberately mechanical: naming a conversation is not worth a second model
- * call, and a deterministic title is easier to test.
- */
-export function deriveConversationTitle(prompt: string): string {
-  const firstLine = prompt.trim().split("\n").find((line) => line.trim().length > 0) ?? "";
-  const collapsed = firstLine.replace(/\s+/g, " ").trim();
-  if (collapsed.length === 0) return DEFAULT_CONVERSATION_TITLE;
-  if (collapsed.length <= MAX_CONVERSATION_TITLE_LENGTH) return collapsed;
-  const clipped = collapsed.slice(0, MAX_CONVERSATION_TITLE_LENGTH);
-  const lastSpace = clipped.lastIndexOf(" ");
-  return (lastSpace > 24 ? clipped.slice(0, lastSpace) : clipped).trimEnd() + "…";
-}
-
-function isTerminalRun(run: AgentRun): boolean {
-  return (
-    run.status === "completed" ||
-    run.status === "failed" ||
-    run.status === "cancelled"
-  );
-}
-
-function waitError(name: "AbortError" | "TimeoutError", message: string): Error {
-  const error = new Error(message);
-  error.name = name;
-  return error;
-}
 
 /** Optional helpers are supplied by the canonical Ark resolver. Keeping them
  * optional preserves the small WorkerModelResolver injection seam for tests
@@ -80,82 +54,16 @@ type AgentModelResolver = WorkerModelResolver & {
   effectiveModelRef?: (modelRef: ModelRef | undefined) => ModelRef | undefined;
 };
 
-
-function normalizeConversationTitle(title: string | undefined): string | null {
-  const trimmed = (title ?? "").trim().replace(/\s+/g, " ");
-  if (trimmed.length === 0) return null;
-  return trimmed.slice(0, MAX_CONVERSATION_TITLE_LENGTH);
-}
-
-/**
- * Adopts pre-conversation direct history into one default conversation.
- *
- * The old `Agent.codexThreadId` was the Agent's private session, so it moves to
- * that conversation rather than being copied: leaving it on the Agent as well
- * would let a Team turn and a private turn resume the same thread. Project
- * threads live on the attachment and are never touched here.
- */
-function migrateLegacyConversations(database: Database): void {
-  const orphans = database.messages.filter(
-    (message) =>
-      message.conversationId === undefined && (message.origin ?? "direct") === "direct",
-  );
-  if (orphans.length === 0) return;
-
-  const byAgent = new Map<string, Message[]>();
-  for (const message of orphans) {
-    const bucket = byAgent.get(message.agentId) ?? [];
-    bucket.push(message);
-    byAgent.set(message.agentId, bucket);
-  }
-
-  for (const [agentId, messages] of byAgent) {
-    const agent = database.agents.find((item) => item.id === agentId);
-    if (!agent) continue;
-    const ordered = [...messages].sort((left, right) =>
-      left.createdAt.localeCompare(right.createdAt),
-    );
-    const firstPrompt = ordered.find((message) => message.role === "user")?.content ?? "";
-    const timestamp = now();
-    const conversation: AgentConversation = {
-      id: randomUUID(),
-      agentId,
-      title: firstPrompt
-        ? deriveConversationTitle(firstPrompt)
-        : DEFAULT_CONVERSATION_TITLE,
-      codexThreadId: agent.codexThreadId,
-      createdAt: ordered[0]?.createdAt ?? timestamp,
-      updatedAt: ordered[ordered.length - 1]?.createdAt ?? timestamp,
-    };
-    database.agentConversations.push(conversation);
-    agent.codexThreadId = null;
-
-    const runIds = new Set<string>();
-    for (const message of ordered) {
-      const stored = database.messages.find((item) => item.id === message.id);
-      if (!stored) continue;
-      stored.conversationId = conversation.id;
-      runIds.add(stored.runId);
-    }
-    for (const run of database.runs) {
-      if (run.agentId === agentId && runIds.has(run.id)) {
-        run.conversationId = conversation.id;
-      }
-    }
-  }
-}
-
 export class AgentService {
+  private readonly conversations: AgentConversationService;
+  private readonly runCoordinator: AgentRunCoordinator;
   private previewLifecycle: PreviewLifecycleCleanup | undefined;
   private previewContext: PreviewContextProvider | undefined;
   private projectScope: ProjectExecutionScope | undefined;
-  private readonly activeExecutions = new Map<
-    string,
-    { runId: string; execution: Promise<void> }
-  >();
-  private readonly cancellationRequests = new Set<string>();
-  private readonly runCancellations = new Map<string, Promise<AgentRun>>();
-  private readonly agentCancellationLocks = new Set<string>();
+  private mcpSessions: McpSessionService | undefined;
+  private skillService: SkillService | undefined;
+  private telemetry: RuntimeTelemetry | undefined;
+  private permitDirectory: PermitDirectoryReconciliationSink | undefined;
 
   constructor(
     private readonly config: AppConfig,
@@ -166,9 +74,29 @@ export class AgentService {
       createWorkerModelResolver(config),
     previewLifecycle?: PreviewLifecycleCleanup,
     previewContext?: PreviewContextProvider,
+    skillService?: SkillService,
   ) {
+    this.conversations = new AgentConversationService(store, (agentId) => {
+      this.getAgent(agentId);
+    });
+    const runtimePrompt = new AgentRuntimePromptComposer(
+      () => this.previewContext,
+      (agent, projectId, runId, orchestrationId) =>
+        this.runtimeSkillContext(agent, projectId, runId, orchestrationId),
+    );
+    this.runCoordinator = new AgentRunCoordinator({
+      config,
+      store,
+      runner,
+      prompt: runtimePrompt,
+      getProjectScope: () => this.projectScope,
+      getMcpSessions: () => this.mcpSessions,
+      getTelemetry: () => this.telemetry,
+      getRun: (runId) => this.getRun(runId),
+    });
     this.previewLifecycle = previewLifecycle;
     this.previewContext = previewContext;
+    this.skillService = skillService;
   }
 
   /** Attach the preview cleanup seam after both services have been assembled. */
@@ -186,8 +114,31 @@ export class AgentService {
     this.projectScope = projectScope;
   }
 
+  /** Attach the per-run MCP session authority after the app graph is assembled. */
+  setMcpSessionService(mcpSessions: McpSessionService): void {
+    this.mcpSessions = mcpSessions;
+  }
+
+  /** Attach the code-owned skill/capability composer after app assembly. */
+  setSkillService(skillService: SkillService): void {
+    this.skillService = skillService;
+  }
+
+  /** Attach runtime telemetry after the service graph has been assembled. */
+  setTelemetry(telemetry: RuntimeTelemetry): void {
+    this.telemetry = telemetry;
+  }
+
+  /** Attach the Permit directory synchronization seam after app assembly. */
+  setPermitDirectoryReconciler(
+    reconciler: PermitDirectoryReconciliationSink,
+  ): void {
+    this.permitDirectory = reconciler;
+  }
+
   async initialize(): Promise<void> {
     await this.store.initialize();
+    await this.skillService?.reconcileAgentSkillIds(this.store);
     await this.workspaces.initialize();
     await this.store.mutate((database) => {
       for (const run of database.runs) {
@@ -203,54 +154,23 @@ export class AgentService {
           agent.updatedAt = now();
         }
       }
-      migrateLegacyConversations(database);
+      this.conversations.migrateLegacyConversations(database);
     });
   }
 
   // ------------------------------------------------- private conversations
 
   listConversations(agentId: string): AgentConversation[] {
-    this.getAgent(agentId);
-    return this.store
-      .snapshot()
-      .agentConversations.filter((item) => item.agentId === agentId)
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    return this.conversations.list(agentId);
   }
 
   getConversation(agentId: string, conversationId: string): AgentConversation {
-    const conversation = this.store
-      .snapshot()
-      .agentConversations.find(
-        (item) => item.id === conversationId && item.agentId === agentId,
-      );
-    if (!conversation) {
-      throw new HttpError(404, "Conversation not found");
-    }
-    return conversation;
+    return this.conversations.get(agentId, conversationId);
   }
 
-  /**
-   * Starts a new private conversation.
-   *
-   * A fresh conversation means fresh messages and a fresh Codex thread, but
-   * deliberately the same Agent workspace: the point of a second conversation
-   * is to work on the same files with a clean session.
-   */
+  /** Starts a new private conversation in the Agent's shared workspace. */
   async createConversation(agentId: string, title?: string): Promise<AgentConversation> {
-    this.getAgent(agentId);
-    const timestamp = now();
-    const conversation: AgentConversation = {
-      id: randomUUID(),
-      agentId,
-      title: normalizeConversationTitle(title) ?? DEFAULT_CONVERSATION_TITLE,
-      codexThreadId: null,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
-    await this.store.mutate((database) => {
-      database.agentConversations.push(conversation);
-    });
-    return conversation;
+    return this.conversations.create(agentId, title);
   }
 
   async renameConversation(
@@ -258,43 +178,15 @@ export class AgentService {
     conversationId: string,
     title: string,
   ): Promise<AgentConversation> {
-    this.getConversation(agentId, conversationId);
-    const normalized = normalizeConversationTitle(title);
-    if (!normalized) {
-      throw new HttpError(422, "A conversation title is required");
-    }
-    return this.store.mutate((database) => {
-      const stored = database.agentConversations.find((item) => item.id === conversationId);
-      if (!stored) throw new HttpError(404, "Conversation not found");
-      stored.title = normalized;
-      stored.updatedAt = now();
-      return structuredClone(stored);
-    });
+    return this.conversations.rename(agentId, conversationId, title);
   }
 
-  /**
-   * Deletes one conversation and its history.
-   *
-   * The Agent, its workspace files, its other conversations, its preview, and
-   * its Project attachments are all untouched — only this thread of talk goes.
-   */
+  /** Deletes one conversation and its associated history. */
   async deleteConversation(
     agentId: string,
     conversationId: string,
   ): Promise<{ deleted: true }> {
-    this.getConversation(agentId, conversationId);
-    await this.store.mutate((database) => {
-      database.agentConversations = database.agentConversations.filter(
-        (item) => item.id !== conversationId,
-      );
-      database.messages = database.messages.filter(
-        (item) => item.conversationId !== conversationId,
-      );
-      database.runs = database.runs.filter(
-        (item) => item.conversationId !== conversationId,
-      );
-    });
-    return { deleted: true };
+    return this.conversations.delete(agentId, conversationId);
   }
 
   /** Resolves the conversation a direct turn belongs to, creating one if needed. */
@@ -302,17 +194,18 @@ export class AgentService {
     agentId: string,
     conversationId: string | undefined,
   ): Promise<AgentConversation> {
-    if (conversationId !== undefined) {
-      return this.getConversation(agentId, conversationId);
-    }
-    const existing = this.listConversations(agentId)[0];
-    return existing ?? (await this.createConversation(agentId));
+    return this.conversations.resolve(agentId, conversationId);
   }
 
   listAgents(): Agent[] {
-    return this.store
+    const agents = this.store
       .snapshot()
       .agents.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    if (!this.skillService) return agents;
+    return agents.map((agent) => ({
+      ...agent,
+      skillIds: this.skillService!.normalizeLegacySkillIds(agent.skillIds),
+    }));
   }
 
   getAgent(id: string): Agent {
@@ -320,18 +213,27 @@ export class AgentService {
     if (!agent) {
       throw new HttpError(404, "Agent not found");
     }
-    return agent;
+    if (!this.skillService) return agent;
+    return {
+      ...agent,
+      skillIds: this.skillService.normalizeLegacySkillIds(agent.skillIds),
+    };
   }
 
   async createAgent(input: CreateAgentInput): Promise<Agent> {
     const timestamp = now();
     const id = randomUUID();
+    if (input.skillIds !== undefined) {
+      await this.skillService?.authorizeAssignment([], input.skillIds, id);
+    }
     const modelRef = this.resolveModelRefForCreate(input.modelRef);
+    const skillIds = this.normalizeSkillIds(input.skillIds);
     const agent: Agent = {
       id,
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
       instructions: input.instructions?.trim() ?? "",
+      skillIds,
       status: "ready",
       ...(modelRef === undefined ? {} : { modelRef }),
       workspacePath: this.workspaces.workspacePath(id),
@@ -340,9 +242,29 @@ export class AgentService {
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    await this.workspaces.create(agent);
-    await this.store.mutate((database) => database.agents.push(agent));
-    return agent;
+    let workspaceCreated = false;
+    let persisted = false;
+    try {
+      await this.workspaces.create(agent, await this.runtimeSkillContext(agent));
+      workspaceCreated = true;
+      await this.store.mutate((database) => database.agents.push(agent));
+      persisted = true;
+      await this.permitDirectory?.reconcile();
+      return agent;
+    } catch (error) {
+      // A directory failure must not leave a new repository identity behind
+      // without its Permit representation. Compensate the local mutation and
+      // archive the just-created workspace before surfacing the failure.
+      if (persisted) {
+        await this.store.mutate((database) => {
+          database.agents = database.agents.filter((item) => item.id !== id);
+        });
+      }
+      if (workspaceCreated) {
+        await this.workspaces.archive(agent).catch(() => undefined);
+      }
+      throw error;
+    }
   }
 
   async updateAgent(id: string, input: UpdateAgentInput): Promise<Agent> {
@@ -350,10 +272,21 @@ export class AgentService {
     if (current.status === "busy") {
       throw new HttpError(409, "Stop the active run before editing this Agent");
     }
+    if (input.skillIds !== undefined) {
+      await this.skillService?.authorizeAssignment(
+        current.skillIds,
+        input.skillIds,
+        id,
+      );
+    }
     const nextModelRef =
       input.modelRef === undefined
         ? current.modelRef
         : this.effectiveModelRef(input.modelRef);
+    const nextSkillIds =
+      input.skillIds === undefined
+        ? current.skillIds
+        : this.normalizeSkillIds(input.skillIds);
     if (input.modelRef !== undefined) {
       // Validate before entering the store mutation so invalid model changes
       // cannot partially update the Agent or its workspace instructions.
@@ -366,6 +299,8 @@ export class AgentService {
         ? currentEffectiveModelRef
         : nextModelRef,
     );
+    const before = this.store.snapshot().agents.find((item) => item.id === id);
+    if (!before) throw new HttpError(404, "Agent not found");
     const updated = await this.store.mutate((database) => {
       const agent = database.agents.find((item) => item.id === id);
       if (!agent) {
@@ -377,6 +312,9 @@ export class AgentService {
       if (input.name !== undefined) agent.name = input.name.trim();
       if (input.description !== undefined) agent.description = input.description.trim();
       if (input.instructions !== undefined) agent.instructions = input.instructions.trim();
+      if (input.skillIds !== undefined || this.skillService) {
+        agent.skillIds = nextSkillIds ?? [];
+      }
       if (input.modelRef !== undefined) {
         if (nextModelRef === undefined) {
           delete agent.modelRef;
@@ -401,8 +339,41 @@ export class AgentService {
       agent.updatedAt = now();
       return structuredClone(agent);
     });
-    await this.workspaces.writeInstructions(updated);
-    return updated;
+    try {
+      await this.workspaces.writeInstructions(updated, await this.runtimeSkillContext(updated));
+      await this.permitDirectory?.reconcile();
+      return updated;
+    } catch (error) {
+      // Restore both the JSON identity fact and generated instructions if the
+      // external authorization directory could not be synchronized.
+      await this.store.mutate((database) => {
+        const stored = database.agents.find((item) => item.id === id);
+        if (stored) Object.assign(stored, structuredClone(before));
+      });
+      await this.workspaces
+        .writeInstructions(before, await this.runtimeSkillContext(before))
+        .catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /** Replaces the Agent-global skill assignment at a trusted server boundary. */
+  async updateAgentSkills(id: string, skillIds: string[]): Promise<Agent> {
+    return this.updateAgent(id, { skillIds });
+  }
+
+  /** Returns the assigned skills and current capability state for one Agent. */
+  async getAgentSkills(id: string, projectId?: string) {
+    const agent = this.getAgent(id);
+    if (!this.skillService) {
+      return {
+        agentId: agent.id,
+        projectId: projectId ?? null,
+        skillIds: [...(agent.skillIds ?? [])],
+        skills: [],
+      };
+    }
+    return this.skillService.readAgentSkills(agent, projectId);
   }
 
   async deleteAgent(id: string): Promise<{ archivedWorkspace: string }> {
@@ -413,17 +384,81 @@ export class AgentService {
     // later starts observe the stopped Agent and are rejected.
     await this.setStatus(id, "stopped");
     await this.previewLifecycle?.stopForAgent(id);
-    const archivedWorkspace = await this.workspaces.archive(agent);
-    await this.store.mutate((database) => {
-      database.agents = database.agents.filter((item) => item.id !== id);
-      database.agentConversations = database.agentConversations.filter(
-        (item) => item.agentId !== id,
-      );
-      database.messages = database.messages.filter((item) => item.agentId !== id);
-      database.runs = database.runs.filter((item) => item.agentId !== id);
-      database.previews = database.previews.filter((item) => item.agentId !== id);
-    });
-    return { archivedWorkspace };
+    const stoppedAgent = this.getAgent(id);
+    const before = this.store.snapshot();
+    const previousAttachments = before.projectAgents.filter((item) => item.agentId === id);
+    const archivedWorkspace = await this.workspaces.archive(stoppedAgent);
+    try {
+      await this.store.mutate((database) => {
+        database.agents = database.agents.filter((item) => item.id !== id);
+        database.agentConversations = database.agentConversations.filter(
+          (item) => item.agentId !== id,
+        );
+        database.messages = database.messages.filter((item) => item.agentId !== id);
+        database.runs = database.runs.filter((item) => item.agentId !== id);
+        database.previews = database.previews.filter((item) => item.agentId !== id);
+        // Cancellation has settled any active Project turn, so these records
+        // cannot be live anymore. Remove both membership and lease remnants so
+        // a deleted Agent can never retain Project authority or block a writer.
+        database.projectAgents = database.projectAgents.filter(
+          (item) => item.agentId !== id,
+        );
+        database.projectLeases = database.projectLeases.filter(
+          (item) => item.agentId !== id,
+        );
+      });
+      await this.permitDirectory?.reconcile();
+      return { archivedWorkspace };
+    } catch (error) {
+      // Deletion is a privileged directory mutation. Reconstitute the Agent
+      // and its Project memberships if synchronization fails, then restore
+      // the physical workspace so the local facts and authority can retry.
+      await this.store.mutate((database) => {
+        database.agents = database.agents.filter((item) => item.id !== id);
+        const previousAgent = before.agents.find((item) => item.id === id);
+        database.agents.push(structuredClone(previousAgent ?? stoppedAgent));
+        database.agentConversations = database.agentConversations.filter(
+          (item) => item.agentId !== id,
+        );
+        database.agentConversations.push(
+          ...before.agentConversations
+            .filter((item) => item.agentId === id)
+            .map((item) => structuredClone(item)),
+        );
+        database.messages = database.messages.filter((item) => item.agentId !== id);
+        database.messages.push(
+          ...before.messages
+            .filter((item) => item.agentId === id)
+            .map((item) => structuredClone(item)),
+        );
+        database.runs = database.runs.filter((item) => item.agentId !== id);
+        database.runs.push(
+          ...before.runs
+            .filter((item) => item.agentId === id)
+            .map((item) => structuredClone(item)),
+        );
+        database.previews = database.previews.filter((item) => item.agentId !== id);
+        database.previews.push(
+          ...before.previews
+            .filter((item) => item.agentId === id)
+            .map((item) => structuredClone(item)),
+        );
+        database.projectAgents = database.projectAgents.filter(
+          (item) => item.agentId !== id,
+        );
+        database.projectAgents.push(...previousAttachments.map((item) => structuredClone(item)));
+        database.projectLeases = database.projectLeases.filter(
+          (item) => item.agentId !== id,
+        );
+        database.projectLeases.push(
+          ...before.projectLeases
+            .filter((item) => item.agentId === id)
+            .map((item) => structuredClone(item)),
+        );
+      });
+      await this.workspaces.restore(stoppedAgent, archivedWorkspace).catch(() => undefined);
+      throw error;
+    }
   }
 
   async startAgent(id: string): Promise<Agent> {
@@ -450,19 +485,7 @@ export class AgentService {
     agentId: string,
     options: { origin?: MessageOrigin | "all"; conversationId?: string } = {},
   ): Message[] {
-    this.getAgent(agentId);
-    const origin = options.origin ?? "direct";
-    const conversationId = options.conversationId;
-    if (conversationId !== undefined) this.getConversation(agentId, conversationId);
-    return this.store
-      .snapshot()
-      .messages.filter(
-        (message) =>
-          message.agentId === agentId &&
-          (origin === "all" || (message.origin ?? "direct") === origin) &&
-          (conversationId === undefined || message.conversationId === conversationId),
-      )
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    return this.conversations.getMessages(agentId, options);
   }
 
   getRun(runId: string): AgentRun {
@@ -477,83 +500,11 @@ export class AgentService {
     runId: string,
     options: { timeoutMs: number; signal?: AbortSignal },
   ): Promise<AgentRun> {
-    const timeoutMs = options.timeoutMs;
-    if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
-      throw new TypeError("timeoutMs must be a non-negative finite number");
-    }
-
-    const initial = this.getRun(runId);
-    if (isTerminalRun(initial)) return initial;
-    if (options.signal?.aborted) {
-      throw waitError("AbortError", "Waiting for Run " + runId + " was aborted");
-    }
-
-    return new Promise<AgentRun>((resolve, reject) => {
-      let settled = false;
-      let interval: NodeJS.Timeout | null = null;
-      let timeout: NodeJS.Timeout | null = null;
-
-      const cleanup = () => {
-        if (interval) clearInterval(interval);
-        if (timeout) clearTimeout(timeout);
-        options.signal?.removeEventListener("abort", onAbort);
-      };
-
-      const settle = (settler: () => void) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        settler();
-      };
-
-      const poll = () => {
-        try {
-          const current = this.getRun(runId);
-          if (isTerminalRun(current)) {
-            settle(() => resolve(current));
-          }
-        } catch (error) {
-          settle(() => reject(error));
-        }
-      };
-
-      const onAbort = () => {
-        settle(() =>
-          reject(waitError("AbortError", "Waiting for Run " + runId + " was aborted")),
-        );
-      };
-
-      options.signal?.addEventListener("abort", onAbort, { once: true });
-      interval = setInterval(poll, RUN_POLL_INTERVAL_MS);
-      interval.unref();
-      timeout = setTimeout(() => {
-        settle(() =>
-          reject(
-            waitError(
-              "TimeoutError",
-              "Run " + runId + " did not finish within " + timeoutMs + " ms",
-            ),
-          ),
-        );
-      }, timeoutMs);
-      timeout.unref();
-      poll();
-    });
+    return this.runCoordinator.waitForRun(runId, options);
   }
 
   async cancelRun(runId: string): Promise<AgentRun> {
-    const existing = this.runCancellations.get(runId);
-    if (existing) return existing;
-
-    const cancellation = this.cancelRunInternal(runId);
-    this.runCancellations.set(runId, cancellation);
-    try {
-      return await cancellation;
-    } finally {
-      if (this.runCancellations.get(runId) === cancellation) {
-        this.runCancellations.delete(runId);
-      }
-    }
+    return this.runCoordinator.cancelRun(runId);
   }
 
   getRuns(agentId: string, options: { conversationId?: string } = {}): AgentRun[] {
@@ -578,12 +529,21 @@ export class AgentService {
       origin?: MessageOrigin | undefined;
       /** Private conversation for a direct turn; ignored for Team turns. */
       conversationId?: string | undefined;
+      /** Parent orchestration ID for Team turns. */
+      orchestrationId?: string | undefined;
     } = {},
   ): Promise<{ run: AgentRun; message: Message }> {
-    if (this.agentCancellationLocks.has(agentId)) {
+    if (this.runCoordinator.isCancelling(agentId)) {
       throw new HttpError(409, "This Agent is currently being cancelled");
     }
     const agentBeforeRun = this.getAgent(agentId);
+    // Validate Project membership before a Run record exists, so an
+    // unattached or unauthorized Agent never leaves a queued run behind. This
+    // intentionally precedes runtime credential/model checks as well.
+    const projectId = options.projectId;
+    if (projectId !== undefined) {
+      await this.requireProjectScope().assertRunnable(projectId, agentId);
+    }
     if (!this.config.arkApiKey || this.config.arkApiKey.startsWith("replace-")) {
       throw new ModelCatalogError(
         "MODEL_RUNTIME_CONFIGURATION_INVALID",
@@ -592,12 +552,6 @@ export class AgentService {
       );
     }
     const runtimeModel = this.modelResolver.resolve(agentBeforeRun.modelRef);
-    // Validate Project membership before a Run record exists, so an
-    // unattached Agent never leaves a queued run behind.
-    const projectId = options.projectId;
-    if (projectId !== undefined) {
-      this.requireProjectScope().assertRunnable(projectId, agentId);
-    }
     // Only direct Playground turns belong to a private conversation. Team turns
     // keep their own session scope and stay out of private history entirely.
     const origin: MessageOrigin = options.origin ?? "direct";
@@ -660,22 +614,15 @@ export class AgentService {
       storedAgent.updatedAt = timestamp;
       return snapshot;
     });
-    const execution = this.executeRun(
+    this.runCoordinator.start(
       agentAtStart,
       run,
       runtimeModel,
       projectId,
       origin,
       conversation,
+      options.orchestrationId,
     );
-    this.activeExecutions.set(agentId, { runId, execution });
-    void execution
-      .finally(() => {
-        if (this.activeExecutions.get(agentId)?.runId === runId) {
-          this.activeExecutions.delete(agentId);
-        }
-      })
-      .catch(() => undefined);
     return { run, message };
   }
 
@@ -698,134 +645,6 @@ export class AgentService {
     };
   }
 
-  private async executeRun(
-    agentAtStart: Agent,
-    run: AgentRun,
-    runtimeModel: WorkerRuntimeModelConfig,
-    projectId?: string | undefined,
-    origin: MessageOrigin = "direct",
-    conversation: AgentConversation | null = null,
-  ): Promise<void> {
-    await this.store.mutate((database) => {
-      const storedRun = database.runs.find((item) => item.id === run.id);
-      if (storedRun) {
-        storedRun.status = "running";
-        storedRun.startedAt = now();
-      }
-    });
-    // Held for the whole turn when the run is Project-scoped. The lease and
-    // the shared-scope thread are settled in the `finally` below.
-    let binding: ProjectRunBinding | null = null;
-    let outcome: { codexThreadId: string | null } | null = null;
-    try {
-      if (this.cancellationRequests.has(run.id)) {
-        throw new RunCancelledError();
-      }
-      if (projectId !== undefined) {
-        binding = await this.requireProjectScope().beginTurn(
-          agentAtStart,
-          projectId,
-          run.id,
-        );
-      }
-      const result = await this.runner.run({
-        agentId: agentAtStart.id,
-        workspacePath: binding?.workspacePath ?? agentAtStart.workspacePath,
-        ...(projectId === undefined ? {} : { projectId }),
-        prompt: await this.executionPrompt(agentAtStart.id, run.prompt, binding),
-        threadId: binding
-          ? binding.codexThreadId
-          : conversation
-            ? conversation.codexThreadId
-            : agentAtStart.codexThreadId,
-        model: runtimeModel,
-      });
-      const completedAt = now();
-      await this.store.mutate((database) => {
-        const storedRun = database.runs.find((item) => item.id === run.id);
-        const agent = database.agents.find((item) => item.id === agentAtStart.id);
-        if (!storedRun || !agent) return;
-        if (isTerminalRun(storedRun)) return;
-        if (this.cancellationRequests.has(run.id)) {
-          storedRun.status = "cancelled";
-          storedRun.error = "Run cancelled";
-          storedRun.completedAt = completedAt;
-          if (agent.status !== "stopped") agent.status = "ready";
-          agent.lastError = null;
-          agent.updatedAt = completedAt;
-          return;
-        }
-        storedRun.status = "completed";
-        storedRun.output = result.output;
-        storedRun.usage = result.usage;
-        storedRun.completedAt = completedAt;
-        database.messages.push({
-          id: randomUUID(),
-          agentId: agent.id,
-          runId: run.id,
-          role: "assistant",
-          content: result.output,
-          origin,
-          ...(conversation === null ? {} : { conversationId: conversation.id }),
-          createdAt: completedAt,
-        });
-        agent.status = "ready";
-        if (binding === null && conversation === null) {
-          // A Team turn with no Project: the Agent-level session is its scope.
-          agent.codexThreadId = result.threadId;
-        }
-        if (conversation !== null) {
-          const storedConversation = database.agentConversations.find(
-            (item) => item.id === conversation.id,
-          );
-          if (storedConversation) {
-            storedConversation.codexThreadId = result.threadId;
-            storedConversation.updatedAt = completedAt;
-          }
-        }
-        agent.lastError = null;
-        agent.updatedAt = completedAt;
-      });
-      if (binding !== null) outcome = { codexThreadId: result.threadId };
-    } catch (error) {
-      const completedAt = now();
-      const cancelled =
-        error instanceof RunCancelledError || this.cancellationRequests.has(run.id);
-      const message = error instanceof Error ? error.message : String(error);
-      await this.store.mutate((database) => {
-        const storedRun = database.runs.find((item) => item.id === run.id);
-        const agent = database.agents.find((item) => item.id === agentAtStart.id);
-        if (storedRun && isTerminalRun(storedRun)) {
-          if (agent) {
-            if (agent.status !== "stopped") agent.status = "ready";
-            agent.updatedAt = completedAt;
-          }
-          return;
-        }
-        if (storedRun) {
-          storedRun.status = cancelled ? "cancelled" : "failed";
-          storedRun.error = cancelled ? "Run cancelled" : message;
-          storedRun.completedAt = completedAt;
-        }
-        if (agent) {
-          if (agent.status !== "stopped") {
-            agent.status = cancelled ? "ready" : "error";
-          }
-          agent.lastError = cancelled ? null : message;
-          agent.updatedAt = completedAt;
-        }
-      });
-    } finally {
-      // The write lease must never outlive its turn, on any path: success,
-      // failure, cancellation, or a runner that threw before producing output.
-      if (binding !== null) {
-        await this.requireProjectScope()
-          .endTurn(binding.projectId, agentAtStart.id, run.id, outcome)
-          .catch(() => undefined);
-      }
-    }
-  }
-
   private requireProjectScope(): ProjectExecutionScope {
     if (!this.projectScope) {
       throw new HttpError(503, "Project execution is not configured");
@@ -833,30 +652,29 @@ export class AgentService {
     return this.projectScope;
   }
 
-  /**
-   * Builds the prompt the worker actually executes.
-   *
-   * Trusted platform state is composed here, at the runtime boundary, rather
-   * than in the client or in the persisted message, so the Agent sees current
-   * Preview state without the conversation history being rewritten. A missing
-   * or failing provider degrades to the untouched user prompt.
-   */
-  private async executionPrompt(
-    agentId: string,
-    prompt: string,
-    binding: ProjectRunBinding | null,
-  ): Promise<string> {
-    const projectLines = binding ? projectRuntimeContextLines(binding) : [];
-    if (!this.previewContext) {
-      return projectLines.length === 0
-        ? prompt
-        : composeRuntimeContextPrompt(prompt, { status: "not_started" }, projectLines);
+  private normalizeSkillIds(skillIds: string[] | undefined): string[] {
+    if (skillIds === undefined) return [];
+    if (!Array.isArray(skillIds)) throw new TypeError("skillIds must be an array");
+    if (this.skillService) return this.skillService.validateSkillIds(skillIds);
+    if (skillIds.some((skillId) => typeof skillId !== "string")) {
+      throw new TypeError("skillIds must contain strings");
     }
+    return [...new Set(skillIds)];
+  }
+
+  private async runtimeSkillContext(
+    agent: Agent,
+    projectId?: string,
+    runId?: string,
+    orchestrationId?: string,
+  ): Promise<SkillRuntimeContext | undefined> {
+    if (!this.skillService) return undefined;
     try {
-      const context = await this.previewContext.getForAgent(agentId);
-      return composeRuntimeContextPrompt(prompt, context, projectLines);
+      return await this.skillService.runtimeContext(agent, projectId, runId, orchestrationId);
     } catch {
-      return prompt;
+      // Skills are additive runtime guidance. A transient capability lookup
+      // must never make an otherwise valid Agent impossible to edit or run.
+      return undefined;
     }
   }
 
@@ -899,43 +717,6 @@ export class AgentService {
   }
 
   private async cancelExecution(agentId: string): Promise<void> {
-    const active = this.activeExecutions.get(agentId);
-    if (!active) {
-      await this.runner.cancel(agentId);
-      return;
-    }
-
-    this.agentCancellationLocks.add(agentId);
-    this.cancellationRequests.add(active.runId);
-    try {
-      await this.runner.cancel(agentId);
-      await active.execution;
-    } finally {
-      this.cancellationRequests.delete(active.runId);
-      this.agentCancellationLocks.delete(agentId);
-    }
-  }
-
-  private async cancelRunInternal(runId: string): Promise<AgentRun> {
-    const initial = this.getRun(runId);
-    if (isTerminalRun(initial)) return initial;
-
-    const active = this.activeExecutions.get(initial.agentId);
-    if (!active || active.runId !== runId) {
-      const current = this.getRun(runId);
-      if (isTerminalRun(current)) return current;
-      throw new HttpError(409, "Run is not currently active");
-    }
-
-    this.agentCancellationLocks.add(initial.agentId);
-    this.cancellationRequests.add(runId);
-    try {
-      await this.runner.cancel(initial.agentId);
-      await active.execution;
-      return this.getRun(runId);
-    } finally {
-      this.cancellationRequests.delete(runId);
-      this.agentCancellationLocks.delete(initial.agentId);
-    }
+    await this.runCoordinator.cancelExecution(agentId);
   }
 }

@@ -28,6 +28,10 @@ const emptyDatabase = (): Database => ({
   projects: [],
   projectAgents: [],
   projectLeases: [],
+  approvalRequests: [],
+  capabilityGrants: [],
+  auditEvents: [],
+  permitApprovalCorrelations: [],
 });
 
 const ORCHESTRATION_COLLECTIONS = [
@@ -37,6 +41,12 @@ const ORCHESTRATION_COLLECTIONS = [
   "orchestrationContinuationPrompts",
 ] as const;
 const PROJECT_COLLECTIONS = ["projects", "projectAgents", "projectLeases"] as const;
+const ACCESS_COLLECTIONS = [
+  "approvalRequests",
+  "capabilityGrants",
+  "auditEvents",
+  "permitApprovalCorrelations",
+] as const;
 // Core Agent data, validated by shape like agents/messages/runs rather than
 // by a Zod projection, so additive fields survive a round trip.
 const AGENT_COLLECTIONS = ["agentConversations"] as const;
@@ -44,6 +54,7 @@ const ADDITIVE_COLLECTIONS = [
   ...ORCHESTRATION_COLLECTIONS,
   "previews",
   ...PROJECT_COLLECTIONS,
+  ...ACCESS_COLLECTIONS,
   ...AGENT_COLLECTIONS,
 ] as const;
 
@@ -80,6 +91,36 @@ function normalizeDatabase(value: unknown): Database {
     } else {
       normalized[collection] = [];
     }
+  }
+
+  // Normalize additive records by copying only the missing fields. Keeping
+  // the original object shape (including unknown future fields) is important
+  // for a forward-compatible JSON store.
+  if (Array.isArray(normalized.agents)) {
+    normalized.agents = normalized.agents.map((agent) =>
+      isRecord(agent) && !Object.prototype.hasOwnProperty.call(agent, "skillIds")
+        ? { ...agent, skillIds: [] }
+        : agent,
+    );
+  }
+  if (Array.isArray(normalized.projects)) {
+    normalized.projects = normalized.projects.map((project) =>
+      isRecord(project) && !Object.prototype.hasOwnProperty.call(project, "ownerPrincipalId")
+        ? { ...project, ownerPrincipalId: "demo-owner" }
+        : project,
+    );
+  }
+  if (Array.isArray(normalized.projectAgents)) {
+    normalized.projectAgents = normalized.projectAgents.map((attachment) => {
+      if (!isRecord(attachment)) return attachment;
+      const next = { ...attachment };
+      if (!Object.prototype.hasOwnProperty.call(next, "role")) next.role = "editor";
+      if (!Object.prototype.hasOwnProperty.call(next, "toolGrants")) next.toolGrants = [];
+      if (!Object.prototype.hasOwnProperty.call(next, "updatedAt")) {
+        next.updatedAt = next.attachedAt;
+      }
+      return next;
+    });
   }
 
   // Validate records without replacing them with Zod's parsed projection.
@@ -121,9 +162,25 @@ function normalizeDatabase(value: unknown): Database {
   return normalized as unknown as Database;
 }
 
-function needsOrchestrationMigration(value: UnknownRecord): boolean {
-  return ADDITIVE_COLLECTIONS.some(
+function needsDatabaseMigration(value: UnknownRecord): boolean {
+  if (
+    ADDITIVE_COLLECTIONS.some(
     (collection) => !Object.prototype.hasOwnProperty.call(value, collection),
+    )
+  ) {
+    return true;
+  }
+  const agents = Array.isArray(value.agents) ? value.agents : [];
+  if (agents.some((agent) => isRecord(agent) && !("skillIds" in agent))) return true;
+  const projects = Array.isArray(value.projects) ? value.projects : [];
+  if (projects.some((project) => isRecord(project) && !("ownerPrincipalId" in project))) {
+    return true;
+  }
+  const attachments = Array.isArray(value.projectAgents) ? value.projectAgents : [];
+  return attachments.some(
+    (attachment) =>
+      isRecord(attachment) &&
+      (!("role" in attachment) || !("toolGrants" in attachment) || !("updatedAt" in attachment)),
   );
 }
 
@@ -139,7 +196,7 @@ export class JsonStore {
       const raw = await readFile(this.filePath, "utf8");
       const parsed: unknown = JSON.parse(raw);
       const normalized = normalizeDatabase(parsed);
-      if (isRecord(parsed) && needsOrchestrationMigration(parsed)) {
+      if (isRecord(parsed) && needsDatabaseMigration(parsed)) {
         await this.persist(normalized);
       }
       this.data = normalized;

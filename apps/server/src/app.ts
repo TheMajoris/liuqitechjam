@@ -4,9 +4,19 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import type { AuditReader } from "./audit/audit-types.js";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
+import {
+  isAuthorizationError,
+} from "./access/authorization-service.js";
 import type { AgentService } from "./agent-service.js";
+import { registerAgentMiddlewareRoutes } from "./http/agent-middleware-routes.js";
+import { agentIdParams, auditQuery, runIdParams } from "./http/route-schemas.js";
+import { registerMcpRoute, type McpRouteDependencies } from "./mcp-server.js";
+import { ToolApprovalRequiredError, ToolError } from "./tools/tool-errors.js";
+import { PermitApprovalError } from "./access/permit-approval-service.js";
+import { isSkillError } from "./skills/skill-service.js";
 import { isPreviewError } from "./preview/preview-service.js";
 import type { PreviewLogsView } from "./preview/preview-service.js";
 import type { PreviewOwnerRef, PreviewView } from "./preview/preview-types.js";
@@ -31,6 +41,7 @@ import type {
 import { isProjectError } from "./projects/project-errors.js";
 import type {
   CreateProjectInput,
+  ProjectRole,
   ProjectView,
   UpdateProjectInput,
 } from "./projects/project-types.js";
@@ -60,6 +71,11 @@ export interface ProjectServiceContract {
   update(projectId: string, input: UpdateProjectInput): Promise<ProjectView>;
   archive(projectId: string): Promise<{ archivedWorkspace: string }>;
   attachAgent(projectId: string, agentId: string): Promise<ProjectView>;
+  updateAgentRole(
+    projectId: string,
+    agentId: string,
+    role: ProjectRole,
+  ): Promise<ProjectView>;
   detachAgent(projectId: string, agentId: string): Promise<ProjectView>;
   attachTeam(projectId: string, teamId: string): Promise<ProjectView>;
   detachTeam(projectId: string): Promise<ProjectView>;
@@ -74,13 +90,12 @@ export interface PreviewServiceContract {
   logs(owner: PreviewOwnerRef, tail?: number): Promise<PreviewLogsView>;
 }
 
-const agentIdParams = z.object({ id: z.string().uuid() });
-const runIdParams = z.object({ id: z.string().uuid() });
 const createAgentBody = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().max(500).optional(),
   instructions: z.string().max(10_000).optional(),
   modelRef: ModelRefSchema.optional(),
+  skillIds: z.array(z.string().min(1)).max(32).optional(),
 });
 const updateAgentBody = createAgentBody.partial().refine(
   (value) => Object.keys(value).length > 0,
@@ -151,6 +166,14 @@ function requireProjectService(
   return service;
 }
 
+function requireAuditService(
+  dependencies: McpRouteDependencies | undefined,
+): AuditReader {
+  const auditService = dependencies?.auditService;
+  if (!auditService) throw new HttpError(503, "Audit activity is not configured");
+  return auditService;
+}
+
 function parseOrchestrationInput(value: unknown): CreateOrchestrationInput {
   const parsed = CreateOrchestrationSchema.safeParse(value);
   if (!parsed.success) {
@@ -191,6 +214,7 @@ export async function createApp(
   modelRegistry: ModelRegistry = createModelRegistry(config),
   previewService?: PreviewServiceContract,
   projectService?: ProjectServiceContract,
+  mcp?: McpRouteDependencies,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -391,6 +415,16 @@ export async function createApp(
     return requirePreviewService(previewService).logs({ kind: "agent", agentId: id }, query.tail);
   });
 
+  // MCP authentication is deliberately separate from the browser's optional
+  // APP_AUTH_TOKEN. Every request must carry a short-lived per-run bearer
+  // token and is rejected before SDK dispatch when no session is supplied.
+  if (mcp) registerMcpRoute(app, mcp);
+
+  registerAgentMiddlewareRoutes(app, {
+    service,
+    ...(mcp === undefined ? {} : { mcp }),
+  });
+
   // ------------------------------------------------------------- Projects
   // A Project owns the shared workspace a Team collaborates on. Its preview
   // is the canonical artifact and is independent of any single Agent.
@@ -412,6 +446,9 @@ export async function createApp(
     name: z.string().trim().min(1).max(80).optional(),
     description: z.string().trim().max(500).optional(),
   });
+  const updateProjectAgentRoleBody = z.object({
+    role: z.enum(["owner", "editor", "viewer"]),
+  });
 
   app.post("/api/projects", async (request, reply) => {
     const body = createProjectBody.parse(request.body);
@@ -421,6 +458,15 @@ export async function createApp(
 
   app.get("/api/projects", async () => {
     return { projects: await requireProjectService(projectService).list() };
+  });
+
+  app.get("/api/projects/:id/activity", async (request) => {
+    const { id } = projectIdParams.parse(request.params);
+    const query = auditQuery.parse(request.query);
+    await requireProjectService(projectService).get(id);
+    return {
+      events: requireAuditService(mcp).query({ ...query, projectId: id }),
+    };
   });
 
   app.get("/api/projects/:id", async (request) => {
@@ -448,6 +494,18 @@ export async function createApp(
   app.delete("/api/projects/:id/agents/:agentId", async (request) => {
     const { id, agentId } = projectAgentParams.parse(request.params);
     return { project: await requireProjectService(projectService).detachAgent(id, agentId) };
+  });
+
+  app.patch("/api/projects/:id/agents/:agentId", async (request) => {
+    const { id, agentId } = projectAgentParams.parse(request.params);
+    const { role } = updateProjectAgentRoleBody.parse(request.body);
+    return {
+      project: await requireProjectService(projectService).updateAgentRole(
+        id,
+        agentId,
+        role,
+      ),
+    };
   });
 
   app.post("/api/projects/:id/team/:teamId", async (request) => {
@@ -581,6 +639,15 @@ export async function createApp(
     return { run: service.getRun(id) };
   });
 
+  app.get("/api/runs/:id/activity", async (request) => {
+    const { id } = runIdParams.parse(request.params);
+    service.getRun(id);
+    const query = auditQuery.parse(request.query);
+    return {
+      events: requireAuditService(mcp).query({ ...query, runId: id }),
+    };
+  });
+
   if (config.nodeEnv === "production") {
     const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
     await app.register(fastifyStatic, {
@@ -598,8 +665,12 @@ export async function createApp(
   app.setErrorHandler((error, request, reply) => {
     const appError = error instanceof Error ? error : new Error(String(error));
     const modelError = error instanceof ModelCatalogError ? error : null;
+    const authorizationError = isAuthorizationError(error) ? error : null;
+    const toolError = error instanceof ToolError ? error : null;
     const previewError = isPreviewError(error) ? error : null;
     const projectError = isProjectError(error) ? error : null;
+    const skillError = isSkillError(error) ? error : null;
+    const permitApprovalError = error instanceof PermitApprovalError ? error : null;
     const validationError = error instanceof z.ZodError;
     const details = validationError
       ? error.issues
@@ -631,11 +702,19 @@ export async function createApp(
       }
     }
     const responseMessage = previewError === null ? appError.message : previewError.message;
+    const errorCode = authorizationError?.errorCode ??
+      modelError?.code ??
+      toolError?.code ??
+      previewError?.code ??
+      projectError?.code ??
+      skillError?.code ??
+      permitApprovalError?.code;
     return reply.code(statusCode).send({
       error: responseMessage,
-      ...(modelError === null ? {} : { errorCode: modelError.code }),
-      ...(previewError === null ? {} : { errorCode: previewError.code }),
-      ...(projectError === null ? {} : { errorCode: projectError.code }),
+      ...(errorCode === undefined ? {} : { errorCode }),
+      ...(toolError instanceof ToolApprovalRequiredError
+        ? { approvalRequestId: toolError.approvalRequestId }
+        : {}),
       ...(details !== undefined ? { details } : {}),
     });
   });

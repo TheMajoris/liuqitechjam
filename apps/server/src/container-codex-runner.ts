@@ -1,32 +1,94 @@
-import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { execFile, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
+import {
+  startChildProcessExecution,
+  type ChildProcessExecution,
+} from "./child-process-execution.js";
 import type { AppConfig } from "./config.js";
-import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
+import {
+  buildCodexArgs,
+  parseCodexEventLine,
+  type ParsedEvents,
+} from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
+import { MCP_BEARER_TOKEN_ENV } from "./tools/mcp-session-service.js";
 import type {
   AgentRunner,
-  RunUsage,
   RunnerRequest,
   RunnerResult,
 } from "./types.js";
 
 const execFileAsync = promisify(execFile);
+const DEFAULT_MCP_PREFLIGHT_TIMEOUT_MS = 2_000;
+const MAX_MCP_PREFLIGHT_TIMEOUT_MS = 5_000;
 
-interface ActiveContainer {
-  child: ChildProcess;
-  containerName: string;
-  cancelled: boolean;
-  timedOut: boolean;
-  outputExceeded: boolean;
-  settled: Promise<void>;
-  termination: Promise<void> | null;
+export interface McpEndpointProbeOptions {
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
 }
 
-interface ParsedEvents {
-  messages: string[];
-  threadId: string | null;
-  usage: RunUsage | null;
-  errors: string[];
+/**
+ * Probe a configured container-facing MCP URL without credentials. Any HTTP
+ * response proves that the host route is reachable; DNS, connection, and
+ * timeout failures are treated as unreachable. The body is never consumed.
+ */
+export async function probeMcpEndpoint(
+  endpoint: string,
+  options: McpEndpointProbeOptions = {},
+): Promise<boolean> {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:") ||
+      url.username.length > 0 ||
+      url.password.length > 0
+    ) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+  const timeoutMs =
+    Number.isInteger(options.timeoutMs) && options.timeoutMs !== undefined && options.timeoutMs > 0
+      ? Math.min(options.timeoutMs, MAX_MCP_PREFLIGHT_TIMEOUT_MS)
+      : DEFAULT_MCP_PREFLIGHT_TIMEOUT_MS;
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const controller = new AbortController();
+  let timedOut = false;
+  let resolveTimeout!: (reachable: boolean) => void;
+  const timeoutResult = new Promise<boolean>((resolve) => {
+    resolveTimeout = resolve;
+  });
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+    resolveTimeout(false);
+  }, timeoutMs);
+  timeout.unref();
+  const probe = Promise.resolve()
+    .then(() =>
+      fetchImpl(url, {
+        method: "GET",
+        redirect: "manual",
+        signal: controller.signal,
+      }),
+    )
+    .then((response) => {
+      if (timedOut || controller.signal.aborted) return false;
+      if (response.body) void response.body.cancel().catch(() => undefined);
+      return true;
+    })
+    .catch(() => false);
+  try {
+    return await Promise.race([probe, timeoutResult]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+interface ActiveContainer {
+  execution: ChildProcessExecution;
 }
 
 export function containerName(agentId: string, instanceId = "default"): string {
@@ -54,6 +116,9 @@ export function buildContainerRunArgs(
     "--label",
     "io.codejam.instance-id=" + config.runtimeInstanceId,
     ...(engineName === "podman" ? ["--userns", "keep-id"] : []),
+    ...(engineName === "docker"
+      ? ["--add-host", "host.docker.internal:host-gateway"]
+      : []),
     "--network",
     "bridge",
     "--security-opt",
@@ -76,6 +141,8 @@ export function buildContainerRunArgs(
     "HOME=/tmp",
     "--env",
     "NO_COLOR=1",
+    ...(request.mcp ? ["--env", MCP_BEARER_TOKEN_ENV] : []),
+    ...(request.mcp?.traceparent ? ["--env", "TRACEPARENT"] : []),
     "--mount",
     "type=bind,src=" + request.workspacePath + ",dst=/workspace",
     "--mount",
@@ -90,8 +157,14 @@ export function buildContainerRunArgs(
 
 export class ContainerCodexRunner implements AgentRunner {
   private readonly active = new Map<string, ActiveContainer>();
+  private readonly mcpProbe: (endpoint: string) => Promise<boolean>;
 
-  constructor(private readonly config: AppConfig) {}
+  constructor(
+    private readonly config: AppConfig,
+    options: { mcpProbe?: (endpoint: string) => Promise<boolean> } = {},
+  ) {
+    this.mcpProbe = options.mcpProbe ?? ((endpoint) => probeMcpEndpoint(endpoint));
+  }
 
   async isAvailable(): Promise<boolean> {
     try {
@@ -114,57 +187,47 @@ export class ContainerCodexRunner implements AgentRunner {
     const active = this.active.get(agentId);
     if (!active) return false;
 
-    active.cancelled = true;
-    await this.removeContainer(active);
-    await active.settled;
+    await active.execution.cancel();
     return true;
   }
 
-  private removeContainer(active: ActiveContainer): Promise<void> {
-    if (!active.termination) {
-      active.termination = execFileAsync(
-        this.config.containerEngine,
-        ["rm", "--force", active.containerName],
-        { timeout: 8_000, env: this.childEnvironment() },
-      )
-        .then(() => undefined)
-        .catch(() => {
-          active.child.kill("SIGTERM");
-          const forceKill = setTimeout(() => active.child.kill("SIGKILL"), 3_000);
-          forceKill.unref();
-        });
-    }
-    return active.termination;
+  private removeContainer(
+    containerName: string,
+    child: ChildProcess,
+  ): Promise<void> {
+    return execFileAsync(
+      this.config.containerEngine,
+      ["rm", "--force", containerName],
+      { timeout: 8_000, env: this.childEnvironment() },
+    )
+      .then(() => undefined)
+      .catch(() => {
+        child.kill("SIGTERM");
+        const forceKill = setTimeout(() => child.kill("SIGKILL"), 3_000);
+        forceKill.unref();
+      });
   }
 
   async run(request: RunnerRequest): Promise<RunnerResult> {
     if (this.active.has(request.agentId)) {
       throw new Error("Agent already has an active Runtime container");
     }
-
-    const child = spawn(
-      this.config.containerEngine,
-      buildContainerRunArgs(request, this.config),
-      {
-        cwd: request.workspacePath,
-        env: this.childEnvironment(),
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
-    const settled = new Promise<void>((resolve) => {
-      child.once("close", () => resolve());
-      child.once("error", () => resolve());
-    });
-    const active: ActiveContainer = {
-      child,
-      containerName: containerName(request.agentId, this.config.runtimeInstanceId),
-      cancelled: false,
-      timedOut: false,
-      outputExceeded: false,
-      settled,
-      termination: null,
-    };
-    this.active.set(request.agentId, active);
+    if (request.mcp) {
+      let reachable = false;
+      try {
+        reachable = await this.mcpProbe(request.mcp.url);
+      } catch {
+        reachable = false;
+      }
+      if (!reachable) {
+        throw new Error("MCP endpoint is unreachable");
+      }
+      // The probe yields to the event loop. Re-check before spawning so two
+      // concurrent calls cannot both pass the initial active-run guard.
+      if (this.active.has(request.agentId)) {
+        throw new Error("Agent already has an active Runtime container");
+      }
+    }
 
     const parsed: ParsedEvents = {
       messages: [],
@@ -172,74 +235,58 @@ export class ContainerCodexRunner implements AgentRunner {
       usage: null,
       errors: [],
     };
-    let stdout = "";
-    let stderr = "";
-    let totalBytes = 0;
-
-    const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
-      totalBytes += chunk.byteLength;
-      if (totalBytes > this.config.codexMaxOutputBytes) {
-        active.outputExceeded = true;
-        void this.removeContainer(active);
-        return;
-      }
-      if (target === "stdout") {
-        stdout += chunk.toString("utf8");
-        const lines = stdout.split(/\r?\n/);
-        stdout = lines.pop() ?? "";
-        for (const line of lines) parseCodexEventLine(line, parsed);
-      } else {
-        stderr += chunk.toString("utf8");
-        if (stderr.length > 16_384) stderr = stderr.slice(-16_384);
-      }
-    };
-
-    child.stdout.on("data", (chunk: Buffer) => consume(chunk, "stdout"));
-    child.stderr.on("data", (chunk: Buffer) => consume(chunk, "stderr"));
-
-    const timeout = setTimeout(() => {
-      active.timedOut = true;
-      void this.removeContainer(active);
-    }, this.config.codexTimeoutMs);
-    timeout.unref();
+    const activeContainerName = containerName(
+      request.agentId,
+      this.config.runtimeInstanceId,
+    );
+    let termination: Promise<void> | null = null;
+    const execution = startChildProcessExecution({
+      command: this.config.containerEngine,
+      args: buildContainerRunArgs(request, this.config),
+      cwd: request.workspacePath,
+      env: this.childEnvironment(request),
+      timeoutMs: this.config.codexTimeoutMs,
+      maxOutputBytes: this.config.codexMaxOutputBytes,
+      startErrorMessage: "Container runtime could not start",
+      onLine: (line) => parseCodexEventLine(line, parsed),
+      stop: (child) => {
+        if (!termination) {
+          termination = this.removeContainer(activeContainerName, child);
+        }
+        return termination;
+      },
+    });
+    this.active.set(request.agentId, { execution });
 
     try {
-      const exitCode = await new Promise<number>((resolve, reject) => {
-        child.once("error", reject);
-        child.once("close", (code) => resolve(code ?? 1));
-      });
-      if (stdout.trim()) parseCodexEventLine(stdout.trim(), parsed);
-      if (active.cancelled) throw new RunCancelledError();
-      if (active.timedOut) {
+      const result = await execution.completed;
+      if (result.cancelled) throw new RunCancelledError();
+      if (result.timedOut) {
         throw new Error("Runtime timed out after " + this.config.codexTimeoutMs + " ms");
       }
-      if (active.outputExceeded) {
+      if (result.outputExceeded) {
         throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
       }
-      if (exitCode !== 0) {
-        const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";
-        throw new Error(
-          this.config.containerEngine +
-            " Runtime exited with code " +
-            exitCode +
-            ": " +
-            detail,
-        );
+      if (result.exitCode !== 0) {
+        throw new Error("Container runtime exited with code " + result.exitCode);
       }
       const output = parsed.messages.at(-1)?.trim();
       if (!output) throw new Error("Codex completed without an agent message");
       return { output, threadId: parsed.threadId, usage: parsed.usage };
     } finally {
-      clearTimeout(timeout);
       this.active.delete(request.agentId);
     }
   }
 
-  private childEnvironment(): NodeJS.ProcessEnv {
+  private childEnvironment(request?: { mcp?: { token: string; traceparent?: string } }): NodeJS.ProcessEnv {
     const environment: NodeJS.ProcessEnv = {
       ARK_API_KEY: this.config.arkApiKey,
       NO_COLOR: "1",
     };
+    if (request?.mcp) {
+      environment[MCP_BEARER_TOKEN_ENV] = request.mcp.token;
+      if (request.mcp.traceparent !== undefined) environment.TRACEPARENT = request.mcp.traceparent;
+    }
     for (const name of [
       "PATH",
       "HOME",
