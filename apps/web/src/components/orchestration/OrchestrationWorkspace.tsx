@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../api";
-import type { Agent, ModelProviderDescriptor, Project } from "../../types";
+import type { Agent, ModelProviderDescriptor, Project, ProjectRole } from "../../types";
 import { NewConversationDialog } from "./NewConversationDialog";
 import { OrchestrationRunView } from "./OrchestrationRunView";
 import { OrchestrationRunTabs } from "./OrchestrationRunTabs";
@@ -77,6 +77,15 @@ export function OrchestrationWorkspace({
     [orchestration],
   );
 
+  const handleProjectRoleChange = useCallback(
+    async (agentId: string, role: ProjectRole) => {
+      if (!projectId) return;
+      const { project: next } = await api.updateProjectAgentRole(projectId, agentId, role);
+      setProject(next);
+    },
+    [projectId],
+  );
+
   /**
    * "Start conversation" is one product action over the two existing lifecycle
    * calls. If the start half fails the session stays a draft and the
@@ -127,6 +136,7 @@ export function OrchestrationWorkspace({
               onDelete={handleDelete}
               modelProviders={modelProviders}
               project={project}
+              onProjectRoleChange={handleProjectRoleChange}
             />
             <OrchestrationRunTabs
               detail={detail}

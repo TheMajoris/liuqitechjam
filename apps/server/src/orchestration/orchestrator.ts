@@ -169,6 +169,8 @@ export interface OrchestrationExecutionHooks {
 export interface OrchestrationExecutionOptions {
   /** Set when every turn must execute against a shared Project workspace. */
   projectId?: string | undefined;
+  /** Stable parent ID used to correlate child Agent Runs and spans. */
+  orchestrationId?: string | undefined;
   invoker: PlatformAgentInvokerContract;
   /** Optional selector; omitted callers retain deterministic selection. */
   selectNextParticipant?: OrchestrationParticipantSelector;

@@ -510,6 +510,7 @@ export async function executeMastraOrchestrationStep(
       agentId: participant.agentId,
       prompt: handoff.prompt,
       ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
+      ...(options.orchestrationId === undefined ? {} : { orchestrationId: options.orchestrationId }),
       timeoutMs: options.perAgentTimeoutMs,
       signal: linked.signal,
       onRunAccepted: async (runId) => {

@@ -35,7 +35,11 @@ engine, `LOCAL_POC_DATA_ROOT` to change persistent state location, or
 `npm run poc` invokes [scripts/start-local-poc.sh](scripts/start-local-poc.sh),
 selects Docker, Colima, or Podman, builds [Dockerfile.runtime](Dockerfile.runtime),
 persists local state, builds the app, and serves it at `http://localhost:3000`.
-The POC container image includes Codex.
+The POC container image includes Codex. The script also binds the control plane
+for the runtime network and automatically configures the engine-specific
+`MCP_CONTAINER_URL` (`host.docker.internal` for Docker, or
+`host.containers.internal` for Podman). Set `MCP_CONTAINER_URL` yourself when
+using custom container networking.
 
 The challenge brief makes local Docker/Colima/Podman execution the default
 judging path. ECS/cloud deployment is optional and does not affect the score,
@@ -85,7 +89,8 @@ observability, failure/recovery, demo hardening, optional expansion.
 ## Limitations
 
 - Single-user proof of concept.
-- Permissive authorization seam.
+- Production authorization requires Permit.io configuration; permissive and
+  repository-backed policies remain test-only.
 - No automatic dependency installation.
 - Preview is loopback/open-new-window oriented.
 
@@ -96,7 +101,6 @@ observability, failure/recovery, demo hardening, optional expansion.
 - [Wave 5 shared conversation context handoff](docs/WAVE_5_SHARED_CONVERSATION_CONTEXT_HANDOFF.md)
 - [Wave 7 preview runtime](docs/WAVE_7_PREVIEW_RUNTIME.md)
 - [Wave 7 static HTML preview and error UI plan](docs/WAVE_7_STATIC_HTML_PREVIEW_AND_ERROR_UI_IMPLEMENTATION_PLAN.md)
-- [Agent Middleware secure capabilities implementation README](docs/AGENT_MIDDLEWARE_SECURE_CAPABILITIES_README.md)
 - [Permit policy setup and resource scope](docs/PERMIT_POLICY_SETUP.md)
 - [Dockerfile](Dockerfile) · [Dockerfile.runtime](Dockerfile.runtime) · [docker-compose.yml](docker-compose.yml)
 - [Local POC script](scripts/start-local-poc.sh)

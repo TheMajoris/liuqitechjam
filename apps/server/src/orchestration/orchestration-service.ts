@@ -1,427 +1,73 @@
 import { randomUUID } from "node:crypto";
 import { HttpError } from "../errors.js";
-import type { Agent, AgentRun, Message } from "../types.js";
+import type { Agent } from "../types.js";
 import { JsonStore } from "../store.js";
-import { redactSensitiveText } from "./handoff.js";
-import {
-  LangGraphOrchestrator,
-  type LangGraphOrchestrationRunner,
-} from "./langgraph-orchestrator.js";
-import { MastraOrchestrator } from "./mastra/mastra-orchestrator.js";
 import {
   ContinueOrchestrationSchema,
   CreateOrchestrationSchema,
   ORCHESTRATION_LIMITS,
   OrchestrationErrorCodeSchema,
 } from "./schemas.js";
-import {
-  PlatformAgentInvoker,
-  type PlatformAgentInvokerContract,
-} from "./platform-agent-invoker.js";
+import type { PlatformAgentInvokerContract } from "./platform-agent-invoker.js";
 import type {
   CreateOrchestrationInput,
-  OrchestrationCompletionReason,
   OrchestrationContinuationPrompt,
   OrchestrationErrorCode,
-  OrchestrationEvent,
   OrchestrationParticipant,
   OrchestrationSession,
   OrchestrationSessionDetail,
-  OrchestrationTurn,
 } from "./types.js";
 import type {
   OrchestrationExecutionHooks,
   OrchestrationExecutionInput,
-  OrchestrationExecutionOptions,
   OrchestrationExecutionResult,
-  OrchestrationExecutionTurn,
   OrchestrationParticipantProfile,
   OrchestrationParticipantSelector,
   Orchestrator,
 } from "./orchestrator.js";
+import {
+  correlationAttributes,
+  type RuntimeTelemetry,
+  type TelemetrySpan,
+} from "../telemetry/telemetry-types.js";
+import {
+  createOrchestrationExecutionHooks,
+  DispatchLifecycleError,
+} from "./orchestration-execution-hooks.js";
+import {
+  appendEvent,
+  boundedSafeText,
+  cloneSession,
+  now,
+  safeErrorMessage,
+  safeParticipant,
+  statusIsActive,
+  statusIsTerminal,
+  OrchestrationJournal,
+  type OrchestrationEventFields,
+} from "./orchestration-journal.js";
+import {
+  normalizeOrchestrationDependencies,
+  type ActiveOrchestrationSession,
+  type OrchestrationAgentAccess,
+  type OrchestrationGraphRunner,
+  type OrchestrationInvokerFactory,
+  type OrchestrationProjectBinding,
+  type OrchestrationServiceDependencies,
+} from "./orchestration-runtime.js";
 
-const now = (): string => new Date().toISOString();
+export type {
+  OrchestrationAgentAccess,
+  OrchestrationGraphRunner,
+  OrchestrationInvokerFactory,
+  OrchestrationProjectBinding,
+  OrchestrationServiceDependencies,
+} from "./orchestration-runtime.js";
 
 /** Maximum number of sessions returned by a default or bounded listing. */
 export const DEFAULT_ORCHESTRATION_LIST_LIMIT = 100;
-
-const terminalStatuses = new Set<OrchestrationSession["status"]>([
-  "completed",
-  "failed",
-  "stopped",
-  "interrupted",
-]);
-
-const activeStatuses = new Set<OrchestrationSession["status"]>([
-  "queued",
-  "running",
-  "stopping",
-]);
-
-/** Keep historical context within the workflow state/schema budget. */
-const MAX_CONTEXT_TURNS = 8;
-
-export interface OrchestrationAgentAccess {
-  listAgents(): Agent[] | Promise<Agent[]>;
-}
-
-export type OrchestrationInvokerFactory =
-  | PlatformAgentInvokerContract
-  | (() => PlatformAgentInvokerContract);
-
-export type OrchestrationSelectorFactory =
-  | OrchestrationParticipantSelector
-  | (() => OrchestrationParticipantSelector);
-
-/**
- * Backward-compatible alias for callers that injected the former graph
- * runner. New callers should provide an Orchestrator instead.
- */
-export type OrchestrationGraphRunner = LangGraphOrchestrationRunner;
-
-/**
- * Narrow seam for binding a Team to a shared Project.
- *
- * Orchestration never touches Project storage or the filesystem directly; it
- * only declares the association and lets ProjectService enforce the rules.
- */
-export interface OrchestrationProjectBinding {
-  bindTeam(projectId: string, teamId: string, agentIds: string[]): Promise<void>;
-}
-
-export interface OrchestrationServiceDependencies {
-  store: JsonStore;
-  /** Required only for Teams that collaborate on a shared Project. */
-  projectBinding?: OrchestrationProjectBinding;
-  agents?: OrchestrationAgentAccess;
-  /** Descriptive alias for callers wiring the concrete AgentService. */
-  agentService?: OrchestrationAgentAccess;
-  invoker?: PlatformAgentInvokerContract;
-  invokerFactory?: () => PlatformAgentInvokerContract;
-  /** Optional supervisor selector; omitted means deterministic defaults. */
-  selectNextParticipant?: OrchestrationParticipantSelector;
-  selectorFactory?: () => OrchestrationParticipantSelector;
-  supervisorTimeoutMs?: number;
-  orchestrator?: Orchestrator;
-  orchestratorFactory?: () => Orchestrator;
-  graphRunner?: OrchestrationGraphRunner;
-}
-
-interface ActiveSession {
-  id: string;
-  /** Prompt for this internal cycle; the persisted session task is immutable. */
-  cyclePrompt: string;
-  /** Number added to internal step indexes before persistence. */
-  stepOffset: number;
-  /** One-based continuation number; zero identifies the initial cycle. */
-  cycleIndex: number;
-  controller: AbortController;
-  invoker: PlatformAgentInvokerContract;
-  selector?: OrchestrationParticipantSelector;
-  supervisorTimeoutMs: number | undefined;
-  orchestrator: Orchestrator;
-  currentRunId: string | null;
-  cancellationRequestedRunId: string | null;
-  execution: Promise<void> | null;
-}
-
-interface EventFields {
-  participantId?: string;
-  agentId?: string;
-  runId?: string;
-  durationMs?: number;
-  safeSummary?: string;
-  errorCode?: OrchestrationErrorCode;
-  completionReason?: OrchestrationCompletionReason;
-}
-
-interface PlatformAgentServiceBridge extends OrchestrationAgentAccess {
-  sendMessage: (
-    agentId: string,
-    content: string,
-  ) => Promise<{ run: AgentRun; message: Message }>;
-  waitForRun: (
-    runId: string,
-    options: { timeoutMs: number; signal?: AbortSignal },
-  ) => Promise<AgentRun>;
-  cancelRun: (runId: string) => Promise<AgentRun>;
-}
-
-class DispatchLifecycleError extends Error {
-  readonly orchestrationErrorCode: OrchestrationErrorCode;
-
-  constructor(code: OrchestrationErrorCode, message: string) {
-    super(message);
-    this.name = "DispatchLifecycleError";
-    this.orchestrationErrorCode = code;
-  }
-}
-
-function asText(value: unknown): string {
-  return typeof value === "string" ? value : String(value ?? "");
-}
-
-function boundedSafeText(
-  value: unknown,
-  maxLength: number,
-  marker: string,
-): string {
-  const safe = redactSensitiveText(asText(value));
-  if (safe.length <= maxLength) return safe;
-  if (maxLength <= marker.length) return marker.slice(0, maxLength);
-  return safe.slice(0, maxLength - marker.length - 1).trimEnd() + "\n" + marker;
-}
-
-function safeErrorMessage(error: unknown): string {
-  return boundedSafeText(
-    error instanceof Error ? error.message : error,
-    ORCHESTRATION_LIMITS.maxErrorMessageLength,
-    "[ERROR TRUNCATED]",
-  );
-}
-
-function safeSummary(value: unknown): string {
-  return boundedSafeText(
-    value,
-    ORCHESTRATION_LIMITS.maxSafeSummaryLength,
-    "[SUMMARY TRUNCATED]",
-  );
-}
-
-function safeInputSummary(value: unknown): string {
-  return boundedSafeText(
-    value,
-    ORCHESTRATION_LIMITS.maxSafeInputSummaryLength,
-    "[INPUT TRUNCATED]",
-  );
-}
-
-function statusIsTerminal(status: OrchestrationSession["status"]): boolean {
-  return terminalStatuses.has(status);
-}
-
-function statusIsActive(status: OrchestrationSession["status"]): boolean {
-  return activeStatuses.has(status);
-}
-
-function eventStatus(status: OrchestrationSession["status"]): string {
-  return boundedSafeText(status, ORCHESTRATION_LIMITS.maxEventStatusLength, "[STATUS]");
-}
-
-function safeParticipant(
-  participant: OrchestrationParticipant,
-): OrchestrationParticipant {
-  return {
-    ...participant,
-    // Occurrence IDs are routing keys, not free-form text. Preserve their
-    // opaque value so distinct IDs cannot collide after redaction/truncation.
-    id: participant.id.trim(),
-    role: boundedSafeText(
-      participant.role.trim(),
-      ORCHESTRATION_LIMITS.maxRoleLength,
-      "[ROLE TRUNCATED]",
-    ),
-  };
-}
-
-function maxEventSequence(
-  events: readonly OrchestrationEvent[],
-  sessionId: string,
-): number {
-  let maximum = -1;
-  for (const event of events) {
-    if (event.sessionId === sessionId && event.sequence > maximum) {
-      maximum = event.sequence;
-    }
-  }
-  return maximum;
-}
-
-function appendEvent(
-  database: Parameters<Parameters<JsonStore["mutate"]>[0]>[0],
-  session: OrchestrationSession,
-  type: OrchestrationEvent["type"],
-  fields: EventFields = {},
-): OrchestrationEvent {
-  const existingCount = database.orchestrationEvents.filter(
-    (event) => event.sessionId === session.id,
-  ).length;
-  if (existingCount >= ORCHESTRATION_LIMITS.maxEventsPerSession) {
-    throw new Error("Orchestration event limit reached");
-  }
-
-  const event: OrchestrationEvent = {
-    id: randomUUID(),
-    sessionId: session.id,
-    sequence: maxEventSequence(database.orchestrationEvents, session.id) + 1,
-    type,
-    status: eventStatus(session.status),
-    createdAt: now(),
-  };
-  if (fields.participantId !== undefined) event.participantId = fields.participantId;
-  if (fields.agentId !== undefined) event.agentId = fields.agentId;
-  if (fields.runId !== undefined) event.runId = fields.runId;
-  if (fields.durationMs !== undefined) event.durationMs = fields.durationMs;
-  if (fields.safeSummary !== undefined) event.safeSummary = safeSummary(fields.safeSummary);
-  if (fields.errorCode !== undefined) event.errorCode = fields.errorCode;
-  if (fields.completionReason !== undefined) {
-    event.completionReason = fields.completionReason;
-  }
-  database.orchestrationEvents.push(event);
-  return event;
-}
-
-function cloneSession(session: OrchestrationSession): OrchestrationSession {
-  const copy = structuredClone(session);
-  copy.name = boundedSafeText(copy.name, ORCHESTRATION_LIMITS.maxNameLength, "[NAME TRUNCATED]");
-  copy.originalPrompt = boundedSafeText(
-    copy.originalPrompt,
-    ORCHESTRATION_LIMITS.maxPromptLength,
-    "[TASK TRUNCATED]",
-  );
-  copy.participants = copy.participants.map(safeParticipant);
-  if (copy.errorMessage !== null) {
-    copy.errorMessage = safeErrorMessage(copy.errorMessage);
-  }
-  return copy;
-}
-
-function cloneTurn(turn: OrchestrationTurn): OrchestrationTurn {
-  const copy = structuredClone(turn);
-  copy.safeInputSummary = safeInputSummary(copy.safeInputSummary);
-  if (copy.safeOutput !== null) {
-    copy.safeOutput = boundedSafeText(
-      copy.safeOutput,
-      ORCHESTRATION_LIMITS.maxSafeOutputLength,
-      "[OUTPUT TRUNCATED]",
-    );
-  }
-  return copy;
-}
-
-function cloneContinuationPrompt(
-  prompt: OrchestrationContinuationPrompt,
-): OrchestrationContinuationPrompt {
-  const copy = structuredClone(prompt);
-  copy.prompt = boundedSafeText(
-    copy.prompt,
-    ORCHESTRATION_LIMITS.maxPromptLength,
-    "[PROMPT TRUNCATED]",
-  );
-  return copy;
-}
-
-function compareTurns(
-  left: OrchestrationTurn,
-  right: OrchestrationTurn,
-): number {
-  // New turns carry the globally monotonic execution step. Legacy turns do
-  // not, so retain the old deterministic timestamp/position fallback.
-  if (left.stepIndex !== undefined && right.stepIndex !== undefined) {
-    const byStep = left.stepIndex - right.stepIndex;
-    if (byStep !== 0) return byStep;
-  }
-  if (left.stepIndex !== undefined && right.stepIndex === undefined) return -1;
-  if (left.stepIndex === undefined && right.stepIndex !== undefined) return 1;
-  return (
-    left.createdAt.localeCompare(right.createdAt) ||
-    left.position - right.position ||
-    left.id.localeCompare(right.id)
-  );
-}
-
-function cloneEvent(event: OrchestrationEvent): OrchestrationEvent {
-  const copy = structuredClone(event);
-  if (copy.safeSummary !== undefined) copy.safeSummary = safeSummary(copy.safeSummary);
-  return copy;
-}
-
 function lifecycleConflict(message: string): HttpError {
   return new HttpError(409, message);
-}
-
-function normalizeConstructor(
-  value: JsonStore | OrchestrationServiceDependencies,
-  agents?: OrchestrationAgentAccess,
-  invoker?: OrchestrationInvokerFactory,
-  graphRunner?: OrchestrationGraphRunner,
-): {
-  store: JsonStore;
-  agents: OrchestrationAgentAccess;
-  invokerFactory: () => PlatformAgentInvokerContract;
-  selectorFactory: () => OrchestrationParticipantSelector | undefined;
-  supervisorTimeoutMs: number | undefined;
-  orchestratorFactory: () => Orchestrator;
-} {
-  if (!(value instanceof JsonStore)) {
-    const configured = value;
-    const agentAccess = configured.agents ?? configured.agentService;
-    if (!agentAccess) {
-      throw new TypeError("OrchestrationService requires Agent access");
-    }
-    const factory = configured.invokerFactory
-      ? configured.invokerFactory
-      : configured.invoker
-        ? () => configured.invoker as PlatformAgentInvokerContract
-        : undefined;
-    const orchestratorFactory = configured.orchestratorFactory
-      ? configured.orchestratorFactory
-      : configured.orchestrator
-        ? () => configured.orchestrator as Orchestrator
-        : configured.graphRunner
-          ? () => new LangGraphOrchestrator(configured.graphRunner)
-        : () => new MastraOrchestrator();
-    const selectorFactory = configured.selectorFactory
-      ? configured.selectorFactory
-      : configured.selectNextParticipant
-        ? () => configured.selectNextParticipant as OrchestrationParticipantSelector
-        : () => undefined;
-    return {
-      store: configured.store,
-      agents: agentAccess,
-      invokerFactory:
-        factory ?? (() => createPlatformInvoker(agentAccess)),
-      selectorFactory,
-      supervisorTimeoutMs: configured.supervisorTimeoutMs,
-      orchestratorFactory,
-    };
-  }
-
-  if (!agents) {
-    throw new TypeError("OrchestrationService requires Agent access");
-  }
-  const factory =
-    typeof invoker === "function"
-      ? invoker
-      : invoker
-        ? () => invoker
-        : () => createPlatformInvoker(agents);
-  return {
-    store: value,
-    agents,
-    invokerFactory: factory,
-    selectorFactory: () => undefined,
-    supervisorTimeoutMs: undefined,
-    orchestratorFactory: graphRunner
-      ? () => new LangGraphOrchestrator(graphRunner)
-      : () => new MastraOrchestrator(),
-  };
-}
-
-function createPlatformInvoker(
-  agents: OrchestrationAgentAccess,
-): PlatformAgentInvokerContract {
-  const bridge = agents as unknown as PlatformAgentServiceBridge;
-  if (
-    typeof bridge.sendMessage !== "function" ||
-    typeof bridge.waitForRun !== "function" ||
-    typeof bridge.cancelRun !== "function"
-  ) {
-    throw new TypeError(
-      "OrchestrationService requires an invoker or AgentService run methods",
-    );
-  }
-  return new PlatformAgentInvoker(bridge);
 }
 
 /**
@@ -432,13 +78,15 @@ function createPlatformInvoker(
  */
 export class OrchestrationService {
   private readonly store: JsonStore;
+  private readonly journal: OrchestrationJournal;
   private readonly agents: OrchestrationAgentAccess;
   private readonly invokerFactory: () => PlatformAgentInvokerContract;
   private readonly selectorFactory: () => OrchestrationParticipantSelector | undefined;
   private readonly supervisorTimeoutMs: number | undefined;
   private readonly orchestratorFactory: () => Orchestrator;
   private readonly projectBinding: OrchestrationProjectBinding | undefined;
-  private readonly activeSessions = new Map<string, ActiveSession>();
+  private telemetry: RuntimeTelemetry | undefined;
+  private readonly activeSessions = new Map<string, ActiveOrchestrationSession>();
 
   constructor(dependencies: OrchestrationServiceDependencies);
   constructor(
@@ -453,40 +101,30 @@ export class OrchestrationService {
     invoker?: OrchestrationInvokerFactory,
     graphRunner?: OrchestrationGraphRunner,
   ) {
-    const normalized = normalizeConstructor(value, agents, invoker, graphRunner);
+    const normalized = normalizeOrchestrationDependencies(
+      value,
+      agents,
+      invoker,
+      graphRunner,
+    );
     this.store = normalized.store;
+    this.journal = new OrchestrationJournal(this.store);
     this.agents = normalized.agents;
     this.invokerFactory = normalized.invokerFactory;
     this.selectorFactory = normalized.selectorFactory;
     this.supervisorTimeoutMs = normalized.supervisorTimeoutMs;
     this.orchestratorFactory = normalized.orchestratorFactory;
-    this.projectBinding =
-      value instanceof JsonStore ? undefined : value.projectBinding;
+    this.projectBinding = normalized.projectBinding;
+  }
+
+  /** Attach runtime telemetry after the application graph is assembled. */
+  setTelemetry(telemetry: RuntimeTelemetry): void {
+    this.telemetry = telemetry;
   }
 
   async initialize(): Promise<void> {
     await this.cancelActiveSessions();
-
-    await this.store.initialize();
-    await this.store.mutate((database) => {
-      const interruptedAt = now();
-      for (const session of database.orchestrations) {
-        if (!statusIsActive(session.status)) continue;
-        session.status = "interrupted";
-        session.currentParticipantId = null;
-        session.currentRunId = null;
-        session.completionReason = null;
-        session.errorCode = "ORCHESTRATION_INTERRUPTED";
-        session.errorMessage =
-          "Orchestration was interrupted because the server restarted";
-        session.completedAt = interruptedAt;
-        session.updatedAt = interruptedAt;
-        appendEvent(database, session, "orchestration_interrupted", {
-          errorCode: "ORCHESTRATION_INTERRUPTED",
-          safeSummary: session.errorMessage,
-        });
-      }
-    });
+    await this.journal.initialize();
   }
 
   /** Abort and settle every in-process child run before server shutdown. */
@@ -593,29 +231,7 @@ export class OrchestrationService {
   }
 
   async getSession(id: string): Promise<OrchestrationSessionDetail> {
-    const database = this.store.snapshot();
-    const session = database.orchestrations.find((item) => item.id === id);
-    if (!session) throw new HttpError(404, "Orchestration not found");
-    return {
-      session: cloneSession(session),
-      turns: database.orchestrationTurns
-        .filter((turn) => turn.sessionId === id)
-        .sort(compareTurns)
-        .map(cloneTurn),
-      events: database.orchestrationEvents
-        .filter((event) => event.sessionId === id)
-        .sort((left, right) => left.sequence - right.sequence)
-        .map(cloneEvent),
-      continuationPrompts: database.orchestrationContinuationPrompts
-        .filter((prompt) => prompt.sessionId === id)
-        .sort(
-          (left, right) =>
-            left.cycleIndex - right.cycleIndex ||
-            left.createdAt.localeCompare(right.createdAt) ||
-            left.id.localeCompare(right.id),
-        )
-        .map(cloneContinuationPrompt),
-    };
+    return this.journal.getSessionDetail(id);
   }
 
   async startSession(id: string): Promise<OrchestrationSession> {
@@ -936,34 +552,6 @@ export class OrchestrationService {
    * cycle turns, so historical work informs handoffs without consuming the
    * new cycle's maxSteps budget.
    */
-  private contextTurns(
-    sessionId: string,
-    maxSteps: number,
-  ): OrchestrationExecutionTurn[] {
-    const snapshot = this.store.snapshot();
-    return snapshot.orchestrationTurns
-      .filter(
-        (turn) =>
-          turn.sessionId === sessionId &&
-          turn.status === "completed" &&
-          turn.safeOutput !== null,
-      )
-      .sort(compareTurns)
-      .slice(-Math.min(MAX_CONTEXT_TURNS, Math.max(0, maxSteps)))
-      .map((turn) => {
-        const safe = cloneTurn(turn);
-        return {
-          participantId: safe.participantId,
-          agentId: safe.agentId,
-          runId: safe.runId,
-          position: safe.position,
-          ...(safe.stepIndex === undefined ? {} : { stepIndex: safe.stepIndex }),
-          output: safe.safeOutput ?? "",
-          outputTruncated: safe.outputTruncated,
-        };
-      });
-  }
-
   private launch(
     session: OrchestrationSession,
     cycle: {
@@ -986,7 +574,7 @@ export class OrchestrationService {
       void this.finalizeFailure(session.id, error).catch(() => undefined);
       return;
     }
-    const context: ActiveSession = {
+    const context: ActiveOrchestrationSession = {
       id: session.id,
       cyclePrompt: cycle.cyclePrompt ?? session.originalPrompt,
       stepOffset: cycle.stepOffset ?? 0,
@@ -1006,243 +594,8 @@ export class OrchestrationService {
     void execution.catch(() => undefined);
   }
 
-  private executionHooks(context: ActiveSession): OrchestrationExecutionHooks {
-    return {
-      onSupervisorDecision: async ({ action, participantId, stepIndex, reason }) => {
-        if (context.controller.signal.aborted) {
-          throw new DispatchLifecycleError(
-            "ORCHESTRATION_STOPPED",
-            "Orchestration stop requested",
-          );
-        }
-        await this.store.mutate((database) => {
-          const session = database.orchestrations.find(
-            (item) => item.id === context.id,
-          );
-          if (!session) throw new HttpError(404, "Orchestration not found");
-          if (statusIsTerminal(session.status)) return;
-          if (session.status === "stopping" || context.controller.signal.aborted) {
-            throw new DispatchLifecycleError(
-              "ORCHESTRATION_STOPPED",
-              "Orchestration stop requested",
-            );
-          }
-
-          const participant = participantId
-            ? session.participants.find((item) => item.id === participantId)
-            : undefined;
-          if (action === "invoke" && !participant) {
-            throw new DispatchLifecycleError(
-              "SUPERVISOR_INVALID_SELECTION",
-              "Supervisor selected an unconfigured participant",
-            );
-          }
-          session.updatedAt = now();
-          appendEvent(database, session, "supervisor_decision", {
-            ...(participant
-              ? { participantId: participant.id, agentId: participant.agentId }
-              : {}),
-            ...(action === "complete"
-              ? { completionReason: "supervisor_completed" }
-              : {}),
-            safeSummary:
-              reason !== undefined && reason.trim().length > 0
-                ? reason
-                : action === "complete"
-                  ? "Conversation completed at step " + String(stepIndex)
-                  : (participant?.role ?? "Configured participant") +
-                    " selected as next participant",
-          });
-        });
-      },
-      onBeforeDispatch: async ({ participant, prompt }) => {
-        if (context.controller.signal.aborted) {
-          throw new DispatchLifecycleError(
-            "ORCHESTRATION_STOPPED",
-            "Orchestration stop requested",
-          );
-        }
-        await this.validateParticipant(participant);
-        await this.store.mutate((database) => {
-          const session = database.orchestrations.find((item) => item.id === context.id);
-          if (!session) throw new HttpError(404, "Orchestration not found");
-          if (session.status === "stopping" || context.controller.signal.aborted) {
-            throw new DispatchLifecycleError(
-              "ORCHESTRATION_STOPPED",
-              "Orchestration stop requested",
-            );
-          }
-          session.currentParticipantId = participant.id;
-          session.updatedAt = now();
-        });
-        void prompt;
-      },
-      onHandoffApplied: async ({ participant, envelope }) => {
-        await this.store.mutate((database) => {
-          const session = database.orchestrations.find((item) => item.id === context.id);
-          if (!session || statusIsTerminal(session.status)) return;
-          session.updatedAt = now();
-          appendEvent(database, session, "handoff_applied", {
-            participantId: participant.id,
-            agentId: participant.agentId,
-            safeSummary:
-              "Applied the previous participant result to " + participant.role,
-          });
-          void envelope;
-        });
-      },
-      onRunAccepted: async ({ participant, prompt, runId, stepIndex }) => {
-        // Set this before awaiting persistence so stopSession can cancel a Run
-        // accepted in the same turn, even if its event write is still queued.
-        context.currentRunId = runId;
-        await this.store.mutate((database) => {
-          const session = database.orchestrations.find((item) => item.id === context.id);
-          if (!session) throw new HttpError(404, "Orchestration not found");
-          if (statusIsTerminal(session.status)) return;
-          const createdAt = now();
-          session.currentParticipantId = participant.id;
-          session.currentRunId = runId;
-          session.updatedAt = createdAt;
-          if (!database.orchestrationTurns.some((turn) => turn.runId === runId)) {
-            database.orchestrationTurns.push({
-              id: randomUUID(),
-              sessionId: context.id,
-              participantId: participant.id,
-              agentId: participant.agentId,
-              runId,
-              position: participant.position,
-              stepIndex: context.stepOffset + stepIndex,
-              status: "dispatched",
-              safeInputSummary: safeInputSummary(prompt),
-              safeOutput: null,
-              outputTruncated: false,
-              errorCode: null,
-              createdAt,
-              completedAt: null,
-            });
-          }
-          appendEvent(database, session, "participant_dispatched", {
-            participantId: participant.id,
-            agentId: participant.agentId,
-            runId,
-            safeSummary: "Participant dispatched at step " + String(stepIndex + 1),
-          });
-        });
-        if (context.controller.signal.aborted) {
-          await this.cancelChildRun(context, runId);
-          throw new DispatchLifecycleError(
-            "ORCHESTRATION_STOPPED",
-            "Orchestration stop requested",
-          );
-        }
-      },
-      onRunCompleted: async ({
-        participant,
-        runId,
-        envelope,
-        stepIndex,
-      }) => {
-        context.currentRunId = null;
-        await this.store.mutate((database) => {
-          const session = database.orchestrations.find((item) => item.id === context.id);
-          if (!session || statusIsTerminal(session.status)) return;
-          const completedAt = now();
-          const turn = database.orchestrationTurns.find(
-            (candidate) => candidate.runId === runId && candidate.sessionId === context.id,
-          );
-          if (turn && turn.status === "dispatched") {
-            turn.status = "completed";
-            turn.safeOutput = boundedSafeText(
-              envelope.content,
-              ORCHESTRATION_LIMITS.maxSafeOutputLength,
-              "[OUTPUT TRUNCATED]",
-            );
-            turn.outputTruncated = envelope.truncated;
-            turn.completedAt = completedAt;
-          }
-          session.currentParticipantId = null;
-          session.currentRunId = null;
-          session.stepIndex = Math.max(
-            session.stepIndex,
-            context.stepOffset + stepIndex + 1,
-          );
-          session.updatedAt = completedAt;
-          const fields: EventFields = {
-            participantId: participant.id,
-            agentId: participant.agentId,
-            runId,
-            safeSummary: "Participant completed",
-          };
-          if (turn?.createdAt) {
-            fields.durationMs = Math.max(
-              0,
-              Date.parse(completedAt) - Date.parse(turn.createdAt),
-            );
-          }
-          appendEvent(database, session, "run_completed", fields);
-        });
-      },
-      onParticipantFailed: async ({
-        participant,
-        runId,
-        error,
-        errorCode,
-      }) => {
-        if (runId === null || context.currentRunId === runId) {
-          context.currentRunId = null;
-        }
-        await this.store.mutate((database) => {
-          const session = database.orchestrations.find((item) => item.id === context.id);
-          if (!session || statusIsTerminal(session.status)) return;
-          const failedAt = now();
-          const turn = runId
-            ? database.orchestrationTurns.find(
-                (candidate) =>
-                  candidate.runId === runId && candidate.sessionId === context.id,
-              )
-            : undefined;
-          if (turn && turn.status === "dispatched") {
-            turn.status =
-              errorCode === "RUN_TIMED_OUT"
-                ? "timed_out"
-                : errorCode === "ORCHESTRATION_STOPPED" ||
-                    errorCode === "RUN_CANCELLED"
-                  ? "cancelled"
-                  : "failed";
-            turn.errorCode = errorCode;
-            turn.completedAt = failedAt;
-          }
-          session.currentParticipantId = null;
-          session.currentRunId = null;
-          session.errorCode = errorCode;
-          session.errorMessage = safeErrorMessage(error);
-          session.updatedAt = failedAt;
-          if (
-            runId !== null &&
-            (errorCode === "ORCHESTRATION_STOPPED" || errorCode === "RUN_CANCELLED")
-          ) {
-            appendEvent(database, session, "child_run_cancelled", {
-              participantId: participant.id,
-              agentId: participant.agentId,
-              runId,
-              safeSummary: "Accepted child Run was cancelled",
-              errorCode,
-            });
-          }
-          appendEvent(database, session, "participant_failed", {
-            participantId: participant.id,
-            agentId: participant.agentId,
-            ...(runId === null ? {} : { runId }),
-            safeSummary: safeErrorMessage(error),
-            errorCode,
-          });
-        });
-      },
-    };
-  }
-
   private async cancelChildRun(
-    context: ActiveSession,
+    context: ActiveOrchestrationSession,
     runId: string,
   ): Promise<void> {
     // Abort, stop, and the accepted-run callback can all observe the same
@@ -1257,7 +610,33 @@ export class OrchestrationService {
     }
   }
 
-  private async runSession(context: ActiveSession): Promise<void> {
+  private executionHooks(
+    context: ActiveOrchestrationSession,
+  ): OrchestrationExecutionHooks {
+    return createOrchestrationExecutionHooks(context, {
+      store: this.store,
+      validateParticipant: (participant) => this.validateParticipant(participant),
+      cancelChildRun: (runId) => this.cancelChildRun(context, runId),
+    });
+  }
+
+  private async runSession(context: ActiveOrchestrationSession): Promise<void> {
+    const execute = (span?: TelemetrySpan) => this.runSessionInternal(context, span);
+    if (this.telemetry) {
+      await this.telemetry.withSpan(
+        "orchestration.run",
+        correlationAttributes({ orchestrationId: context.id }),
+        (span) => execute(span),
+      );
+      return;
+    }
+    await execute();
+  }
+
+  private async runSessionInternal(
+    context: ActiveOrchestrationSession,
+    span?: TelemetrySpan,
+  ): Promise<void> {
     try {
       const session = await this.store.mutate((database) => {
         const current = database.orchestrations.find((item) => item.id === context.id);
@@ -1270,6 +649,7 @@ export class OrchestrationService {
       });
       if (session === null || context.controller.signal.aborted) {
         await this.finalizeStopped(context.id);
+        span?.setStatus("ok");
         return;
       }
 
@@ -1287,7 +667,7 @@ export class OrchestrationService {
         lastRunId: null,
         lastOutput: null,
         turns: [],
-        contextTurns: this.contextTurns(session.id, session.maxSteps),
+        contextTurns: this.journal.contextTurns(session.id, session.maxSteps),
         status: "running",
         errorCode: null,
       };
@@ -1302,11 +682,14 @@ export class OrchestrationService {
         participantProfiles,
         perAgentTimeoutMs: session.perAgentTimeoutMs,
         ...(session.projectId ? { projectId: session.projectId } : {}),
+        orchestrationId: session.id,
         signal: context.controller.signal,
         hooks: this.executionHooks(context),
       });
       await this.finalizeExecution(context, result);
+      span?.setStatus("ok");
     } catch (error) {
+      span?.setStatus("error");
       if (context.controller.signal.aborted) {
         await this.finalizeStopped(context.id);
       } else {
@@ -1320,7 +703,7 @@ export class OrchestrationService {
   }
 
   private async finalizeExecution(
-    context: ActiveSession,
+    context: ActiveOrchestrationSession,
     result: OrchestrationExecutionResult,
   ): Promise<void> {
     await this.store.mutate((database) => {
@@ -1396,7 +779,7 @@ export class OrchestrationService {
           context.stepOffset + result.stepIndex,
         );
         session.updatedAt = completedAt;
-        const completionEventFields: EventFields = {
+        const completionEventFields: OrchestrationEventFields = {
           safeSummary: "Orchestration completed",
         };
         if (completionReason !== null) {

@@ -15,24 +15,50 @@ import {
   ArkResponsesSupervisorProvider,
   createOrchestrationParticipantSelector,
 } from "./orchestration/supervisor/index.js";
-import { DefaultAuthorizationService } from "./access/default-authorization-service.js";
+import {
+  createPermitAuthorizationAdapter,
+} from "./access/permit-authorization-adapter.js";
+import { PermitSynchronizationGate } from "./access/permit-synchronization-gate.js";
+import {
+  createPermitDirectoryClient,
+  PermitDirectoryReconciler,
+} from "./access/permit-directory-reconciler.js";
+import {
+  createPermitApprovalClient,
+  PermitApprovalService,
+} from "./access/permit-approval-service.js";
+import { isPermitConfigured } from "./config.js";
 import { LocalContainerPreviewRuntime } from "./preview/local-container-preview-runtime.js";
 import { PreviewCommandResolver } from "./preview/preview-command-resolver.js";
 import { StorePreviewContextProvider } from "./preview/preview-context-provider.js";
 import { ProjectService } from "./projects/project-service.js";
 import { ProjectServiceExecutionScope } from "./projects/project-execution.js";
+import { BraveSearchAdapter } from "./tools/brave-search-adapter.js";
+import { McpSessionService } from "./tools/mcp-session-service.js";
+import {
+  createBuiltInToolRegistry,
+  ToolService,
+} from "./tools/tool-service.js";
+import { createBuiltInSkillRegistry, SkillService } from "./skills/index.js";
 import { ProjectWorkspaceManager } from "./projects/project-workspace.js";
 import {
   PreviewService,
   previewResourceLimitsFromConfig,
 } from "./preview/preview-service.js";
+import { AuditService, JsonAuditStoreAdapter } from "./audit/audit-service.js";
+import { createRuntimeTelemetry } from "./telemetry/runtime-telemetry.js";
 
 const config = loadConfig();
 await writeCodexConfig(config);
 
 const store = new JsonStore(path.join(config.dataDirectory, "launchpad.json"));
+const auditStore = new JsonAuditStoreAdapter(store);
+const audit = new AuditService(auditStore, auditStore);
+const telemetry = createRuntimeTelemetry(config);
 const workspaces = new WorkspaceManager(config.workspaceRoot);
 const runner = createRunner(config);
+const mcpSessions = new McpSessionService(config.mcpTokenTtlMs);
+const permitSynchronizationGate = new PermitSynchronizationGate();
 const workerModelResolver = createWorkerModelResolver(config);
 const modelRegistry = createModelRegistry(config, {
   workerResolver: workerModelResolver,
@@ -44,7 +70,17 @@ const service = new AgentService(
   runner,
   workerModelResolver,
 );
-const authorization = new DefaultAuthorizationService();
+service.setMcpSessionService(mcpSessions);
+service.setTelemetry(telemetry);
+// Permit is the only authorization authority in the production graph. The
+// adapter remains fail-closed when configuration or the PDP is unavailable;
+// repository role policy is intentionally not assembled here.
+const authorization = createPermitAuthorizationAdapter(
+  config,
+  permitSynchronizationGate,
+  audit,
+  telemetry,
+);
 const projectWorkspaces = new ProjectWorkspaceManager(
   path.join(config.dataDirectory, "projects"),
 );
@@ -54,6 +90,18 @@ const projectService = new ProjectService(
   service,
   authorization,
 );
+const permitDirectory = new PermitDirectoryReconciler(
+  store,
+  createPermitDirectoryClient(config),
+  { tenantKey: config.permitTenantKey, synchronizationGate: permitSynchronizationGate },
+);
+const permitApprovalService = new PermitApprovalService(
+  store,
+  createPermitApprovalClient(config),
+  { tenantKey: config.permitTenantKey, audit, telemetry },
+);
+service.setPermitDirectoryReconciler(permitDirectory);
+projectService.setPermitDirectoryReconciler(permitDirectory);
 const previewService = new PreviewService(
   store,
   service,
@@ -62,6 +110,7 @@ const previewService = new PreviewService(
   authorization,
   {
     resourceLimits: previewResourceLimitsFromConfig(config),
+    telemetry,
     // Project previews serve the shared workspace the Team collaborates on.
     ownerResolver: {
       async resolve(owner) {
@@ -77,6 +126,7 @@ const previewService = new PreviewService(
   },
 );
 const previewContext = new StorePreviewContextProvider(store);
+projectService.setProjectPreviewLifecycle(previewService);
 service.setPreviewLifecycle(previewService);
 service.setPreviewContextProvider(previewContext);
 service.setProjectExecutionScope(
@@ -84,8 +134,39 @@ service.setProjectExecutionScope(
     previewContext.getForProject(projectId).then((context) => context.status),
   ),
 );
+const toolRegistry = createBuiltInToolRegistry({
+  search: new BraveSearchAdapter({
+    apiKey: config.braveSearchApiKey,
+    timeoutMs: config.braveSearchTimeoutMs,
+    maxResults: config.braveSearchMaxResults,
+  }),
+  preview: previewService,
+});
+const toolService = new ToolService(
+  toolRegistry,
+  authorization,
+  store,
+  permitApprovalService,
+  audit,
+  telemetry,
+);
+const skillService = new SkillService(
+  createBuiltInSkillRegistry(),
+  toolService,
+  authorization,
+  audit,
+);
+service.setSkillService(skillService);
+projectService.setSkillService(skillService);
 await service.initialize();
 await projectService.initialize();
+// Reconcile existing repository facts before accepting privileged lifecycle
+// mutations. Development can boot without Permit for read-only inspection,
+// while any configured provider is converged immediately; production config
+// validation above guarantees this call has a usable client.
+if (config.nodeEnv === "production" || isPermitConfigured(config)) {
+  await permitDirectory.reconcile();
+}
 await previewService.initialize();
 
 const supervisorSelector = isSupervisorConfigured(config)
@@ -120,6 +201,7 @@ const orchestrationService = new OrchestrationService({
   supervisorTimeoutMs: config.supervisorTimeoutMs,
 });
 await orchestrationService.initialize();
+orchestrationService.setTelemetry(telemetry);
 
 const app = await createApp(
   config,
@@ -128,12 +210,21 @@ const app = await createApp(
   modelRegistry,
   previewService,
   projectService,
+  {
+    sessions: mcpSessions,
+    toolService,
+    skillService,
+    approvalService: permitApprovalService,
+    auditService: audit,
+    telemetry,
+  },
 );
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");
   await orchestrationService.shutdown();
   await app.close();
+  await telemetry.shutdown();
   process.exit(0);
 };
 

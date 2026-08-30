@@ -783,6 +783,25 @@ button {
   gap: 13px;
 }
 
+/* Create keeps the modal's original single-column label rhythm. */
+.agent-form-modal-fields {
+  display: contents;
+}
+
+.agent-form-modal-fields > label {
+  margin-top: 13px;
+}
+
+/* The create modal keeps its original single-column label rhythm while the
+   settings panel uses the two-column identity grid above. */
+.agent-form-modal-fields {
+  display: contents;
+}
+
+.agent-form-modal-fields > label {
+  margin-top: 13px;
+}
+
 label {
   display: block;
   color: #575851;
@@ -832,6 +851,227 @@ textarea:focus {
   border-radius: 12px;
   padding: 14px;
   background: #f8f7f2;
+}
+
+.capabilities-panel {
+  display: grid;
+  gap: 11px;
+  margin-top: 16px;
+  border: 1px solid #e4e1d8;
+  border-radius: 12px;
+  padding: 14px;
+  background: #fbfaf6;
+}
+
+.agent-skills-panel {
+  display: grid;
+  gap: 11px;
+  margin-top: 16px;
+  border: 1px solid #e4e1d8;
+  border-radius: 12px;
+  padding: 14px;
+  background: #fbfaf6;
+}
+
+.agent-skills-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-skills-heading h3 {
+  margin: 3px 0 0;
+  color: var(--ink);
+  font-size: 14px;
+  letter-spacing: -0.02em;
+}
+
+.agent-skills-loading,
+.agent-skills-note,
+.agent-skills-empty,
+.agent-skills-error {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.agent-skills-note,
+.agent-skills-error {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.agent-skills-error {
+  color: #9a4848;
+}
+
+.agent-skills-list {
+  display: grid;
+  gap: 8px;
+}
+
+.agent-skill-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border-top: 1px solid #ebe8df;
+  padding-top: 9px;
+  cursor: pointer;
+}
+
+.agent-skill-option > input {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  margin: 1px 0 0;
+  accent-color: #6954d9;
+}
+
+.agent-skill-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.agent-skill-copy strong {
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.agent-skill-copy > span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.agent-skill-copy .agent-skill-capabilities {
+  color: #77786f;
+  font-size: 9px;
+}
+
+.agent-skill-capability {
+  display: inline-block;
+  margin-right: 9px;
+}
+
+.capabilities-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.capabilities-title h3 {
+  margin: 3px 0 0;
+  color: var(--ink);
+  font-size: 14px;
+  letter-spacing: -0.02em;
+}
+
+.capabilities-loading,
+.capabilities-note,
+.capabilities-empty {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.capabilities-project-field {
+  max-width: 560px;
+}
+
+.capabilities-note {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.capabilities-error,
+.capabilities-result {
+  margin: 0;
+  color: #9a4848;
+  font-size: 10px;
+}
+
+.capabilities-result {
+  color: #277756;
+}
+
+.capabilities-list {
+  display: grid;
+  gap: 8px;
+}
+
+.capability-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid #ebe8df;
+  padding-top: 9px;
+}
+
+.capability-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.capability-copy strong {
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.capability-copy span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.capability-copy code {
+  color: #8b8b83;
+  font-size: 9px;
+}
+
+.capability-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.capability-state {
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: #e5e4df;
+  color: #666760;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.capability-state-available {
+  background: #dcf2e9;
+  color: #277756;
+}
+
+.capability-state-approval_required {
+  background: #fff0ce;
+  color: #96681c;
+}
+
+.capability-state-denied {
+  background: #f6dfdc;
+  color: #ac4343;
+}
+
+.capability-actions small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.capability-test {
+  padding: 5px 8px;
+  font-size: 9px;
 }
 
 .worker-model-heading {
@@ -3747,7 +3987,8 @@ textarea:focus {
 
 /* The shared artifact leads; the Team's derived task name sits under it. */
 .orch-project-badge {
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 8px;
   align-self: flex-start;
@@ -3761,6 +4002,40 @@ textarea:focus {
 .orch-project-badge strong {
   font-size: 12px;
   letter-spacing: -0.01em;
+}
+
+.orch-project-members {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(75, 61, 134, 0.18);
+}
+
+.orch-project-member {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #4b3d86;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.orch-project-member select {
+  border: 1px solid rgba(75, 61, 134, 0.28);
+  border-radius: 999px;
+  padding: 2px 5px;
+  color: #4b3d86;
+  background: rgba(255, 255, 255, 0.7);
+  font: inherit;
+}
+
+.orch-project-role-error {
+  flex-basis: 100%;
+  color: #a33b3b;
+  font-size: 10px;
 }
 
 .orch-project-field {

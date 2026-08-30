@@ -10,8 +10,13 @@ import type {
   AgentConversation,
   Preview,
   Project,
+  ProjectRole,
   ProviderModelsResponse,
   SystemInfo,
+  AgentCapabilities,
+  CapabilityGrantView,
+  AgentSkills,
+  SkillMetadata,
 } from "./types";
 
 export class ApiError extends Error {
@@ -72,11 +77,53 @@ export const api = {
       "/api/model-providers/" + encodeURIComponent(providerId) + "/models",
     ),
   listAgents: () => request<{ agents: Agent[] }>("/api/agents"),
+  listTools: () => request<{ tools: import("./types").ToolMetadata[] }>("/api/tools"),
+  listSkills: () => request<{ skills: SkillMetadata[] }>("/api/skills"),
+  getSkill: (id: string) =>
+    request<{ skill: SkillMetadata }>("/api/skills/" + encodeURIComponent(id)),
+  agentSkills: (id: string, projectId?: string) =>
+    request<{ skills: AgentSkills }>(
+      "/api/agents/" + id + "/skills" +
+        (projectId ? "?projectId=" + encodeURIComponent(projectId) : ""),
+    ),
+  updateAgentSkills: (id: string, skillIds: string[]) =>
+    request<{ agent: Agent; skills: AgentSkills }>("/api/agents/" + id + "/skills", {
+      method: "PATCH",
+      body: JSON.stringify({ skillIds }),
+    }),
+  agentCapabilities: (id: string, projectId?: string) =>
+    request<{ capabilities: AgentCapabilities }>(
+      "/api/agents/" + id + "/capabilities" +
+        (projectId ? "?projectId=" + encodeURIComponent(projectId) : ""),
+    ),
+  capabilityGrants: (id: string, projectId?: string) =>
+    request<{ grants: CapabilityGrantView[] }>(
+      "/api/agents/" + id + "/capabilities/grants" +
+        (projectId ? "?projectId=" + encodeURIComponent(projectId) : ""),
+    ),
+  createCapabilityGrant: (
+    id: string,
+    body: { projectId: string; toolId: string; scope: "once" | "project" },
+  ) =>
+    request<{ grant: CapabilityGrantView }>("/api/agents/" + id + "/capabilities/grants", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  revokeCapabilityGrant: (id: string) =>
+    request<{ grant: CapabilityGrantView }>("/api/capability-grants/" + id, {
+      method: "DELETE",
+    }),
+  testTool: (toolId: string, body: { agentId: string; projectId?: string; input?: unknown }) =>
+    request<{ result: unknown }>("/api/tools/" + encodeURIComponent(toolId) + "/test", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   createAgent: (body: {
     name: string;
     description: string;
     instructions: string;
     modelRef?: ModelRef;
+    skillIds?: string[];
   }) =>
     request<{ agent: Agent }>("/api/agents", {
       method: "POST",
@@ -89,6 +136,7 @@ export const api = {
       description: string;
       instructions: string;
       modelRef?: ModelRef;
+      skillIds?: string[];
     },
   ) =>
     request<{ agent: Agent }>("/api/agents/" + id, {
@@ -132,6 +180,11 @@ export const api = {
     }),
   listProjects: () => request<{ projects: Project[] }>("/api/projects"),
   getProject: (id: string) => request<{ project: Project }>("/api/projects/" + id),
+  updateProjectAgentRole: (projectId: string, agentId: string, role: ProjectRole) =>
+    request<{ project: Project }>(
+      "/api/projects/" + projectId + "/agents/" + agentId,
+      { method: "PATCH", body: JSON.stringify({ role }) },
+    ),
   getProjectPreview: (id: string) =>
     request<{ preview: Preview }>("/api/projects/" + id + "/preview"),
   startProjectPreview: (id: string) =>
