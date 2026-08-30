@@ -53,7 +53,7 @@ interface AgentWorkspaceViewProps {
   onDeleteAgent: () => void;
 }
 
-/** Playground composition module for one selected Agent. */
+/** Composition module for one selected Agent's private workspace. */
 export function AgentWorkspaceView({
   agent,
   system,
@@ -137,29 +137,28 @@ export function AgentWorkspaceView({
         </div>
       </header>
 
-      {showSettings && (
-        <AgentSettingsPanel
-          agent={agent}
-          form={form}
-          modelCatalog={modelCatalog}
-          skillCatalog={skillCatalog}
-          skillLoading={skillLoading}
-          skillError={skillError}
-          assignedSkills={controller.agentSkills}
-          disabled={busy}
-          skillsDisabled={busy || agent.status === "busy"}
-          invalidModel={modelCatalog.modelSelectionInvalid}
-          onChange={onFormChange}
-          onSubmit={onSave}
-          onClose={onCloseSettings}
-        />
-      )}
-
       <div className="workspace-body">
+        {showSettings && (
+          <AgentSettingsPanel
+            agent={agent}
+            form={form}
+            modelCatalog={modelCatalog}
+            skillCatalog={skillCatalog}
+            skillLoading={skillLoading}
+            skillError={skillError}
+            assignedSkills={controller.agentSkills}
+            disabled={busy}
+            skillsDisabled={busy || agent.status === "busy"}
+            invalidModel={modelCatalog.modelSelectionInvalid}
+            onChange={onFormChange}
+            onSubmit={onSave}
+            onClose={onCloseSettings}
+          />
+        )}
         <section className="conversation-pane" aria-label="Conversation">
           <div className="playground-topbar">
             <div>
-              <span className="eyebrow">Playground</span>
+              <span className="eyebrow">Agent workspace</span>
               <h2>{openConversation?.title ?? "New conversation"}</h2>
             </div>
             <div className="session-info">

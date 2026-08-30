@@ -16,6 +16,8 @@ import type {
   AgentCapabilities,
   CapabilityGrantView,
   AgentSkills,
+  ApprovalRecord,
+  ApprovalStatus,
   SkillMetadata,
 } from "./types";
 
@@ -70,6 +72,15 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 export const api = {
   auth: () => request<{ required: boolean }>("/api/auth"),
   system: () => request<SystemInfo>("/api/system"),
+  usage: (query: { since?: string; days?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (query.since) params.set("since", query.since);
+    if (query.days !== undefined) params.set("days", String(query.days));
+    const suffix = params.toString();
+    return request<{ usage: import("./types").UsageReport }>(
+      "/api/usage" + (suffix ? "?" + suffix : ""),
+    );
+  },
   listModelProviders: () =>
     request<ModelProvidersResponse>("/api/model-providers"),
   listProviderModels: (providerId: string) =>
@@ -172,6 +183,33 @@ export const api = {
   getPreviewLogs: (id: string, tail = 100) =>
     request<{ preview: Preview; logs: string[]; truncated: boolean }>(
       "/api/agents/" + id + "/preview/logs?tail=" + encodeURIComponent(String(tail)),
+    ),
+  /**
+   * Approvals are Permit-backed. The server answers 503 when approvals are not
+   * configured, which callers treat as "feature dormant", never as "allowed".
+   */
+  listApprovals: (query: {
+    agentId?: string;
+    projectId?: string;
+    status?: ApprovalStatus;
+    kind?: "operation_approval" | "access_request";
+  } = {}) => {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (typeof value === "string" && value.length > 0) search.set(key, value);
+    }
+    const suffix = search.size > 0 ? "?" + search.toString() : "";
+    return request<{ approvals: ApprovalRecord[] }>("/api/approvals" + suffix);
+  },
+  approveApproval: (id: string, scope: "once" | "project" = "once") =>
+    request<{ approval: ApprovalRecord }>(
+      "/api/approvals/" + encodeURIComponent(id) + "/approve",
+      { method: "POST", body: JSON.stringify({ scope }) },
+    ),
+  denyApproval: (id: string) =>
+    request<{ approval: ApprovalRecord }>(
+      "/api/approvals/" + encodeURIComponent(id) + "/deny",
+      { method: "POST" },
     ),
   createProject: (body: { name: string; description?: string }) =>
     request<{ project: Project }>("/api/projects", {

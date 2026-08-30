@@ -1,11 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../api";
 import type { Agent, ModelProviderDescriptor, Project, ProjectRole } from "../../types";
 import { NewConversationDialog } from "./NewConversationDialog";
 import { OrchestrationRunView } from "./OrchestrationRunView";
-import { OrchestrationRunTabs } from "./OrchestrationRunTabs";
-import type { OrchestrationDraft } from "./orchestration-utils";
+import { OrchestrationRunTabs, type RunTab } from "./OrchestrationRunTabs";
+import { ProjectPreviewPanel } from "./ProjectPreviewPanel";
+import { isOrchestrationActive, type OrchestrationDraft } from "./orchestration-utils";
 import type { UseOrchestrationResult } from "./use-orchestration";
+import { buildWorkspaceViewModel } from "../../workspace/workspace-adapter";
+import { WorkspaceView } from "../../workspace/WorkspaceView";
+import { useProjectPreview } from "../../workspace/use-project-preview";
+import { useWorkspaceApprovals } from "../../workspace/use-workspace-approvals";
+import type { AgentLifecycleAction } from "../../workspace/AgentInspector";
 
 interface OrchestrationWorkspaceProps {
   agents: Agent[];
@@ -14,6 +20,10 @@ interface OrchestrationWorkspaceProps {
   composerOpen: boolean;
   onComposerOpenChange: (open: boolean) => void;
   modelProviders?: ModelProviderDescriptor[];
+  /** Lets the room's controls refresh the shell's Agent list after start/stop. */
+  onAgentsChanged: () => Promise<void>;
+  /** Jump to an Agent's own workspace from the room. */
+  onOpenAgent: (agentId: string) => void;
 }
 
 export function OrchestrationWorkspace({
@@ -22,11 +32,20 @@ export function OrchestrationWorkspace({
   composerOpen,
   onComposerOpenChange,
   modelProviders = [],
+  onAgentsChanged,
+  onOpenAgent,
 }: OrchestrationWorkspaceProps) {
   const { detail, detailLoading, sessions, loading, error } = orchestration;
   const replyCount = detail?.turns.length ?? 0;
   const projectId = detail?.session.projectId ?? null;
   const [project, setProject] = useState<Project | null>(null);
+  const [activeTab, setActiveTab] = useState<RunTab>("workspace");
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [lifecyclePending, setLifecyclePending] = useState<AgentLifecycleAction | null>(null);
+
+  const sessionActive = detail ? isOrchestrationActive(detail.session.status) : false;
+  const previewController = useProjectPreview(projectId);
+  const approvalsController = useWorkspaceApprovals(projectId, sessionActive);
 
   // The Team stores only the Project ID; its name and membership live with the
   // Project itself, so they are fetched rather than duplicated into the session.
@@ -48,6 +67,36 @@ export function OrchestrationWorkspace({
       active = false;
     };
   }, [projectId]);
+
+  const viewModel = useMemo(
+    () =>
+      buildWorkspaceViewModel({
+        agents,
+        detail,
+        project,
+        preview: previewController.preview,
+        approvals: approvalsController.approvals,
+        selectedAgentId,
+        modelProviders,
+      }),
+    [
+      agents,
+      approvalsController.approvals,
+      detail,
+      modelProviders,
+      previewController.preview,
+      project,
+      selectedAgentId,
+    ],
+  );
+
+  // Keep a selection that still exists, and default to whoever is speaking.
+  useEffect(() => {
+    setSelectedAgentId((current) => {
+      if (current && viewModel.agents.some((agent) => agent.agentId === current)) return current;
+      return viewModel.activeAgentId ?? viewModel.agents[0]?.agentId ?? null;
+    });
+  }, [viewModel.activeAgentId, viewModel.agents]);
 
   const handleStart = useCallback(
     (sessionId: string) => {
@@ -85,6 +134,32 @@ export function OrchestrationWorkspace({
     },
     [projectId],
   );
+
+  /** Agent lifecycle from the room reuses the platform's own endpoints. */
+  const handleLifecycle = useCallback(
+    async (agentId: string, action: AgentLifecycleAction) => {
+      setLifecyclePending(action);
+      try {
+        if (action === "start") await api.startAgent(agentId);
+        else await api.stopAgent(agentId);
+        await onAgentsChanged();
+      } catch {
+        // The shell's Agent list is the source of truth; refresh either way.
+        await onAgentsChanged().catch(() => undefined);
+      } finally {
+        setLifecyclePending(null);
+      }
+    },
+    [onAgentsChanged],
+  );
+
+  const openPreview = useCallback(() => {
+    if (previewController.preview?.url) {
+      window.open(previewController.preview.url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    setActiveTab("preview");
+  }, [previewController.preview?.url]);
 
   /**
    * "Start conversation" is one product action over the two existing lifecycle
@@ -136,30 +211,58 @@ export function OrchestrationWorkspace({
               onDelete={handleDelete}
               modelProviders={modelProviders}
               project={project}
-              onProjectRoleChange={handleProjectRoleChange}
             />
             <OrchestrationRunTabs
               detail={detail}
               agents={agents}
               action={orchestration.action}
               onContinue={handleContinue}
-              project={project}
+              activeTab={activeTab}
+              onTabChange={setActiveTab}
+              workspace={
+                <WorkspaceView
+                  viewModel={viewModel}
+                  replies={replyCount}
+                  approvals={approvalsController.approvals ?? []}
+                  approvalBusyId={approvalsController.busyId}
+                  approvalError={approvalsController.error}
+                  previewBusy={previewController.busy}
+                  lifecyclePending={lifecyclePending}
+                  onSelectAgent={setSelectedAgentId}
+                  onLifecycle={(agentId, action) => void handleLifecycle(agentId, action)}
+                  onOpenConversation={() => setActiveTab("conversation")}
+                  onOpenPreview={openPreview}
+                  onOpenAgent={onOpenAgent}
+                  onPreviewAction={(action) => void previewController.act(action)}
+                  onApprove={(id, scope) => void approvalsController.approve(id, scope)}
+                  onDeny={(id) => void approvalsController.deny(id)}
+                  {...(project ? { onProjectRoleChange: handleProjectRoleChange } : {})}
+                />
+              }
+              preview={
+                project ? (
+                  <ProjectPreviewPanel
+                    controller={previewController}
+                    projectName={project.name}
+                  />
+                ) : null
+              }
             />
           </>
         ) : (
           <div className="orch-intro" role="status">
             <span className="orch-empty-glyph" aria-hidden="true">◎</span>
-            <h2>Put your Agents in one conversation.</h2>
+            <h2>Put your Agents in one workspace.</h2>
             <p>
-              Choose who joins and describe the task. They reply one at a time, each picking up
-              from the reply before it, while you follow along.
+              Choose who joins and describe the task. You will see them take turns in a shared
+              room, and read exactly what each one said.
             </p>
             <button type="button" className="button button-primary" onClick={openComposer}>
               <span aria-hidden="true">＋</span> New conversation
             </button>
             <span className="orch-intro-note">
               {agents.length === 0
-                ? "No Agents available yet — create one in the Playground first."
+                ? "No Agents available yet — create one first."
                 : sessions.length > 0
                   ? "Or open one from the sidebar."
                   : `${agents.length} ${agents.length === 1 ? "Agent" : "Agents"} ready to join.`}

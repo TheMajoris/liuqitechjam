@@ -105,6 +105,12 @@ const envSchema = z.object({
     .string()
     .url()
     .default("https://ark.cn-beijing.volces.com/api/v3"),
+  /**
+   * Selects the authorization authority for the process. Permit is the safe
+   * default; the local repository policy is only enabled by an explicit
+   * development/POC launcher choice.
+   */
+  AUTHORIZATION_MODE: z.enum(["local", "permit"]).default("permit"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 
@@ -112,7 +118,7 @@ export type AppConfig = ReturnType<typeof loadConfig>;
 
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
   const env = envSchema.parse(environment);
-  if (env.NODE_ENV === "production") {
+  if (env.AUTHORIZATION_MODE === "permit" && env.NODE_ENV === "production") {
     const missing = PERMIT_PRODUCTION_FIELDS.filter((field) => {
       const value = env[field];
       return typeof value !== "string" || value.length === 0 || value.startsWith("replace-");
@@ -126,6 +132,11 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
   }
   const authToken = env.APP_AUTH_TOKEN?.trim() ?? "";
   const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"]);
+  if (env.AUTHORIZATION_MODE === "local" && !loopbackHosts.has(env.HOST)) {
+    throw new Error(
+      "AUTHORIZATION_MODE=local requires HOST to be a loopback address (127.0.0.1, ::1, or localhost)",
+    );
+  }
   if (env.NODE_ENV === "production" && !loopbackHosts.has(env.HOST)) {
     if (authToken.length < 24 || authToken.startsWith("replace-")) {
       throw new Error(
@@ -194,12 +205,14 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     permitApiUrl: env.PERMIT_API_URL.replace(/\/+$/, ""),
     permitCheckTimeoutMs: env.PERMIT_CHECK_TIMEOUT_MS,
     arkBaseUrl: env.ARK_BASE_URL.replace(/\/+$/, ""),
+    authorizationMode: env.AUTHORIZATION_MODE,
     nodeEnv: env.NODE_ENV,
   };
 }
 
 /** Permit authorization/operation-approval configuration is all-or-nothing. */
 export function isPermitConfigured(config: AppConfig): boolean {
+  if (config.authorizationMode !== "permit") return false;
   return (
     config.permitApiKey.length > 0 &&
     !config.permitApiKey.startsWith("replace-") &&

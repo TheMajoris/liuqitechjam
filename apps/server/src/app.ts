@@ -337,6 +337,16 @@ export async function createApp(
     return requireOrchestrationService(orchestrationService).deleteSession(id);
   });
 
+  const usageQuery = z.object({
+    since: z.string().datetime().optional(),
+    days: z.coerce.number().int().min(1).max(365).optional(),
+  });
+
+  app.get("/api/usage", async (request) => {
+    const query = usageQuery.parse(request.query);
+    return { usage: service.usageReport(query) };
+  });
+
   app.get("/api/system", async () => service.systemInfo());
 
   app.get("/api/agents", async () => ({ agents: service.listAgents() }));
@@ -648,7 +658,11 @@ export async function createApp(
     };
   });
 
-  if (config.nodeEnv === "production") {
+  // The local POC launcher keeps NODE_ENV=production so the bundled web is
+  // served exactly like the deployable build, while authorization mode still
+  // controls whether Permit is assembled. Direct local-mode starts should
+  // serve it too; Permit development/test servers retain their API-only mode.
+  if (config.nodeEnv === "production" || config.authorizationMode === "local") {
     const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
     await app.register(fastifyStatic, {
       root: webRoot,

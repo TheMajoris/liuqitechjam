@@ -69,6 +69,19 @@ if [[ -z "${ARK_API_KEY:-}" || -z "${ARK_MODEL:-}" ]]; then
   exit 2
 fi
 
+requested_authorization_mode="${AUTHORIZATION_MODE:-local}"
+if [[ "$requested_authorization_mode" != "local" ]]; then
+  log "Ignoring AUTHORIZATION_MODE=$requested_authorization_mode; npm run poc always uses local authorization."
+fi
+
+# A developer's shell may contain stale or malformed Permit values. Local POC
+# mode must not validate or use them, and must never silently contact Permit.
+unset PERMIT_API_KEY PERMIT_PDP_URL PERMIT_PROJECT_ID PERMIT_ENVIRONMENT_ID \
+  PERMIT_TENANT_KEY PERMIT_OPERATION_APPROVAL_CONFIG_ID PERMIT_ACCESS_REQUEST_CONFIG_ID \
+  PERMIT_API_URL PERMIT_CHECK_TIMEOUT_MS PERMIT_PDP_IMAGE PERMIT_PDP_CONTAINER_NAME \
+  PERMIT_PDP_HOST PERMIT_PDP_PORT PERMIT_PDP_STARTUP_TIMEOUT_SECONDS PERMIT_PDP_PULL
+export AUTHORIZATION_MODE=local
+
 command -v node >/dev/null 2>&1 || {
   log "Node.js 22+ is required to run the local control plane."
   exit 2

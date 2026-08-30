@@ -44,17 +44,19 @@ export function CreateAgentModal({
           </div>
           <button type="button" onClick={onClose}>×</button>
         </div>
-        <AgentFormFields
-          form={form}
-          modelCatalog={modelCatalog}
-          skillCatalog={skillCatalog}
-          skillLoading={skillLoading}
-          skillError={skillError}
-          assignedSkills={null}
-          disabled={disabled}
-          isNew
-          onChange={onChange}
-        />
+        <div className="modal-body">
+          <AgentFormFields
+            form={form}
+            modelCatalog={modelCatalog}
+            skillCatalog={skillCatalog}
+            skillLoading={skillLoading}
+            skillError={skillError}
+            assignedSkills={null}
+            disabled={disabled}
+            isNew
+            onChange={onChange}
+          />
+        </div>
         <div className="modal-footer">
           <button type="button" className="button button-ghost" onClick={onClose}>
             Cancel

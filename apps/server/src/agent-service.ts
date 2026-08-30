@@ -43,6 +43,8 @@ import { AgentRuntimePromptComposer } from "./agent-runtime-prompt.js";
 import type { RuntimeTelemetry } from "./telemetry/telemetry-types.js";
 import type { McpSessionService } from "./tools/mcp-session-service.js";
 import type { PermitDirectoryReconciliationSink } from "./access/permit-directory-reconciler.js";
+import { buildUsageReport } from "./usage/usage-aggregator.js";
+import type { UsageReport, UsageReportOptions } from "./usage/usage-types.js";
 
 const now = () => new Date().toISOString();
 
@@ -624,6 +626,28 @@ export class AgentService {
       options.orchestrationId,
     );
     return { run, message };
+  }
+
+  /**
+   * Aggregate usage across every scope from one consistent store snapshot.
+   *
+   * Reading the snapshot directly rather than the bounded audit query keeps
+   * the report complete: `AuditReader.query` caps results for HTTP callers.
+   */
+  usageReport(options: UsageReportOptions = {}): UsageReport {
+    const snapshot = this.store.snapshot();
+    return buildUsageReport(
+      {
+        agents: snapshot.agents,
+        runs: snapshot.runs,
+        messages: snapshot.messages,
+        orchestrations: snapshot.orchestrations,
+        orchestrationTurns: snapshot.orchestrationTurns,
+        projects: snapshot.projects,
+        auditEvents: snapshot.auditEvents,
+      },
+      options,
+    );
   }
 
   async systemInfo(): Promise<Record<string, unknown>> {

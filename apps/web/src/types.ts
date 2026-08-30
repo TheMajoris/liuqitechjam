@@ -103,6 +103,35 @@ export interface Agent {
   updatedAt: string;
 }
 
+export type ApprovalKind = "operation_approval" | "access_request";
+
+export type ApprovalStatus =
+  | "pending"
+  | "approved"
+  | "denied"
+  | "expired"
+  | "consumed"
+  | "revoked"
+  | "unknown";
+
+/**
+ * Safe projection of one Permit approval. Permit owns the decision; this
+ * record only mirrors it so the UI can show and act on what already exists.
+ */
+export interface ApprovalRecord {
+  id: string;
+  kind: ApprovalKind;
+  scope: "once" | "project";
+  agentId: string;
+  projectId: string | null;
+  runId: string | null;
+  toolId: string;
+  safeSummary: string;
+  status: ApprovalStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type ToolRisk = "read" | "write" | "network" | "external_write" | "high_cost";
 export type ToolAvailability = "available" | "approval_required" | "denied";
 
@@ -399,4 +428,88 @@ export interface SystemInfo {
   runtimeProvider: "local-process" | "container";
   containerEngine: string | null;
   runtime: string;
+}
+
+export type UsageAvailability = "available" | "partial" | "unavailable";
+
+export interface UsageTokenTotals {
+  availability: UsageAvailability;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  runsReporting: number;
+}
+
+export interface UsageRunTotals {
+  total: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  active: number;
+}
+
+export interface UsageActivityTotals {
+  toolCalls: number;
+  toolFailures: number;
+  approvalsRequired: number;
+  skillInvocations: number;
+  authorizationDenials: number;
+}
+
+export interface UsageLatency {
+  samples: number;
+  averageMs: number;
+  p95Ms: number;
+  maxMs: number;
+}
+
+export interface UsageTotals {
+  runs: UsageRunTotals;
+  tokens: UsageTokenTotals;
+  activity: UsageActivityTotals;
+  latency: UsageLatency;
+  messages: number;
+}
+
+export interface UsageAgentBreakdown extends UsageTotals {
+  agentId: string;
+  name: string | null;
+  status: string | null;
+  modelLabel: string | null;
+  lastActiveAt: string | null;
+}
+
+export interface UsageWorkspaceBreakdown extends UsageTotals {
+  orchestrationId: string;
+  name: string | null;
+  status: string | null;
+  projectId: string | null;
+  participants: number;
+  lastActiveAt: string | null;
+}
+
+export interface UsageProjectBreakdown extends UsageTotals {
+  projectId: string;
+  name: string | null;
+  lastActiveAt: string | null;
+}
+
+export interface UsageDailyPoint {
+  date: string;
+  runs: number;
+  completed: number;
+  failed: number;
+  totalTokens: number;
+  toolCalls: number;
+}
+
+export interface UsageReport {
+  since: string | null;
+  generatedAt: string;
+  totals: UsageTotals;
+  agents: UsageAgentBreakdown[];
+  workspaces: UsageWorkspaceBreakdown[];
+  projects: UsageProjectBreakdown[];
+  daily: UsageDailyPoint[];
 }

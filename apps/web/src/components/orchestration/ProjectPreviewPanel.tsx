@@ -1,8 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError } from "../../api";
+import { useState } from "react";
 import type { Preview } from "../../types";
-
-type PanelError = { message: string; errorCode: string | null };
+import type { ProjectPreviewController } from "../../workspace/use-project-preview";
 
 const statusCopy: Record<Preview["status"] | "not_started", string> = {
   not_started: "Not running",
@@ -14,94 +12,25 @@ const statusCopy: Record<Preview["status"] | "not_started", string> = {
   interrupted: "Interrupted",
 };
 
-function toPanelError(reason: unknown): PanelError {
-  if (reason instanceof ApiError) {
-    return { message: reason.message, errorCode: reason.errorCode };
-  }
-  return {
-    message: "Unable to complete the preview request. Please try again.",
-    errorCode: null,
-  };
-}
-
 /**
  * The Team's canonical artifact.
  *
  * One Project preview serves the shared workspace, so it is deliberately
  * independent of whichever Agent is currently speaking: it survives turn
- * changes and is not stopped when the conversation stops.
+ * changes and is not stopped when the conversation stops. Lifecycle lives in
+ * `useProjectPreview`, shared with the room and the header, so the preview is
+ * shown in three places at the cost of one request loop.
  */
 export function ProjectPreviewPanel({
-  projectId,
+  controller,
   projectName,
 }: {
-  projectId: string;
+  controller: ProjectPreviewController;
   projectName: string;
 }) {
-  const [preview, setPreview] = useState<Preview | null>(null);
-  const [logs, setLogs] = useState<string[]>([]);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<PanelError | null>(null);
+  const { preview, logs, busy, error, act } = controller;
   const [logsOpen, setLogsOpen] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
-  const mounted = useRef(true);
-
-  const refresh = useCallback(async () => {
-    try {
-      const { preview: next } = await api.getProjectPreview(projectId);
-      if (!mounted.current) return;
-      setPreview(next);
-      if (next.status === "running") {
-        const result = await api.getProjectPreviewLogs(projectId, 100).catch(() => null);
-        if (result && mounted.current) setLogs(result.logs);
-      }
-    } catch (reason) {
-      // A Project with no preview yet is the normal empty state, not a failure.
-      if (reason instanceof ApiError && reason.status === 404) {
-        if (mounted.current) setPreview(null);
-        return;
-      }
-      if (mounted.current) setError(toPanelError(reason));
-    }
-  }, [projectId]);
-
-  useEffect(() => {
-    mounted.current = true;
-    void refresh();
-    return () => {
-      mounted.current = false;
-    };
-  }, [refresh]);
-
-  // Poll while the runtime is between states so the panel settles on its own.
-  useEffect(() => {
-    const status = preview?.status;
-    if (status !== "starting" && status !== "stopping") return;
-    const interval = window.setInterval(() => void refresh(), 1_200);
-    return () => window.clearInterval(interval);
-  }, [preview?.status, refresh]);
-
-  const act = async (action: "start" | "restart" | "stop") => {
-    setBusy(action);
-    setError(null);
-    try {
-      const call =
-        action === "start"
-          ? api.startProjectPreview
-          : action === "restart"
-            ? api.restartProjectPreview
-            : api.stopProjectPreview;
-      const { preview: next } = await call(projectId);
-      if (!mounted.current) return;
-      setPreview(next);
-      if (next.status !== "running") setLogs([]);
-    } catch (reason) {
-      if (mounted.current) setError(toPanelError(reason));
-      await refresh();
-    } finally {
-      if (mounted.current) setBusy(null);
-    }
-  };
 
   const status = preview?.status ?? "not_started";
   const running = status === "running";

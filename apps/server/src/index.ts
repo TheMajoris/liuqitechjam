@@ -3,6 +3,7 @@ import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
 import {
   isSupervisorConfigured,
+  isPermitConfigured,
   loadConfig,
   writeCodexConfig,
 } from "./config.js";
@@ -18,6 +19,8 @@ import {
 import {
   createPermitAuthorizationAdapter,
 } from "./access/permit-authorization-adapter.js";
+import { RepositoryAuthorizationService } from "./access/repository-authorization-service.js";
+import { LocalPocApprovalGateway } from "./access/local-poc-approval-gateway.js";
 import { PermitSynchronizationGate } from "./access/permit-synchronization-gate.js";
 import {
   createPermitDirectoryClient,
@@ -27,7 +30,6 @@ import {
   createPermitApprovalClient,
   PermitApprovalService,
 } from "./access/permit-approval-service.js";
-import { isPermitConfigured } from "./config.js";
 import { LocalContainerPreviewRuntime } from "./preview/local-container-preview-runtime.js";
 import { PreviewCommandResolver } from "./preview/preview-command-resolver.js";
 import { StorePreviewContextProvider } from "./preview/preview-context-provider.js";
@@ -72,15 +74,18 @@ const service = new AgentService(
 );
 service.setMcpSessionService(mcpSessions);
 service.setTelemetry(telemetry);
-// Permit is the only authorization authority in the production graph. The
-// adapter remains fail-closed when configuration or the PDP is unavailable;
-// repository role policy is intentionally not assembled here.
-const authorization = createPermitAuthorizationAdapter(
-  config,
-  permitSynchronizationGate,
-  audit,
-  telemetry,
-);
+const permitMode = config.authorizationMode === "permit";
+// Permit is the only authorization authority in the production graph. Local
+// POC mode uses the repository's fixed role policy and never constructs a
+// Permit adapter, directory reconciler, or external approval service.
+const authorization = permitMode
+  ? createPermitAuthorizationAdapter(
+      config,
+      permitSynchronizationGate,
+      audit,
+      telemetry,
+    )
+  : new RepositoryAuthorizationService(store);
 const projectWorkspaces = new ProjectWorkspaceManager(
   path.join(config.dataDirectory, "projects"),
 );
@@ -90,18 +95,24 @@ const projectService = new ProjectService(
   service,
   authorization,
 );
-const permitDirectory = new PermitDirectoryReconciler(
-  store,
-  createPermitDirectoryClient(config),
-  { tenantKey: config.permitTenantKey, synchronizationGate: permitSynchronizationGate },
-);
-const permitApprovalService = new PermitApprovalService(
-  store,
-  createPermitApprovalClient(config),
-  { tenantKey: config.permitTenantKey, audit, telemetry },
-);
-service.setPermitDirectoryReconciler(permitDirectory);
-projectService.setPermitDirectoryReconciler(permitDirectory);
+const permitDirectory = permitMode
+  ? new PermitDirectoryReconciler(
+      store,
+      createPermitDirectoryClient(config),
+      { tenantKey: config.permitTenantKey, synchronizationGate: permitSynchronizationGate },
+    )
+  : undefined;
+const permitApprovalService = permitMode
+  ? new PermitApprovalService(
+      store,
+      createPermitApprovalClient(config),
+      { tenantKey: config.permitTenantKey, audit, telemetry },
+    )
+  : undefined;
+if (permitDirectory !== undefined) {
+  service.setPermitDirectoryReconciler(permitDirectory);
+  projectService.setPermitDirectoryReconciler(permitDirectory);
+}
 const previewService = new PreviewService(
   store,
   service,
@@ -146,7 +157,7 @@ const toolService = new ToolService(
   toolRegistry,
   authorization,
   store,
-  permitApprovalService,
+  permitApprovalService ?? new LocalPocApprovalGateway(),
   audit,
   telemetry,
 );
@@ -161,10 +172,13 @@ projectService.setSkillService(skillService);
 await service.initialize();
 await projectService.initialize();
 // Reconcile existing repository facts before accepting privileged lifecycle
-// mutations. Development can boot without Permit for read-only inspection,
-// while any configured provider is converged immediately; production config
+// mutations. A development Permit graph may be inspected without credentials;
+// configured Permit deployments converge immediately, while production config
 // validation above guarantees this call has a usable client.
-if (config.nodeEnv === "production" || isPermitConfigured(config)) {
+if (
+  permitDirectory !== undefined &&
+  (config.nodeEnv === "production" || isPermitConfigured(config))
+) {
   await permitDirectory.reconcile();
 }
 await previewService.initialize();
@@ -214,7 +228,7 @@ const app = await createApp(
     sessions: mcpSessions,
     toolService,
     skillService,
-    approvalService: permitApprovalService,
+    ...(permitApprovalService === undefined ? {} : { approvalService: permitApprovalService }),
     auditService: audit,
     telemetry,
   },
