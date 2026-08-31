@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
 import { OrchestrationWorkspace } from "./components/orchestration/OrchestrationWorkspace";
 import { AuthScreen } from "./components/playground/AuthScreen";
-import { AgentSidebar, type Workspace } from "./components/playground/AgentSidebar";
+import { AppSidebar, type ShellView } from "./components/shell/AppSidebar";
+import { InsightsView } from "./components/insights/InsightsView";
+import { RolesAndSkillsView } from "./components/access/RolesAndSkillsView";
 import { AgentWorkspaceView } from "./components/playground/AgentWorkspaceView";
 import { CreateAgentModal } from "./components/playground/CreateAgentModal";
 import { useOrchestration } from "./components/orchestration/use-orchestration";
@@ -12,6 +14,8 @@ import { useSkillCatalog } from "./playground/use-skill-catalog";
 import { useAgentWorkspace } from "./playground/use-agent-workspace";
 import type {
   Agent,
+  AgentRole,
+  Project,
   SystemInfo,
 } from "./types";
 
@@ -42,7 +46,6 @@ function errorMessage(reason: unknown): string {
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [conversationsOpen, setConversationsOpen] = useState(true);
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -52,9 +55,12 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
-  const [workspace, setWorkspace] = useState<Workspace>("playground");
+  const [view, setView] = useState<ShellView>("workspace");
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [roles, setRoles] = useState<AgentRole[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(readSidebarPreference);
   const [composerOpen, setComposerOpen] = useState(false);
+  const [composerMode, setComposerMode] = useState<"workspace" | "conversation">("workspace");
   const orchestration = useOrchestration();
 
   const selected = useMemo(
@@ -89,28 +95,95 @@ export default function App() {
     setError,
   });
 
+  const refreshRoles = useCallback(async () => {
+    const { roles: next } = await api.listRoles();
+    setRoles(next);
+  }, []);
+
   const openCreate = useCallback(() => {
     setForm(emptyAgentForm);
     modelCatalog.clearError();
+    void refreshRoles().catch((reason) => setError(errorMessage(reason)));
     setShowCreate(true);
-  }, [modelCatalog.clearError]);
+  }, [modelCatalog.clearError, refreshRoles]);
 
-  const startNew = useCallback(() => {
-    if (workspace === "orchestration") {
-      setComposerOpen(true);
-      return;
+  const newWorkspace = useCallback(() => {
+    setView("workspace");
+    setComposerMode("workspace");
+    setComposerOpen(true);
+  }, []);
+
+  const fetchProjects = useCallback(async (): Promise<Project[]> => {
+    const { projects: next } = await api.listProjects().catch(() => ({ projects: [] }));
+    // The API is the source of truth and should already omit archived rows;
+    // keep this guard so a stale response can never resurrect a deleted one.
+    const active = next.filter((project) => project.status === "active");
+    setProjects(active);
+    return active;
+  }, []);
+
+  const refreshProjects = useCallback(async () => {
+    await fetchProjects();
+  }, [fetchProjects]);
+
+  const changeWorkspace = useCallback(async (
+    workspaceId: string,
+    operation: "archive" | "delete",
+  ) => {
+    const workspace = projects.find((project) => project.id === workspaceId);
+    if (!workspace) return;
+    const confirmation = operation === "archive"
+      ? `Archive Workspace "${workspace.name}"? Its conversations will leave active lists and its shared files will remain recoverable.`
+      : `Permanently delete Workspace "${workspace.name}" from the database? Its conversations, memberships, and history will be removed. The shared files will be moved to the recoverable archive. This cannot be undone.`;
+    if (!window.confirm(confirmation)) return;
+
+    const wasSelected = orchestration.selectedWorkspaceId === workspaceId;
+    setBusy(true);
+    setError(null);
+    try {
+      if (operation === "archive") {
+        await api.archiveProject(workspaceId);
+      } else {
+        await api.deleteProject(workspaceId);
+      }
+      const next = await fetchProjects();
+      if (wasSelected) {
+        orchestration.selectWorkspace(next[0]?.id ?? null);
+        setView("workspace");
+      }
+      await orchestration.refreshSessions().catch(() => undefined);
+      // Re-assert the workspace selection after the session refresh. An older
+      // server may still return archived child sessions, and those must never
+      // pull the UI back onto the workspace just removed.
+      if (wasSelected) orchestration.selectWorkspace(next[0]?.id ?? null);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusy(false);
     }
-    openCreate();
-  }, [openCreate, workspace]);
+  }, [fetchProjects, orchestration, projects]);
+
+  useEffect(() => {
+    if (projects.length === 0) return;
+    if (
+      orchestration.selectedWorkspaceId === null ||
+      !projects.some((project) => project.id === orchestration.selectedWorkspaceId)
+    ) {
+      orchestration.selectWorkspace(projects[0]!.id);
+      setView("workspace");
+    }
+  }, [orchestration.selectedWorkspaceId, orchestration.selectWorkspace, projects]);
 
   const bootstrap = useCallback(async () => {
     await Promise.all([
       refreshAgents(),
+      refreshProjects(),
+      refreshRoles(),
       api.system().then(setSystem),
       modelCatalog.refresh(),
       skillCatalog.refresh(),
     ]);
-  }, [modelCatalog.refresh, refreshAgents, skillCatalog.refresh]);
+  }, [modelCatalog.refresh, refreshAgents, refreshProjects, refreshRoles, skillCatalog.refresh]);
 
   useEffect(() => {
     void api
@@ -161,6 +234,7 @@ export default function App() {
       const { agent } = await api.createAgent(formPayload(form));
       await refreshAgents();
       setSelectedId(agent.id);
+      setView("agent");
       setShowCreate(false);
       setForm(emptyAgentForm);
     } catch (reason) {
@@ -269,127 +343,157 @@ export default function App() {
 
   return (
     <div className={"app-shell " + (sidebarOpen ? "" : "is-collapsed")}>
-      {sidebarOpen && (
-        <AgentSidebar
-          agents={agents}
-          selectedId={selectedId}
-          conversations={workspaceController.conversations}
-          conversationId={workspaceController.conversationId}
-          conversationsOpen={conversationsOpen}
-          workspace={workspace}
-          system={system}
-          busy={busy}
-          runInFlight={workspaceController.runInFlight}
-          orchestration={orchestration}
-          onHide={() => setSidebarOpen(false)}
-          onStartNew={startNew}
-          onWorkspaceChange={setWorkspace}
-          onSelectAgent={(agentId) => {
-            setSelectedId(agentId);
-            setWorkspace("playground");
-          }}
-          onToggleConversations={() => setConversationsOpen((value) => !value)}
-          onSelectConversation={(id) => void workspaceController.openConversation(id)}
-          onCreateConversation={() => void workspaceController.createConversation()}
-          onRenameConversation={(id, title) => void workspaceController.renameConversation(id, title)}
-          onDeleteConversation={(id) => void workspaceController.deleteConversation(id)}
-        />
-      )}
+      <AppSidebar
+        collapsed={!sidebarOpen}
+        view={view}
+        agents={agents}
+        projects={projects}
+        selectedAgentId={selectedId}
+        system={system}
+        orchestration={orchestration}
+        onToggleCollapsed={() => setSidebarOpen((value) => !value)}
+        onNewWorkspace={newWorkspace}
+        onNewAgent={openCreate}
+        onSelectInsights={() => setView("insights")}
+        onSelectAccess={() => setView("access")}
+        onSelectSession={(sessionId) => {
+          orchestration.selectSession(sessionId);
+          setView("workspace");
+        }}
+        onSelectWorkspace={(workspaceId) => {
+          orchestration.selectWorkspace(workspaceId);
+          setView("workspace");
+        }}
+        onCreateConversation={() => {
+          setView("workspace");
+          setComposerMode("conversation");
+          setComposerOpen(true);
+        }}
+        onArchiveWorkspace={(workspaceId) => {
+          void changeWorkspace(workspaceId, "archive");
+        }}
+        onDeleteWorkspace={(workspaceId) => {
+          void changeWorkspace(workspaceId, "delete");
+        }}
+        onDeleteSession={(sessionId) => {
+          void orchestration.deleteSession(sessionId).catch(() => undefined);
+        }}
+        onSelectAgent={(agentId) => {
+          setSelectedId(agentId);
+          setView("agent");
+        }}
+      />
 
       <main
         className={
           "main " +
-          (workspace === "orchestration"
-            ? "main-chat"
-            : selected
-              ? "main-workspace"
-              : "")
+          (view === "insights" || view === "access"
+            ? "main-insights"
+            : view === "workspace"
+              ? "main-chat"
+              : selected
+                ? "main-workspace"
+                : "")
         }
       >
-        {!sidebarOpen && (
-          <button
-            type="button"
-            className="rail-button sidebar-reveal"
-            aria-label="Show sidebar"
-            aria-expanded={false}
-            aria-controls="app-sidebar"
-            onClick={() => setSidebarOpen(true)}
-          >
-            <span aria-hidden="true">⟩</span>
-          </button>
+        {!system?.arkConfigured || !system?.codexAvailable ? (
+          <div className="config-banner" role="status">
+            <span aria-hidden="true">!</span>
+            <div>
+              <strong>Runtime configuration needed</strong>
+              <p>
+                {!system?.arkConfigured
+                  ? "Set ARK_API_KEY and ARK_MODEL in .env before running Agents."
+                  : system.runtimeProvider === "container"
+                    ? "The local container engine or Agent Runtime image is unavailable. Rerun npm run poc."
+                    : "Codex CLI was not found. Use the Docker image or install @openai/codex."}
+              </p>
+            </div>
+          </div>
+        ) : null}
+
+        {error && (
+          <div className="error-banner" role="alert">
+            <span>{error}</span>
+            <button type="button" aria-label="Dismiss error" onClick={() => setError(null)}>
+              ×
+            </button>
+          </div>
         )}
 
-        {workspace === "orchestration" ? (
+        {view === "access" ? (
+          <RolesAndSkillsView
+            agents={agents}
+            projects={projects}
+            onProjectsChanged={refreshProjects}
+            onAgentsChanged={refreshAgents}
+          />
+        ) : view === "insights" ? (
+          <InsightsView
+            onSelectAgent={(agentId) => {
+              setSelectedId(agentId);
+              setView("agent");
+            }}
+            onSelectSession={(sessionId) => {
+              orchestration.selectSession(sessionId);
+              setView("workspace");
+            }}
+          />
+        ) : view === "workspace" ? (
           <OrchestrationWorkspace
             agents={agents}
             modelProviders={modelCatalog.providers}
             orchestration={orchestration}
+            projects={projects}
             composerOpen={composerOpen}
+            composerMode={composerMode}
             onComposerOpenChange={setComposerOpen}
+            onComposerModeChange={setComposerMode}
+            onAgentsChanged={async () => {
+              await refreshAgents();
+              await refreshProjects();
+            }}
+            onOpenAgent={(agentId) => {
+              setSelectedId(agentId);
+              setView("agent");
+            }}
+          />
+        ) : selected ? (
+          <AgentWorkspaceView
+            agent={selected}
+            system={system}
+            controller={workspaceController}
+            modelCatalog={modelCatalog}
+            skillCatalog={skillCatalog.catalog}
+            skillLoading={skillCatalog.loading}
+            skillError={skillCatalog.error ?? workspaceController.agentSkillsError}
+            form={form}
+            showSettings={showSettings}
+            previewPanelOpen={previewPanelOpen}
+            busy={busy}
+            onFormChange={(changes) => setForm((current) => ({ ...current, ...changes }))}
+            onSave={saveAgent}
+            onCloseSettings={() => setShowSettings(false)}
+            onToggleSettings={() => setShowSettings((value) => !value)}
+            onTogglePreviewPanel={() => setPreviewPanelOpen((value) => !value)}
+            onToggleAgent={toggleAgent}
+            onDeleteAgent={deleteAgent}
           />
         ) : (
-          <>
-            {!system?.arkConfigured || !system?.codexAvailable ? (
-              <div className="config-banner">
-                <span>!</span>
-                <div>
-                  <strong>Runtime configuration needed</strong>
-                  <p>
-                    {!system?.arkConfigured
-                      ? "Set ARK_API_KEY and ARK_MODEL in .env before using the Playground."
-                      : system.runtimeProvider === "container"
-                        ? "The local container engine or Agent Runtime image is unavailable. Rerun npm run poc."
-                        : "Codex CLI was not found. Use the Docker image or install @openai/codex."}
-                  </p>
-                </div>
-              </div>
-            ) : null}
-
-            {error && (
-              <div className="error-banner" role="alert">
-                <span>{error}</span>
-                <button onClick={() => setError(null)}>×</button>
-              </div>
-            )}
-
-            {selected ? (
-              <AgentWorkspaceView
-                agent={selected}
-                system={system}
-                controller={workspaceController}
-                modelCatalog={modelCatalog}
-                skillCatalog={skillCatalog.catalog}
-                skillLoading={skillCatalog.loading}
-                skillError={skillCatalog.error ?? workspaceController.agentSkillsError}
-                form={form}
-                showSettings={showSettings}
-                previewPanelOpen={previewPanelOpen}
-                busy={busy}
-                onFormChange={(changes) =>
-                  setForm((current) => ({ ...current, ...changes }))
-                }
-                onSave={saveAgent}
-                onCloseSettings={() => setShowSettings(false)}
-                onToggleSettings={() => setShowSettings((value) => !value)}
-                onTogglePreviewPanel={() => setPreviewPanelOpen((value) => !value)}
-                onToggleAgent={toggleAgent}
-                onDeleteAgent={deleteAgent}
-              />
-            ) : (
-              <div className="no-agent">
-                <div className="no-agent-art">A</div>
-                <span className="eyebrow">Agent Launchpad</span>
-                <h1>Your runtime is ready for an Agent.</h1>
-                <p>Create a workspace, give Codex a job, and continue the conversation here.</p>
-                <button
-                  className="button button-primary"
-                  onClick={openCreate}
-                >
-                  Create your first Agent
-                </button>
-              </div>
-            )}
-          </>
+          <div className="no-agent">
+            <div className="no-agent-art" aria-hidden="true">A</div>
+            <span className="eyebrow">Agent Launchpad</span>
+            <h1>No Agent selected.</h1>
+            <p>Create an Agent, or open a shared workspace to watch a Team work together.</p>
+            <div className="no-agent-actions">
+              <button type="button" className="button button-primary" onClick={openCreate}>
+                Create an Agent
+              </button>
+              <button type="button" className="button button-ghost" onClick={newWorkspace}>
+                New workspace
+              </button>
+            </div>
+          </div>
         )}
       </main>
 
@@ -400,6 +504,7 @@ export default function App() {
           skillCatalog={skillCatalog.catalog}
           skillLoading={skillCatalog.loading}
           skillError={skillCatalog.error}
+          roles={roles}
           disabled={busy}
           invalidModel={modelCatalog.modelSelectionInvalid}
           onChange={(changes) => setForm((current) => ({ ...current, ...changes }))}

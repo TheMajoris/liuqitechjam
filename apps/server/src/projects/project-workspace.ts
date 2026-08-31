@@ -1,4 +1,4 @@
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { lstat, mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { SkillRuntimeContext } from "../skills/skill-types.js";
 import type { Agent } from "../types.js";
@@ -88,10 +88,27 @@ export class ProjectWorkspaceManager {
     await writeFile(path.join(project.workspacePath, "AGENTS.md"), content, "utf8");
   }
 
-  async archive(project: Project): Promise<string> {
+  async archive(project: Project): Promise<string | null> {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const destination = path.join(this.root, ".archived", project.id + "-" + timestamp);
-    await rename(project.workspacePath, destination);
+    try {
+      await rename(project.workspacePath, destination);
+    } catch (error) {
+      // A database Project can outlive its checkout if the workspace was
+      // removed externally. Treat only that source-side ENOENT as an
+      // already-archived result; preserve EACCES and every other filesystem
+      // failure for the caller.
+      if (!isErrno(error, "ENOENT")) throw error;
+      try {
+        await lstat(project.workspacePath);
+      } catch (sourceError) {
+        if (isErrno(sourceError, "ENOENT")) return null;
+        throw sourceError;
+      }
+      // The source still exists, so ENOENT came from the destination side (or
+      // another rename condition) and must not be swallowed.
+      throw error;
+    }
     return destination;
   }
 
@@ -99,6 +116,15 @@ export class ProjectWorkspaceManager {
   async restore(project: Project, archivedWorkspace: string): Promise<void> {
     await rename(archivedWorkspace, project.workspacePath);
   }
+}
+
+function isErrno(error: unknown, code: string): error is NodeJS.ErrnoException {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === code
+  );
 }
 
 function skillInstructionLines(context: SkillRuntimeContext | undefined): string[] {

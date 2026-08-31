@@ -3,6 +3,7 @@ import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
 import {
   isSupervisorConfigured,
+  isPermitConfigured,
   loadConfig,
   writeCodexConfig,
 } from "./config.js";
@@ -18,6 +19,9 @@ import {
 import {
   createPermitAuthorizationAdapter,
 } from "./access/permit-authorization-adapter.js";
+import { RepositoryAuthorizationService } from "./access/repository-authorization-service.js";
+import { RoleTemplateAuthorizationService } from "./access/role-template-authorization-service.js";
+import { LocalPocApprovalGateway } from "./access/local-poc-approval-gateway.js";
 import { PermitSynchronizationGate } from "./access/permit-synchronization-gate.js";
 import {
   createPermitDirectoryClient,
@@ -27,19 +31,20 @@ import {
   createPermitApprovalClient,
   PermitApprovalService,
 } from "./access/permit-approval-service.js";
-import { isPermitConfigured } from "./config.js";
 import { LocalContainerPreviewRuntime } from "./preview/local-container-preview-runtime.js";
 import { PreviewCommandResolver } from "./preview/preview-command-resolver.js";
 import { StorePreviewContextProvider } from "./preview/preview-context-provider.js";
 import { ProjectService } from "./projects/project-service.js";
 import { ProjectServiceExecutionScope } from "./projects/project-execution.js";
-import { BraveSearchAdapter } from "./tools/brave-search-adapter.js";
+import { createSearchProvider } from "./tools/search-provider-factory.js";
+import { WebFetchAdapter } from "./tools/web-fetch-adapter.js";
 import { McpSessionService } from "./tools/mcp-session-service.js";
 import {
   createBuiltInToolRegistry,
   ToolService,
 } from "./tools/tool-service.js";
 import { createBuiltInSkillRegistry, SkillService } from "./skills/index.js";
+import { RoleService } from "./roles/index.js";
 import { ProjectWorkspaceManager } from "./projects/project-workspace.js";
 import {
   PreviewService,
@@ -72,15 +77,19 @@ const service = new AgentService(
 );
 service.setMcpSessionService(mcpSessions);
 service.setTelemetry(telemetry);
-// Permit is the only authorization authority in the production graph. The
-// adapter remains fail-closed when configuration or the PDP is unavailable;
-// repository role policy is intentionally not assembled here.
-const authorization = createPermitAuthorizationAdapter(
-  config,
-  permitSynchronizationGate,
-  audit,
-  telemetry,
-);
+const permitMode = config.authorizationMode === "permit";
+// Permit is the only authorization authority in the production graph. Local
+// POC mode uses the repository's fixed role policy and never constructs a
+// Permit adapter, directory reconciler, or external approval service.
+const policyAuthorization = permitMode
+  ? createPermitAuthorizationAdapter(
+      config,
+      permitSynchronizationGate,
+      audit,
+      telemetry,
+    )
+  : new RepositoryAuthorizationService(store);
+const authorization = new RoleTemplateAuthorizationService(store, policyAuthorization);
 const projectWorkspaces = new ProjectWorkspaceManager(
   path.join(config.dataDirectory, "projects"),
 );
@@ -90,18 +99,24 @@ const projectService = new ProjectService(
   service,
   authorization,
 );
-const permitDirectory = new PermitDirectoryReconciler(
-  store,
-  createPermitDirectoryClient(config),
-  { tenantKey: config.permitTenantKey, synchronizationGate: permitSynchronizationGate },
-);
-const permitApprovalService = new PermitApprovalService(
-  store,
-  createPermitApprovalClient(config),
-  { tenantKey: config.permitTenantKey, audit, telemetry },
-);
-service.setPermitDirectoryReconciler(permitDirectory);
-projectService.setPermitDirectoryReconciler(permitDirectory);
+const permitDirectory = permitMode
+  ? new PermitDirectoryReconciler(
+      store,
+      createPermitDirectoryClient(config),
+      { tenantKey: config.permitTenantKey, synchronizationGate: permitSynchronizationGate },
+    )
+  : undefined;
+const permitApprovalService = permitMode
+  ? new PermitApprovalService(
+      store,
+      createPermitApprovalClient(config),
+      { tenantKey: config.permitTenantKey, audit, telemetry },
+    )
+  : undefined;
+if (permitDirectory !== undefined) {
+  service.setPermitDirectoryReconciler(permitDirectory);
+  projectService.setPermitDirectoryReconciler(permitDirectory);
+}
 const previewService = new PreviewService(
   store,
   service,
@@ -134,19 +149,22 @@ service.setProjectExecutionScope(
     previewContext.getForProject(projectId).then((context) => context.status),
   ),
 );
+const searchProvider = createSearchProvider(config);
+const webFetch = new WebFetchAdapter({
+  timeoutMs: config.webFetchTimeoutMs,
+  maxResponseBytes: config.webFetchMaxResponseBytes,
+  maxRedirects: config.webFetchMaxRedirects,
+});
 const toolRegistry = createBuiltInToolRegistry({
-  search: new BraveSearchAdapter({
-    apiKey: config.braveSearchApiKey,
-    timeoutMs: config.braveSearchTimeoutMs,
-    maxResults: config.braveSearchMaxResults,
-  }),
+  search: searchProvider,
+  fetch: webFetch,
   preview: previewService,
 });
 const toolService = new ToolService(
   toolRegistry,
   authorization,
   store,
-  permitApprovalService,
+  permitApprovalService ?? new LocalPocApprovalGateway(),
   audit,
   telemetry,
 );
@@ -155,16 +173,24 @@ const skillService = new SkillService(
   toolService,
   authorization,
   audit,
+  { store },
 );
+const roleService = new RoleService(store, toolService, skillService, authorization);
+toolService.setProjectRoleToolResolver(roleService);
+skillService.setProjectRoleSkillResolver(roleService);
 service.setSkillService(skillService);
 projectService.setSkillService(skillService);
 await service.initialize();
+await roleService.initialize();
 await projectService.initialize();
 // Reconcile existing repository facts before accepting privileged lifecycle
-// mutations. Development can boot without Permit for read-only inspection,
-// while any configured provider is converged immediately; production config
+// mutations. A development Permit graph may be inspected without credentials;
+// configured Permit deployments converge immediately, while production config
 // validation above guarantees this call has a usable client.
-if (config.nodeEnv === "production" || isPermitConfigured(config)) {
+if (
+  permitDirectory !== undefined &&
+  (config.nodeEnv === "production" || isPermitConfigured(config))
+) {
   await permitDirectory.reconcile();
 }
 await previewService.initialize();
@@ -183,22 +209,30 @@ const orchestrationService = new OrchestrationService({
   store,
   agentService: service,
   // Attaching here keeps Project membership rules inside ProjectService while
-  // letting a Team declare its shared artifact at creation time.
+  // letting each Conversation declare its shared Workspace at creation time.
   projectBinding: {
-    async bindTeam(projectId, teamId, agentIds) {
-      await projectService.attachTeam(projectId, teamId);
-      const attached = new Set((await projectService.get(projectId)).agentIds);
-      for (const agentId of agentIds) {
-        if (attached.has(agentId)) continue;
-        await projectService.attachAgent(projectId, agentId);
-        attached.add(agentId);
-      }
+    async bindConversation(projectId, conversationId, agentIds) {
+      await projectService.bindConversation(projectId, conversationId, agentIds);
+    },
+    // Keep the old injection name usable for callers that have not migrated
+    // their wiring yet; orchestration still gets the multi-conversation
+    // semantics through the ProjectService method above.
+    async bindTeam(projectId, conversationId, agentIds) {
+      await projectService.bindConversation(projectId, conversationId, agentIds);
     },
   },
   ...(supervisorSelector === undefined
     ? {}
     : { selectNextParticipant: supervisorSelector }),
   supervisorTimeoutMs: config.supervisorTimeoutMs,
+});
+projectService.setConversationLifecycle({
+  async stopForProject(projectId) {
+    await orchestrationService.stopSessionsForProject(projectId);
+  },
+  async removeForProject(projectId) {
+    await orchestrationService.removeSessionsForProject(projectId);
+  },
 });
 await orchestrationService.initialize();
 orchestrationService.setTelemetry(telemetry);
@@ -214,8 +248,11 @@ const app = await createApp(
     sessions: mcpSessions,
     toolService,
     skillService,
-    approvalService: permitApprovalService,
+    roleService,
+    ...(permitApprovalService === undefined ? {} : { approvalService: permitApprovalService }),
     auditService: audit,
+    searchProvider,
+    webFetch,
     telemetry,
   },
 );

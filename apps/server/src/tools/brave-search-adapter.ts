@@ -1,10 +1,12 @@
 import { z } from "zod";
+import type {
+  SearchProvider,
+  SearchProviderHealth,
+  SearchResult,
+} from "./search-provider.js";
 
-export interface BraveSearchResult {
-  title: string;
-  url: string;
-  description: string;
-}
+/** Compatibility alias; the tool boundary uses provider-neutral results. */
+export type BraveSearchResult = SearchResult;
 
 export interface BraveSearchAdapterOptions {
   apiKey?: string;
@@ -129,7 +131,8 @@ async function readBoundedBody(
  * Small, dependency-free Brave adapter. Provider payloads never leave this
  * boundary and provider errors intentionally do not include response bodies.
  */
-export class BraveSearchAdapter {
+export class BraveSearchAdapter implements SearchProvider {
+  readonly id = "brave" as const;
   private readonly apiKey: string;
   private readonly timeoutMs: number;
   private readonly maxResults: number;
@@ -216,6 +219,21 @@ export class BraveSearchAdapter {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  async health(): Promise<SearchProviderHealth> {
+    return {
+      provider: this.id,
+      status: this.apiKey && !this.apiKey.startsWith("replace-")
+        ? "available"
+        : "unavailable",
+      configured: this.apiKey.length > 0 && !this.apiKey.startsWith("replace-"),
+      endpoint: this.endpoint,
+      message: this.apiKey && !this.apiKey.startsWith("replace-")
+        ? "Brave Search is configured"
+        : "Brave Search API key is not configured",
+      checkedAt: new Date().toISOString(),
+    };
   }
 }
 

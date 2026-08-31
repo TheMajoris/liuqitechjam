@@ -17,6 +17,7 @@ import { registerMcpRoute, type McpRouteDependencies } from "./mcp-server.js";
 import { ToolApprovalRequiredError, ToolError } from "./tools/tool-errors.js";
 import { PermitApprovalError } from "./access/permit-approval-service.js";
 import { isSkillError } from "./skills/skill-service.js";
+import { isRoleError } from "./roles/role-service.js";
 import { isPreviewError } from "./preview/preview-service.js";
 import type { PreviewLogsView } from "./preview/preview-service.js";
 import type { PreviewOwnerRef, PreviewView } from "./preview/preview-types.js";
@@ -69,7 +70,8 @@ export interface ProjectServiceContract {
   list(): Promise<ProjectView[]>;
   get(projectId: string): Promise<ProjectView>;
   update(projectId: string, input: UpdateProjectInput): Promise<ProjectView>;
-  archive(projectId: string): Promise<{ archivedWorkspace: string }>;
+  archive(projectId: string): Promise<{ archivedWorkspace: string | null }>;
+  deletePermanently(projectId: string): Promise<{ deleted: boolean }>;
   attachAgent(projectId: string, agentId: string): Promise<ProjectView>;
   updateAgentRole(
     projectId: string,
@@ -90,12 +92,23 @@ export interface PreviewServiceContract {
   logs(owner: PreviewOwnerRef, tail?: number): Promise<PreviewLogsView>;
 }
 
+/** Cosmetic only. Every field is optional; absent means the ID-derived look. */
+const appearanceBody = z.object({
+  hue: z.number().int().min(0).max(359).optional(),
+  hair: z.number().int().min(0).max(5).optional(),
+  skin: z.number().int().min(0).max(3).optional(),
+  accessory: z.enum(["none", "glasses", "headset", "cap"]).optional(),
+}).strict();
+
 const createAgentBody = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().max(500).optional(),
   instructions: z.string().max(10_000).optional(),
   modelRef: ModelRefSchema.optional(),
   skillIds: z.array(z.string().min(1)).max(32).optional(),
+  /** Optional global role; null is an explicit "No role" selection. */
+  globalRoleId: z.string().min(1).max(128).nullable().optional(),
+  appearance: appearanceBody.optional(),
 });
 const updateAgentBody = createAgentBody.partial().refine(
   (value) => Object.keys(value).length > 0,
@@ -337,6 +350,16 @@ export async function createApp(
     return requireOrchestrationService(orchestrationService).deleteSession(id);
   });
 
+  const usageQuery = z.object({
+    since: z.string().datetime().optional(),
+    days: z.coerce.number().int().min(1).max(365).optional(),
+  });
+
+  app.get("/api/usage", async (request) => {
+    const query = usageQuery.parse(request.query);
+    return { usage: service.usageReport(query) };
+  });
+
   app.get("/api/system", async () => service.systemInfo());
 
   app.get("/api/agents", async () => ({ agents: service.listAgents() }));
@@ -362,6 +385,17 @@ export async function createApp(
       modelRegistry.validateWorkerModelRef(body.modelRef);
     }
     return { agent: await service.updateAgent(id, body) };
+  });
+
+  /**
+   * Cosmetic-only. Separate from the Agent PATCH because appearance never
+   * reaches the runtime prompt or the authorization directory, so it must not
+   * share their failure modes.
+   */
+  app.patch("/api/agents/:id/appearance", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const appearance = appearanceBody.parse(request.body);
+    return { agent: await service.updateAgentAppearance(id, appearance) };
   });
 
   app.delete("/api/agents/:id", async (request) => {
@@ -484,6 +518,14 @@ export async function createApp(
   app.delete("/api/projects/:id", async (request) => {
     const { id } = projectIdParams.parse(request.params);
     return requireProjectService(projectService).archive(id);
+  });
+
+  // Permanent deletion is deliberately a separate route from archive. The
+  // service still moves active files through its recoverable archive path,
+  // while this operation removes the Workspace's database records.
+  app.delete("/api/projects/:id/permanent", async (request) => {
+    const { id } = projectIdParams.parse(request.params);
+    return requireProjectService(projectService).deletePermanently(id);
   });
 
   app.post("/api/projects/:id/agents/:agentId", async (request) => {
@@ -648,7 +690,11 @@ export async function createApp(
     };
   });
 
-  if (config.nodeEnv === "production") {
+  // The local POC launcher keeps NODE_ENV=production so the bundled web is
+  // served exactly like the deployable build, while authorization mode still
+  // controls whether Permit is assembled. Direct local-mode starts should
+  // serve it too; Permit development/test servers retain their API-only mode.
+  if (config.nodeEnv === "production" || config.authorizationMode === "local") {
     const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
     await app.register(fastifyStatic, {
       root: webRoot,
@@ -670,6 +716,7 @@ export async function createApp(
     const previewError = isPreviewError(error) ? error : null;
     const projectError = isProjectError(error) ? error : null;
     const skillError = isSkillError(error) ? error : null;
+    const roleError = isRoleError(error) ? error : null;
     const permitApprovalError = error instanceof PermitApprovalError ? error : null;
     const validationError = error instanceof z.ZodError;
     const details = validationError
@@ -708,6 +755,7 @@ export async function createApp(
       previewError?.code ??
       projectError?.code ??
       skillError?.code ??
+      roleError?.code ??
       permitApprovalError?.code;
     return reply.code(statusCode).send({
       error: responseMessage,

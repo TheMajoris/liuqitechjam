@@ -1,21 +1,21 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { Agent, OrchestrationSessionDetail, Project } from "../../types";
+import { useEffect, useMemo, useRef, type ReactNode } from "react";
+import type { Agent, OrchestrationSessionDetail } from "../../types";
 import { OrchestrationConversation } from "./OrchestrationConversation";
 import { OrchestrationTimeline } from "./OrchestrationTimeline";
-import { ProjectPreviewPanel } from "./ProjectPreviewPanel";
 
-const BASE_TABS = [
-  { id: "conversation", label: "Conversation" },
-  { id: "timeline", label: "Timeline" },
-] as const;
+export type RunTab = "workspace" | "conversation" | "activity" | "preview";
 
-const PREVIEW_TAB = { id: "preview", label: "Preview" } as const;
-
-type RunTab = (typeof BASE_TABS)[number]["id"] | typeof PREVIEW_TAB.id;
+const TAB_LABELS: Record<RunTab, string> = {
+  workspace: "Workspace",
+  conversation: "Conversation",
+  activity: "Activity",
+  preview: "Preview",
+};
 
 const TAB_NOTES: Record<RunTab, string> = {
-  conversation: "What the Agents said",
-  timeline: "Step-by-step execution record",
+  workspace: "Who is in the room and what they are doing",
+  conversation: "What the Agents said, in words",
+  activity: "Step-by-step execution record",
   preview: "The shared artifact this Team is building",
 };
 
@@ -24,62 +24,76 @@ interface OrchestrationRunTabsProps {
   agents: Agent[];
   action?: "create" | "start" | "stop" | "continue" | "delete" | null;
   onContinue?: (prompt: string, sessionId: string) => void;
-  /** Supplied only when the Team is attached to a shared Project. */
-  project?: Project | null;
+  activeTab: RunTab;
+  onTabChange: (tab: RunTab) => void;
+  /** Rendered for the Workspace tab; supplied by the owner so this component
+   *  stays a tab strip rather than growing the whole room's props. */
+  workspace: ReactNode;
+  /** Rendered for the Preview tab; present only with a shared Project. */
+  preview: ReactNode;
 }
 
+/**
+ * Spatial, textual, and forensic views of the same run.
+ *
+ * The room never replaces the transcript: Conversation stays the exact record,
+ * and Activity stays the evidence. Workspace is an additional way in.
+ */
 export function OrchestrationRunTabs({
   detail,
   agents,
   action,
   onContinue,
-  project,
+  activeTab,
+  onTabChange,
+  workspace,
+  preview,
 }: OrchestrationRunTabsProps) {
-  // The Preview tab exists only for a Team with a canonical shared artifact.
-  const tabs = useMemo(
-    () => (project ? [...BASE_TABS, PREVIEW_TAB] : [...BASE_TABS]),
-    [project],
+  const tabs = useMemo<RunTab[]>(
+    () =>
+      preview
+        ? ["workspace", "conversation", "activity", "preview"]
+        : ["workspace", "conversation", "activity"],
+    [preview],
   );
-  const [activeTab, setActiveTab] = useState<RunTab>("conversation");
   const tabRefs = useRef<Partial<Record<RunTab, HTMLButtonElement | null>>>({});
 
   // Selecting a Team without a Project must not strand the user on a gone tab.
   useEffect(() => {
-    if (!tabs.some((tab) => tab.id === activeTab)) setActiveTab("conversation");
-  }, [tabs, activeTab]);
+    if (!tabs.includes(activeTab)) onTabChange("conversation");
+  }, [activeTab, onTabChange, tabs]);
 
   const moveFocus = (from: RunTab, offset: number) => {
-    const index = tabs.findIndex((tab) => tab.id === from);
+    const index = tabs.indexOf(from);
     const next = tabs[(index + offset + tabs.length) % tabs.length]!;
-    setActiveTab(next.id);
-    tabRefs.current[next.id]?.focus();
+    onTabChange(next);
+    tabRefs.current[next]?.focus();
   };
 
   return (
-    <section className="orch-run-tabs" aria-label="Conversation and execution detail">
-      {/* The bar spans the pane; its contents share the thread's column. */}
+    <section className="orch-run-tabs" aria-label="Workspace, conversation and execution detail">
       <div className="orch-run-tablist">
-        <div role="tablist" aria-label="Conversation and execution detail">
+        <div role="tablist" aria-label="Workspace, conversation and execution detail">
           {tabs.map((tab) => (
             <button
-              key={tab.id}
+              key={tab}
               type="button"
               role="tab"
-              id={`orch-run-tab-${tab.id}`}
+              id={`orch-run-tab-${tab}`}
               ref={(node) => {
-                tabRefs.current[tab.id] = node;
+                tabRefs.current[tab] = node;
               }}
-              aria-selected={activeTab === tab.id}
-              aria-controls={`orch-run-panel-${tab.id}`}
-              tabIndex={activeTab === tab.id ? 0 : -1}
-              className={`orch-run-tab ${activeTab === tab.id ? "is-active" : ""}`}
-              onClick={() => setActiveTab(tab.id)}
+              aria-selected={activeTab === tab}
+              aria-controls={`orch-run-panel-${tab}`}
+              tabIndex={activeTab === tab ? 0 : -1}
+              className={`orch-run-tab ${activeTab === tab ? "is-active" : ""}`}
+              onClick={() => onTabChange(tab)}
               onKeyDown={(event) => {
-                if (event.key === "ArrowRight") moveFocus(tab.id, 1);
-                if (event.key === "ArrowLeft") moveFocus(tab.id, -1);
+                if (event.key === "ArrowRight") moveFocus(tab, 1);
+                if (event.key === "ArrowLeft") moveFocus(tab, -1);
               }}
             >
-              {tab.label}
+              {TAB_LABELS[tab]}
             </button>
           ))}
           <span className="orch-run-tab-note">{TAB_NOTES[activeTab]}</span>
@@ -89,25 +103,28 @@ export function OrchestrationRunTabs({
       <div
         className={
           "orch-run-tab-panel " +
-          (activeTab === "conversation" ? "is-conversation" : "")
+          (activeTab === "conversation" ? "is-conversation" : "") +
+          (activeTab === "workspace" ? "is-workspace" : "")
         }
         id={`orch-run-panel-${activeTab}`}
         role="tabpanel"
         aria-labelledby={`orch-run-tab-${activeTab}`}
         tabIndex={0}
       >
-        {activeTab === "conversation" ? (
+        {activeTab === "workspace" ? (
+          workspace
+        ) : activeTab === "conversation" ? (
           <OrchestrationConversation
             detail={detail}
             agents={agents}
             action={action}
             onContinue={onContinue}
           />
-        ) : activeTab === "timeline" ? (
+        ) : activeTab === "activity" ? (
           <OrchestrationTimeline detail={detail} agents={agents} embedded />
-        ) : project ? (
-          <ProjectPreviewPanel projectId={project.id} projectName={project.name} />
-        ) : null}
+        ) : (
+          preview
+        )}
       </div>
     </section>
   );

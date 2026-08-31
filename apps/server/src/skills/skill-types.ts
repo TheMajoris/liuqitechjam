@@ -5,7 +5,7 @@ import type {
 } from "../tools/tool-types.js";
 
 /** Skills are declarative guidance bundles; they never contain executors. */
-export type SkillSource = "built-in";
+export type SkillSource = "built-in" | "user" | "installed";
 
 export interface SkillDefinition {
   id: string;
@@ -19,6 +19,16 @@ export interface SkillDefinition {
   version: string;
 }
 
+/**
+ * Persisted user/catalog skills. The record intentionally contains only the
+ * instruction-only SkillDefinition fields plus lifecycle timestamps; there
+ * is no executable payload, source URL, or installation command.
+ */
+export interface InstalledSkillRecord extends SkillDefinition {
+  installedAt: string;
+  updatedAt: string;
+}
+
 /** Safe registry projection returned by the HTTP control plane. */
 export interface SkillMetadata {
   id: string;
@@ -28,6 +38,12 @@ export interface SkillMetadata {
   capabilityTags: string[];
   source: SkillSource;
   version: string;
+}
+
+/** Safe catalog projection used by discovery/install screens. */
+export interface SkillCatalogEntry extends SkillMetadata {
+  installed: boolean;
+  installable: boolean;
 }
 
 export interface SkillToolCapability {

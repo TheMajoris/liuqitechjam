@@ -44,18 +44,20 @@ export function AgentSettingsPanel({
         </div>
         <button type="button" onClick={onClose}>×</button>
       </div>
-      <AgentFormFields
-        form={form}
-        modelCatalog={modelCatalog}
-        skillCatalog={skillCatalog}
-        skillLoading={skillLoading}
-        skillError={skillError}
-        assignedSkills={assignedSkills}
-        disabled={disabled}
-        skillsDisabled={skillsDisabled}
-        agent={agent}
-        onChange={onChange}
-      />
+      <div className="settings-panel-body">
+        <AgentFormFields
+          form={form}
+          modelCatalog={modelCatalog}
+          skillCatalog={skillCatalog}
+          skillLoading={skillLoading}
+          skillError={skillError}
+          assignedSkills={assignedSkills}
+          disabled={disabled}
+          skillsDisabled={skillsDisabled}
+          agent={agent}
+          onChange={onChange}
+        />
+      </div>
       <div className="panel-footer">
         <code>{agent.workspacePath}</code>
         <button className="button button-primary" disabled={disabled || invalidModel}>

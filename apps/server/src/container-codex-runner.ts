@@ -28,7 +28,7 @@ export interface McpEndpointProbeOptions {
 }
 
 /**
- * Probe a configured container-facing MCP URL without credentials. Any HTTP
+ * Probe a configured MCP URL from the host without credentials. Any HTTP
  * response proves that the host route is reachable; DNS, connection, and
  * timeout failures are treated as unreachable. The body is never consumed.
  */
@@ -215,7 +215,7 @@ export class ContainerCodexRunner implements AgentRunner {
     if (request.mcp) {
       let reachable = false;
       try {
-        reachable = await this.mcpProbe(request.mcp.url);
+        reachable = await this.mcpProbe(this.config.mcpPublicUrl);
       } catch {
         reachable = false;
       }

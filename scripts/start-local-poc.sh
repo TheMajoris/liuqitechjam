@@ -4,12 +4,26 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_dir"
 
+# The native POC is intentionally dotenv-aware. Compose already applies its
+# env_file, but this script runs the control plane directly on the host.
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+fi
+
 runtime_image="${CONTAINER_RUNTIME_IMAGE:-volc-agent-runtime:local}"
 runtime_base_image="${CONTAINER_RUNTIME_BASE_IMAGE:-node:22-bookworm-slim}"
 runtime_apt_mirror="${CONTAINER_APT_MIRROR:-}"
 runtime_apt_security_mirror="${CONTAINER_APT_SECURITY_MIRROR:-}"
 runtime_apt_packages="${CONTAINER_RUNTIME_APT_PACKAGES:-ca-certificates git ripgrep}"
 codex_sandbox_mode="${CODEX_SANDBOX_MODE:-workspace-write}"
+search_provider="${SEARCH_PROVIDER:-searxng}"
+searxng_image="${SEARXNG_IMAGE:-searxng/searxng:latest}"
+searxng_container_name="${SEARXNG_CONTAINER_NAME:-launchpad-searxng}"
+searxng_port="${SEARXNG_PORT:-8080}"
+searxng_auto_start="${SEARXNG_AUTO_START:-1}"
 
 log() {
   printf '[local-poc] %s\n' "$*" >&2
@@ -69,6 +83,19 @@ if [[ -z "${ARK_API_KEY:-}" || -z "${ARK_MODEL:-}" ]]; then
   exit 2
 fi
 
+requested_authorization_mode="${AUTHORIZATION_MODE:-local}"
+if [[ "$requested_authorization_mode" != "local" ]]; then
+  log "Ignoring AUTHORIZATION_MODE=$requested_authorization_mode; npm run poc always uses local authorization."
+fi
+
+# A developer's shell may contain stale or malformed Permit values. Local POC
+# mode must not validate or use them, and must never silently contact Permit.
+unset PERMIT_API_KEY PERMIT_PDP_URL PERMIT_PROJECT_ID PERMIT_ENVIRONMENT_ID \
+  PERMIT_TENANT_KEY PERMIT_OPERATION_APPROVAL_CONFIG_ID PERMIT_ACCESS_REQUEST_CONFIG_ID \
+  PERMIT_API_URL PERMIT_CHECK_TIMEOUT_MS PERMIT_PDP_IMAGE PERMIT_PDP_CONTAINER_NAME \
+  PERMIT_PDP_HOST PERMIT_PDP_PORT PERMIT_PDP_STARTUP_TIMEOUT_SECONDS PERMIT_PDP_PULL
+export AUTHORIZATION_MODE=local
+
 command -v node >/dev/null 2>&1 || {
   log "Node.js 22+ is required to run the local control plane."
   exit 2
@@ -82,6 +109,48 @@ fi
 
 engine="$(detect_engine)"
 log "Using $engine as the Agent Runtime engine."
+
+start_local_searxng() {
+  [[ "$search_provider" == "searxng" ]] || return 0
+  [[ "$searxng_auto_start" == "1" ]] || {
+    log "SEARXNG_AUTO_START=$searxng_auto_start; leaving SearXNG under external management."
+    return 0
+  }
+  if [[ -n "${SEARXNG_URL:-}" ]]; then
+    log "Using configured SearXNG endpoint: $SEARXNG_URL"
+    return 0
+  fi
+
+  local settings_file="$repo_dir/deploy/searxng/settings.yml"
+  if [[ ! -f "$settings_file" ]]; then
+    log "SearXNG settings file is missing: $settings_file"
+    return 0
+  fi
+  if "$engine" container inspect "$searxng_container_name" >/dev/null 2>&1; then
+    if ! "$engine" ps --format '{{.Names}}' | grep -Fxq "$searxng_container_name"; then
+      log "Starting existing SearXNG container: $searxng_container_name"
+      "$engine" start "$searxng_container_name" >/dev/null
+    else
+      log "Using running SearXNG container: $searxng_container_name"
+    fi
+  else
+    log "Starting local SearXNG on 127.0.0.1:$searxng_port"
+    if ! "$engine" run --detach \
+      --name "$searxng_container_name" \
+      --label io.codejam.launchpad=local-search \
+      --publish "127.0.0.1:$searxng_port:8080" \
+      --mount "type=bind,src=$settings_file,dst=/etc/searxng/settings.yml,readonly" \
+      --security-opt no-new-privileges:true \
+      --cap-drop ALL \
+      "$searxng_image" >/dev/null; then
+      log "Could not start SearXNG; continuing with an unavailable local search endpoint."
+      return 0
+    fi
+  fi
+  export SEARXNG_URL="http://127.0.0.1:$searxng_port/search"
+}
+
+start_local_searxng
 
 if [[ ! -d node_modules ]]; then
   log "Installing application dependencies."

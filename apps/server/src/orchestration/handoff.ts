@@ -103,7 +103,10 @@ const redactPatterns: readonly [RegExp, string][] = [
     "[REDACTED PATH]",
   ],
   [/\/(?:workspace|workspaces)(?:\/[A-Za-z0-9_.-]+)+/g, "[REDACTED PATH]"],
-  [/[A-Za-z]:[\\/][^\s"'`<>]+/g, "[REDACTED PATH]"],
+  // A Windows drive path only. Both guards matter: without the lookbehind the
+  // trailing letter of a scheme matches ("https://x" -> "http[REDACTED PATH]"),
+  // and without the lookahead any "x://" authority still does.
+  [/(?<![A-Za-z0-9_])[A-Za-z]:[\\/](?![\\/])[^\s"'`<>]+/g, "[REDACTED PATH]"],
 ];
 
 function positiveLimit(value: number | undefined, fallback: number): number {

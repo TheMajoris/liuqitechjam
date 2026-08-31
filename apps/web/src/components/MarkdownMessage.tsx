@@ -3,7 +3,7 @@ import Markdown from "react-markdown";
 /**
  * The one renderer for model-authored conversational text.
  *
- * Both the private Agent Playground and the Team conversation use this, so the
+ * Both an Agent's private workspace and the Team conversation use this, so the
  * two views cannot drift apart again. `react-markdown` builds React elements
  * directly — no `dangerouslySetInnerHTML`, and no raw HTML from model output is
  * ever parsed, so a reply cannot inject markup.

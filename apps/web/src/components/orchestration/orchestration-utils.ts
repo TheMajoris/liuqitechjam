@@ -30,11 +30,27 @@ const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
 });
 
 /**
- * Composer state. `projectName` is UI-only: the hook creates the Project and
- * sends the resulting `projectId`, since the client never picks IDs.
+ * Conversation composer state. A conversation always reuses an existing
+ * Workspace; `projectName` remains as a compatibility escape hatch for old
+ * callers while the workspace-first flow uses `projectId` directly.
  */
 export type OrchestrationDraft = CreateOrchestrationInput & {
   projectName?: string;
+};
+
+/**
+ * Global Workspace creation state. A Workspace needs only a name. The Agent
+ * roster and initial task are deliberately optional; when the task is blank
+ * the server receives no orchestration request and the room opens idle.
+ */
+export type WorkspaceDraft = {
+  name: string;
+  description?: string;
+  participants: OrchestrationParticipant[];
+  initialTask: string;
+  mode: OrchestrationMode;
+  maxSteps: number;
+  perAgentTimeoutMs: number;
 };
 
 export type DraftErrors = Partial<
@@ -118,16 +134,21 @@ export function validateDraft(
   agents: Agent[],
 ): DraftErrors {
   const errors: DraftErrors = {};
-  // A Project the user opted into must actually be named.
+  // A Conversation created inside a Workspace may start life as an empty
+  // draft. It is still a real persisted Conversation, but it cannot run until
+  // both a task and at least one valid Agent have been supplied. Text-only
+  // orchestrations keep the stricter legacy contract.
+  const workspaceScoped = Boolean(draft.projectId?.trim());
+  // Legacy callers that opt into a Workspace must actually name it.
   if (draft.projectName !== undefined && !draft.projectName.trim()) {
-    errors.projectName = "Name the shared Project, or turn it off.";
+    errors.projectName = "Name the shared Workspace, or turn it off.";
   }
-  if (!draft.originalPrompt.trim()) {
+  if (!draft.originalPrompt.trim() && !workspaceScoped) {
     errors.originalPrompt = "Describe the task these Agents should work on.";
   }
-  if (draft.participants.length === 0) {
+  if (draft.participants.length === 0 && !workspaceScoped) {
     errors.participants = "Add at least one Agent to the conversation.";
-  } else {
+  } else if (draft.participants.length > 0) {
     const available = new Set(agents.map((agent) => agent.id));
     if (draft.participants.some((participant) => !participant.agentId)) {
       errors.participants = "Every turn needs an Agent.";
@@ -151,6 +172,42 @@ export function validateDraft(
     draft.perAgentTimeoutMs > ORCHESTRATION_MAX_TIMEOUT_MS
   ) {
     errors.perAgentTimeoutMs = "Use a time limit between 1 second and 60 minutes.";
+  }
+  return errors;
+}
+
+/** Validate only the fields that become required when a Workspace starts a run. */
+export function validateWorkspaceTask(
+  draft: WorkspaceDraft,
+  agents: Agent[],
+): DraftErrors {
+  const errors: DraftErrors = {};
+  if (!draft.name.trim()) errors.name = "Name the Workspace to continue.";
+  if (draft.initialTask.trim()) {
+    if (draft.participants.length === 0) {
+      errors.participants = "Add at least one Agent to start the first conversation.";
+    } else {
+      const available = new Set(agents.map((agent) => agent.id));
+      if (draft.participants.some((participant) => !participant.agentId)) {
+        errors.participants = "Every invited Agent needs an identity.";
+      } else if (draft.participants.some((participant) => !available.has(participant.agentId))) {
+        errors.participants = "One or more invited Agents are no longer available.";
+      }
+    }
+    if (
+      !Number.isInteger(draft.maxSteps) ||
+      draft.maxSteps < 1 ||
+      draft.maxSteps > ORCHESTRATION_MAX_STEPS
+    ) {
+      errors.maxSteps = "Use a turn limit between 1 and 1,000.";
+    }
+    if (
+      !Number.isInteger(draft.perAgentTimeoutMs) ||
+      draft.perAgentTimeoutMs < ORCHESTRATION_MIN_TIMEOUT_MS ||
+      draft.perAgentTimeoutMs > ORCHESTRATION_MAX_TIMEOUT_MS
+    ) {
+      errors.perAgentTimeoutMs = "Use a time limit between 1 second and 60 minutes.";
+    }
   }
   return errors;
 }

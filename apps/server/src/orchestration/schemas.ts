@@ -194,6 +194,22 @@ const duplicateRosterFields = (
   });
 };
 
+/**
+ * A draft may be created before its first task or Agent has been chosen, but
+ * only when it already belongs to a Workspace. Keep the ordinary roster
+ * contract strict and use this shape only at the create/persisted-draft
+ * boundary; graph state and runnable inputs must never contain an empty team.
+ */
+const OrchestrationDraftParticipantsSchema = z
+  .array(OrchestrationParticipantSchema)
+  .max(ORCHESTRATION_LIMITS.maxParticipants)
+  .superRefine(duplicateRosterFields);
+
+const orchestrationPromptSchema = z
+  .string()
+  .trim()
+  .max(ORCHESTRATION_LIMITS.maxPromptLength);
+
 /** Ordered roster contract shared by requests, persisted sessions, and graph state. */
 export const OrchestrationParticipantsSchema = z
   .array(OrchestrationParticipantSchema)
@@ -208,12 +224,8 @@ export const CreateOrchestrationSchema: z.ZodType<CreateOrchestrationInput> =
       .trim()
       .min(1)
       .max(ORCHESTRATION_LIMITS.maxNameLength),
-    originalPrompt: z
-      .string()
-      .trim()
-      .min(1)
-      .max(ORCHESTRATION_LIMITS.maxPromptLength),
-    participants: OrchestrationParticipantsSchema,
+    originalPrompt: orchestrationPromptSchema,
+    participants: OrchestrationDraftParticipantsSchema,
     mode: OrchestrationModeSchema.optional(),
     /** Opt-in shared Project scope; omitted Teams remain text-only. */
     projectId: idSchema.optional(),
@@ -223,6 +235,25 @@ export const CreateOrchestrationSchema: z.ZodType<CreateOrchestrationInput> =
       .int()
       .min(ORCHESTRATION_LIMITS.minPerAgentTimeoutMs)
       .max(ORCHESTRATION_LIMITS.maxPerAgentTimeoutMs),
+  }).superRefine((value, context) => {
+    // Workspace conversations can be saved as an empty draft. Text-only
+    // orchestration remains runnable-at-creation and therefore keeps its
+    // original task/roster invariants.
+    if (value.projectId) return;
+    if (!value.originalPrompt) {
+      context.addIssue({
+        code: "custom",
+        path: ["originalPrompt"],
+        message: "A task is required for a text-only orchestration",
+      });
+    }
+    if (value.participants.length === 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["participants"],
+        message: "At least one participant is required for a text-only orchestration",
+      });
+    }
   });
 
 /** Backwards-compatible descriptive alias for callers naming the body schema. */
@@ -248,12 +279,8 @@ export const OrchestrationSessionSchema: z.ZodType<OrchestrationSession> =
       .trim()
       .min(1)
       .max(ORCHESTRATION_LIMITS.maxNameLength),
-    originalPrompt: z
-      .string()
-      .trim()
-      .min(1)
-      .max(ORCHESTRATION_LIMITS.maxPromptLength),
-    participants: OrchestrationParticipantsSchema,
+    originalPrompt: orchestrationPromptSchema,
+    participants: OrchestrationDraftParticipantsSchema,
     mode: OrchestrationModeSchema.optional(),
     /** Absent on Teams persisted before Projects existed. */
     projectId: idSchema.nullable().optional(),
@@ -277,6 +304,25 @@ export const OrchestrationSessionSchema: z.ZodType<OrchestrationSession> =
     updatedAt: timestampSchema,
     startedAt: timestampSchema.nullable(),
     completedAt: timestampSchema.nullable(),
+  }).superRefine((value, context) => {
+    const incomplete = !value.originalPrompt || value.participants.length === 0;
+    const workspaceDraft = value.status === "draft" && Boolean(value.projectId);
+    if (!incomplete || workspaceDraft) return;
+
+    if (!value.originalPrompt) {
+      context.addIssue({
+        code: "custom",
+        path: ["originalPrompt"],
+        message: "A task is required before an orchestration can run",
+      });
+    }
+    if (value.participants.length === 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["participants"],
+        message: "At least one participant is required before an orchestration can run",
+      });
+    }
   });
 
 export const OrchestrationTurnSchema: z.ZodType<OrchestrationTurn> = z.object({

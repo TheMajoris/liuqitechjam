@@ -255,7 +255,7 @@ export function OrchestrationConversation({
       {/*
         The composer stays mounted while the Team runs so the pane does not
         reflow mid-turn; it is disabled rather than removed, and a follow-up
-        continues this same Team, Project, and shared workspace.
+        continues this same Team and shared Workspace.
       */}
       {onContinue && (
         <StickyComposer

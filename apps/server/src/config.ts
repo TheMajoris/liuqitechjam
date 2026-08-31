@@ -9,6 +9,9 @@ export const DEFAULT_MCP_TOKEN_TTL_MS =
 /** Keep accidental no-expiry deployments bounded while covering long runs. */
 export const MAX_MCP_TOKEN_TTL_MS = 86_400_000;
 export const DEFAULT_PERMIT_CHECK_TIMEOUT_MS = 5_000;
+export const DEFAULT_WEB_FETCH_TIMEOUT_MS = 15_000;
+export const DEFAULT_WEB_FETCH_MAX_RESPONSE_BYTES = 1_048_576;
+export const DEFAULT_WEB_FETCH_MAX_REDIRECTS = 3;
 
 const PERMIT_PRODUCTION_FIELDS = [
   "PERMIT_API_KEY",
@@ -75,9 +78,52 @@ const envSchema = z.object({
   // An explicit value is allowed for deployments with a shorter-lived policy;
   // the default below is derived from CODEX_TIMEOUT_MS instead of this field.
   MCP_TOKEN_TTL_MS: z.coerce.number().int().min(1_000).max(MAX_MCP_TOKEN_TTL_MS).optional(),
+  /** Local-first by default; Brave remains available as an explicit option. */
+  SEARCH_PROVIDER: z.enum(["searxng", "brave", "disabled"]).default("searxng"),
+  SEARXNG_URL: z
+    .string()
+    .trim()
+    .url()
+    .refine((value) => {
+      try {
+        const parsed = new URL(value);
+        return !parsed.username && !parsed.password &&
+          !parsed.search && !parsed.hash &&
+          (parsed.protocol === "http:" || parsed.protocol === "https:");
+      } catch {
+        return false;
+      }
+    }, "SEARXNG_URL must be an HTTP(S) URL without embedded credentials or query data")
+    .default("http://127.0.0.1:8080/search"),
+  SEARXNG_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(10_000),
+  SEARXNG_MAX_RESULTS: z.coerce.number().int().min(1).max(20).default(5),
+  SEARXNG_MAX_RESPONSE_BYTES: z.coerce
+    .number()
+    .int()
+    .min(4_096)
+    .max(4 * 1024 * 1024)
+    .default(512 * 1024),
   BRAVE_SEARCH_API_KEY: z.string().optional(),
   BRAVE_SEARCH_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(10_000),
   BRAVE_SEARCH_MAX_RESULTS: z.coerce.number().int().min(1).max(20).default(5),
+  WEB_FETCH_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(120_000)
+    .default(DEFAULT_WEB_FETCH_TIMEOUT_MS),
+  WEB_FETCH_MAX_RESPONSE_BYTES: z.coerce
+    .number()
+    .int()
+    .min(4_096)
+    .max(4 * 1024 * 1024)
+    .default(DEFAULT_WEB_FETCH_MAX_RESPONSE_BYTES),
+  WEB_FETCH_MAX_REDIRECTS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(5)
+    .default(DEFAULT_WEB_FETCH_MAX_REDIRECTS),
   /** Standard OpenTelemetry exporter selection; none is safe by default. */
   OTEL_TRACES_EXPORTER: z.enum(["none", "console", "otlp"]).default("none"),
   OTEL_SERVICE_NAME: z.string().trim().min(1).max(128).default("launchpad-server"),
@@ -105,6 +151,12 @@ const envSchema = z.object({
     .string()
     .url()
     .default("https://ark.cn-beijing.volces.com/api/v3"),
+  /**
+   * Selects the authorization authority for the process. Permit is the safe
+   * default; the local repository policy is only enabled by an explicit
+   * development/POC launcher choice.
+   */
+  AUTHORIZATION_MODE: z.enum(["local", "permit"]).default("permit"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 
@@ -112,7 +164,7 @@ export type AppConfig = ReturnType<typeof loadConfig>;
 
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
   const env = envSchema.parse(environment);
-  if (env.NODE_ENV === "production") {
+  if (env.AUTHORIZATION_MODE === "permit" && env.NODE_ENV === "production") {
     const missing = PERMIT_PRODUCTION_FIELDS.filter((field) => {
       const value = env[field];
       return typeof value !== "string" || value.length === 0 || value.startsWith("replace-");
@@ -126,6 +178,11 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
   }
   const authToken = env.APP_AUTH_TOKEN?.trim() ?? "";
   const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"]);
+  if (env.AUTHORIZATION_MODE === "local" && !loopbackHosts.has(env.HOST)) {
+    throw new Error(
+      "AUTHORIZATION_MODE=local requires HOST to be a loopback address (127.0.0.1, ::1, or localhost)",
+    );
+  }
   if (env.NODE_ENV === "production" && !loopbackHosts.has(env.HOST)) {
     if (authToken.length < 24 || authToken.startsWith("replace-")) {
       throw new Error(
@@ -176,9 +233,17 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     mcpContainerUrl: env.MCP_CONTAINER_URL?.trim() || "",
     mcpTokenTtlMs:
       env.MCP_TOKEN_TTL_MS ?? env.CODEX_TIMEOUT_MS + MCP_TOKEN_GRACE_MS,
+    searchProvider: env.SEARCH_PROVIDER,
+    searxngUrl: env.SEARXNG_URL.replace(/\/+$/, ""),
+    searxngTimeoutMs: env.SEARXNG_TIMEOUT_MS,
+    searxngMaxResults: env.SEARXNG_MAX_RESULTS,
+    searxngMaxResponseBytes: env.SEARXNG_MAX_RESPONSE_BYTES,
     braveSearchApiKey: env.BRAVE_SEARCH_API_KEY?.trim() ?? "",
     braveSearchTimeoutMs: env.BRAVE_SEARCH_TIMEOUT_MS,
     braveSearchMaxResults: env.BRAVE_SEARCH_MAX_RESULTS,
+    webFetchTimeoutMs: env.WEB_FETCH_TIMEOUT_MS,
+    webFetchMaxResponseBytes: env.WEB_FETCH_MAX_RESPONSE_BYTES,
+    webFetchMaxRedirects: env.WEB_FETCH_MAX_REDIRECTS,
     telemetryExporter: env.OTEL_TRACES_EXPORTER,
     telemetryServiceName: env.OTEL_SERVICE_NAME,
     telemetryEndpoint: env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT?.trim() || "",
@@ -194,12 +259,14 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     permitApiUrl: env.PERMIT_API_URL.replace(/\/+$/, ""),
     permitCheckTimeoutMs: env.PERMIT_CHECK_TIMEOUT_MS,
     arkBaseUrl: env.ARK_BASE_URL.replace(/\/+$/, ""),
+    authorizationMode: env.AUTHORIZATION_MODE,
     nodeEnv: env.NODE_ENV,
   };
 }
 
 /** Permit authorization/operation-approval configuration is all-or-nothing. */
 export function isPermitConfigured(config: AppConfig): boolean {
+  if (config.authorizationMode !== "permit") return false;
   return (
     config.permitApiKey.length > 0 &&
     !config.permitApiKey.startsWith("replace-") &&

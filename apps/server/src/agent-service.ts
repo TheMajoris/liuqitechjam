@@ -16,6 +16,7 @@ import type {
 import { JsonStore } from "./store.js";
 import type {
   Agent,
+  AgentAppearance,
   AgentConversation,
   AgentRun,
   AgentRunner,
@@ -43,6 +44,11 @@ import { AgentRuntimePromptComposer } from "./agent-runtime-prompt.js";
 import type { RuntimeTelemetry } from "./telemetry/telemetry-types.js";
 import type { McpSessionService } from "./tools/mcp-session-service.js";
 import type { PermitDirectoryReconciliationSink } from "./access/permit-directory-reconciler.js";
+import { buildUsageReport } from "./usage/usage-aggregator.js";
+import type { UsageReport, UsageReportOptions } from "./usage/usage-types.js";
+import { normalizeAppearance } from "./agent-appearance.js";
+import { AgentRoleSchema } from "./roles/role-types.js";
+import { RoleError } from "./roles/role-service.js";
 
 const now = () => new Date().toISOString();
 
@@ -138,6 +144,7 @@ export class AgentService {
 
   async initialize(): Promise<void> {
     await this.store.initialize();
+    await this.skillService?.reconcileInstalledSkills(this.store);
     await this.skillService?.reconcileAgentSkillIds(this.store);
     await this.workspaces.initialize();
     await this.store.mutate((database) => {
@@ -223,17 +230,21 @@ export class AgentService {
   async createAgent(input: CreateAgentInput): Promise<Agent> {
     const timestamp = now();
     const id = randomUUID();
+    const globalRoleId = this.validateGlobalRoleId(input.globalRoleId);
     if (input.skillIds !== undefined) {
       await this.skillService?.authorizeAssignment([], input.skillIds, id);
     }
     const modelRef = this.resolveModelRefForCreate(input.modelRef);
     const skillIds = this.normalizeSkillIds(input.skillIds);
+    const appearance = normalizeAppearance(input.appearance);
     const agent: Agent = {
       id,
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
       instructions: input.instructions?.trim() ?? "",
       skillIds,
+      ...(globalRoleId === undefined ? {} : { globalRoleId }),
+      ...(appearance === undefined ? {} : { appearance }),
       status: "ready",
       ...(modelRef === undefined ? {} : { modelRef }),
       workspacePath: this.workspaces.workspacePath(id),
@@ -279,6 +290,10 @@ export class AgentService {
         id,
       );
     }
+    const nextGlobalRoleId =
+      input.globalRoleId === undefined
+        ? current.globalRoleId
+        : this.validateGlobalRoleId(input.globalRoleId);
     const nextModelRef =
       input.modelRef === undefined
         ? current.modelRef
@@ -314,6 +329,13 @@ export class AgentService {
       if (input.instructions !== undefined) agent.instructions = input.instructions.trim();
       if (input.skillIds !== undefined || this.skillService) {
         agent.skillIds = nextSkillIds ?? [];
+      }
+      if (input.globalRoleId !== undefined) {
+        if (nextGlobalRoleId === undefined) {
+          delete agent.globalRoleId;
+        } else {
+          agent.globalRoleId = nextGlobalRoleId;
+        }
       }
       if (input.modelRef !== undefined) {
         if (nextModelRef === undefined) {
@@ -355,6 +377,34 @@ export class AgentService {
         .catch(() => undefined);
       throw error;
     }
+  }
+
+  /**
+   * Cosmetic character update.
+   *
+   * Deliberately not part of `updateAgent`: appearance is never in the runtime
+   * prompt and never in the authorization directory, so a recolour must not
+   * rewrite AGENTS.md, must not reconcile Permit, and must not be rolled back
+   * when either of those is unavailable. It is also allowed while the Agent is
+   * busy, because restyling a working Agent changes nothing about the run.
+   */
+  async updateAgentAppearance(
+    id: string,
+    appearance: AgentAppearance,
+  ): Promise<Agent> {
+    return this.store.mutate((database) => {
+      const agent = database.agents.find((item) => item.id === id);
+      if (!agent) throw new HttpError(404, "Agent not found");
+      // Merged field by field, so setting one knob keeps the other choices.
+      const merged = normalizeAppearance({
+        ...(agent.appearance ?? {}),
+        ...appearance,
+      });
+      if (merged === undefined) delete agent.appearance;
+      else agent.appearance = merged;
+      agent.updatedAt = now();
+      return structuredClone(agent);
+    });
   }
 
   /** Replaces the Agent-global skill assignment at a trusted server boundary. */
@@ -626,6 +676,28 @@ export class AgentService {
     return { run, message };
   }
 
+  /**
+   * Aggregate usage across every scope from one consistent store snapshot.
+   *
+   * Reading the snapshot directly rather than the bounded audit query keeps
+   * the report complete: `AuditReader.query` caps results for HTTP callers.
+   */
+  usageReport(options: UsageReportOptions = {}): UsageReport {
+    const snapshot = this.store.snapshot();
+    return buildUsageReport(
+      {
+        agents: snapshot.agents,
+        runs: snapshot.runs,
+        messages: snapshot.messages,
+        orchestrations: snapshot.orchestrations,
+        orchestrationTurns: snapshot.orchestrationTurns,
+        projects: snapshot.projects,
+        auditEvents: snapshot.auditEvents,
+      },
+      options,
+    );
+  }
+
   async systemInfo(): Promise<Record<string, unknown>> {
     return {
       arkConfigured: isArkConfigured(this.config),
@@ -660,6 +732,16 @@ export class AgentService {
       throw new TypeError("skillIds must contain strings");
     }
     return [...new Set(skillIds)];
+  }
+
+  /** Validate a role reference before changing the Agent identity record. */
+  private validateGlobalRoleId(globalRoleId: string | null | undefined): string | undefined {
+    if (globalRoleId === undefined || globalRoleId === null) return undefined;
+    const role = this.store.snapshot().roles.find((item) => item.id === globalRoleId);
+    if (!role || !AgentRoleSchema.safeParse(role).success) {
+      throw new RoleError("ROLE_NOT_FOUND", "Role not found");
+    }
+    return globalRoleId;
   }
 
   private async runtimeSkillContext(

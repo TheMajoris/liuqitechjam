@@ -1,11 +1,9 @@
-import { useState } from "react";
 import type {
   Agent,
   ModelProviderDescriptor,
   OrchestrationSession,
   OrchestrationSessionDetail,
   Project,
-  ProjectRole,
 } from "../../types";
 import { ParticipantBar } from "./ParticipantBar";
 import {
@@ -27,7 +25,6 @@ interface OrchestrationRunViewProps {
   onStop: (sessionId: string) => void;
   onDelete: (sessionId: string) => void;
   modelProviders?: ModelProviderDescriptor[];
-  onProjectRoleChange?: (agentId: string, role: ProjectRole) => Promise<void>;
 }
 
 function StatusMark({ status }: { status: OrchestrationSession["status"] }) {
@@ -76,9 +73,7 @@ export function OrchestrationRunView({
   onStop,
   onDelete,
   modelProviders = [],
-  onProjectRoleChange,
 }: OrchestrationRunViewProps) {
-  const [projectRoleError, setProjectRoleError] = useState<string | null>(null);
   if (!detail) return null;
 
   const { session } = detail;
@@ -87,6 +82,7 @@ export function OrchestrationRunView({
     : null;
   const currentAgent = current ? agentName(agents, current.agentId) : null;
   const active = isOrchestrationActive(session.status);
+  const canStart = Boolean(session.originalPrompt.trim()) && session.participants.length > 0;
   const failed = session.status === "failed";
   const showTechnicalErrorCode =
     session.errorCode !== null && !session.errorCode.startsWith("SUPERVISOR_");
@@ -95,49 +91,13 @@ export function OrchestrationRunView({
     <header className="orch-run-view">
       <div className="orch-run-heading">
         <div className="orch-run-identity">
-          {/* The shared artifact, not the prompt, is what this Team is about. */}
+          {/* The shared artifact, not the prompt, is what this Team is about.
+              Per-Agent Project roles are edited in the workspace inspector. */}
           {project && (
-            <div className="orch-project-badge">
-              <span className="orch-eyebrow">Shared Project</span>
+            <span className="orch-project-badge">
+              <span className="orch-eyebrow">Workspace</span>
               <strong>{project.name}</strong>
-              {(project.memberships ?? []).length > 0 && (
-                <div className="orch-project-members" aria-label="Project Agent roles">
-                  {(project.memberships ?? []).map((membership) => (
-                    <label key={membership.agentId} className="orch-project-member">
-                      <span>{agentName(agents, membership.agentId)}</span>
-                      <select
-                        aria-label={`Role for ${agentName(agents, membership.agentId)}`}
-                        value={membership.role}
-                        disabled={onProjectRoleChange === undefined}
-                        onChange={(event) => {
-                          if (!onProjectRoleChange) return;
-                          setProjectRoleError(null);
-                          void onProjectRoleChange(
-                            membership.agentId,
-                            event.target.value as ProjectRole,
-                          ).catch((reason) => {
-                            setProjectRoleError(
-                              reason instanceof Error
-                                ? reason.message
-                                : "Unable to update the Project role",
-                            );
-                          });
-                        }}
-                      >
-                        <option value="owner">Owner</option>
-                        <option value="editor">Editor</option>
-                        <option value="viewer">Viewer</option>
-                      </select>
-                    </label>
-                  ))}
-                </div>
-              )}
-              {projectRoleError && (
-                <span className="orch-project-role-error" role="alert">
-                  {projectRoleError}
-                </span>
-              )}
-            </div>
+            </span>
           )}
           <h2 id="orch-run-heading" title={session.originalPrompt}>
             {session.name}
@@ -149,10 +109,11 @@ export function OrchestrationRunView({
             <button
               type="button"
               className="orch-button orch-button-primary"
-              disabled={action !== null}
+              disabled={action !== null || !canStart}
+              title={canStart ? "Start conversation" : "Add a task and at least one Agent before starting"}
               onClick={() => onStart(session.id)}
             >
-              {action === "start" ? "Starting…" : "Start"}
+              {action === "start" ? "Starting…" : canStart ? "Start" : "Add task and Agent"}
             </button>
           )}
           {active && (
@@ -180,10 +141,6 @@ export function OrchestrationRunView({
           </button>
         </div>
       </div>
-
-      {active && (
-        <p className="orch-run-summary" role="status">Stop this conversation before deleting it.</p>
-      )}
 
       <ParticipantBar
         participants={session.participants}

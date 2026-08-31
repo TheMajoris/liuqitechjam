@@ -66,6 +66,10 @@ export type {
 
 /** Maximum number of sessions returned by a default or bounded listing. */
 export const DEFAULT_ORCHESTRATION_LIST_LIMIT = 100;
+/** Stable lifecycle error returned when a saved draft is not runnable yet. */
+export const EMPTY_ORCHESTRATION_START_MESSAGE =
+  "A task and at least one Agent are required before starting this Conversation";
+
 function lifecycleConflict(message: string): HttpError {
   return new HttpError(409, message);
 }
@@ -195,7 +199,9 @@ export class OrchestrationService {
     // Bind the shared Project before the session is visible, so a Team can
     // never be started against a Project its Agents are not attached to.
     if (session.projectId) {
-      await this.projectBinding?.bindTeam(
+      const bindConversation =
+        this.projectBinding?.bindConversation ?? this.projectBinding?.bindTeam;
+      await bindConversation?.(
         session.projectId,
         session.id,
         participants.map((participant) => participant.agentId),
@@ -220,9 +226,22 @@ export class OrchestrationService {
       Number.isInteger(limit) && limit > 0
         ? Math.min(limit, DEFAULT_ORCHESTRATION_LIST_LIMIT)
         : DEFAULT_ORCHESTRATION_LIST_LIMIT;
-    return this.store
-      .snapshot()
-      .orchestrations.sort((left, right) => {
+    const database = this.store.snapshot();
+    const activeProjectIds = new Set(
+      database.projects
+        .filter((project) => project.status === "active")
+        .map((project) => project.id),
+    );
+    return database.orchestrations
+      // Archived/missing Workspaces are retained for recovery in the store,
+      // but are intentionally absent from active navigation APIs.
+      .filter(
+        (session) =>
+          session.projectId === undefined ||
+          session.projectId === null ||
+          activeProjectIds.has(session.projectId),
+      )
+      .sort((left, right) => {
         const updated = right.updatedAt.localeCompare(left.updatedAt);
         return updated || right.createdAt.localeCompare(left.createdAt);
       })
@@ -236,6 +255,7 @@ export class OrchestrationService {
 
   async startSession(id: string): Promise<OrchestrationSession> {
     const current = this.findSession(id);
+    this.assertActiveProject(current.projectId);
     if (current.status !== "draft") {
       throw lifecycleConflict(
         current.status === "completed" ||
@@ -247,10 +267,20 @@ export class OrchestrationService {
       );
     }
 
+    if (!current.originalPrompt.trim() || current.participants.length === 0) {
+      throw new HttpError(422, EMPTY_ORCHESTRATION_START_MESSAGE);
+    }
+
     await this.preflightRoster(current);
     const accepted = await this.store.mutate((database) => {
       const session = database.orchestrations.find((item) => item.id === id);
       if (!session) throw new HttpError(404, "Orchestration not found");
+      if (session.projectId !== undefined && session.projectId !== null) {
+        const project = database.projects.find((item) => item.id === session.projectId);
+        if (!project || project.status !== "active") {
+          throw lifecycleConflict("This Workspace is archived or no longer available");
+        }
+      }
       if (session.status !== "draft") {
         throw lifecycleConflict("Orchestration is already active");
       }
@@ -287,6 +317,7 @@ export class OrchestrationService {
     }
 
     const current = this.findSession(id);
+    this.assertActiveProject(current.projectId);
     if (!statusIsTerminal(current.status)) {
       throw lifecycleConflict(
         current.status === "draft"
@@ -309,6 +340,12 @@ export class OrchestrationService {
     const accepted = await this.store.mutate((database) => {
       const session = database.orchestrations.find((item) => item.id === id);
       if (!session) throw new HttpError(404, "Orchestration not found");
+      if (session.projectId !== undefined && session.projectId !== null) {
+        const project = database.projects.find((item) => item.id === session.projectId);
+        if (!project || project.status !== "active") {
+          throw lifecycleConflict("This Workspace is archived or no longer available");
+        }
+      }
       if (!statusIsTerminal(session.status)) {
         throw lifecycleConflict(
           session.status === "draft"
@@ -376,6 +413,93 @@ export class OrchestrationService {
   }
 
   /**
+   * Stop every active conversation owned by one Project, retaining all of its
+   * persisted history. Workspace archive uses this path: archiving must make
+   * the workspace safe to move without turning a recoverable archive into a
+   * conversation deletion.
+   */
+  async stopSessionsForProject(projectId: string): Promise<void> {
+    const children = this.store
+      .snapshot()
+      .orchestrations.filter((session) => session.projectId === projectId);
+
+    for (const child of children) {
+      const active = this.activeSessions.get(child.id);
+      if (statusIsActive(child.status) || active) {
+        try {
+          await this.stopSession(child.id);
+        } catch (error) {
+          if (!(error instanceof HttpError) || error.statusCode !== 404) throw error;
+        }
+      }
+      // A terminal session can still have a tiny in-process cleanup tail. Wait
+      // for it before the lifecycle caller moves or removes the workspace so
+      // no runner can write a child record after that point.
+      const settled = this.activeSessions.get(child.id)?.execution;
+      if (settled) await settled.catch(() => undefined);
+    }
+
+    await this.store.mutate((database) => {
+      const childIds = new Set(
+        database.orchestrations
+          .filter((session) => session.projectId === projectId)
+          .map((session) => session.id),
+      );
+      for (const childId of childIds) {
+        const session = database.orchestrations.find((item) => item.id === childId);
+        if (session && (statusIsActive(session.status) || this.activeSessions.has(childId))) {
+          throw lifecycleConflict("Stop the active orchestration before changing its Workspace");
+        }
+      }
+    });
+  }
+
+  /**
+   * Remove every conversation owned by one Project from active APIs.
+   *
+   * Active child runs are stopped first. The final mutation removes only the
+   * orchestration records and leaves the Project/files for ProjectService to
+   * archive or permanently delete. This is the Workspace-level counterpart to
+   * `deleteSession`.
+   */
+  async removeSessionsForProject(projectId: string): Promise<void> {
+    await this.stopSessionsForProject(projectId);
+
+    await this.store.mutate((database) => {
+      const childIds = new Set(
+        database.orchestrations
+          .filter((session) => session.projectId === projectId)
+          .map((session) => session.id),
+      );
+      for (const childId of childIds) {
+        const session = database.orchestrations.find((item) => item.id === childId);
+        if (session && (statusIsActive(session.status) || this.activeSessions.has(childId))) {
+          throw lifecycleConflict("Stop the active orchestration before deleting its Workspace");
+        }
+      }
+      database.orchestrations = database.orchestrations.filter(
+        (session) => !childIds.has(session.id),
+      );
+      database.orchestrationTurns = database.orchestrationTurns.filter(
+        (turn) => !childIds.has(turn.sessionId),
+      );
+      database.orchestrationEvents = database.orchestrationEvents.filter(
+        (event) => !childIds.has(event.sessionId),
+      );
+      database.orchestrationContinuationPrompts =
+        database.orchestrationContinuationPrompts.filter(
+          (prompt) => !childIds.has(prompt.sessionId),
+        );
+      for (const project of database.projects) {
+        if (project.id === projectId && project.teamId !== null) {
+          project.teamId = null;
+          project.updatedAt = now();
+        }
+      }
+    });
+  }
+
+  /**
    * Permanently remove one Team conversation's application-owned records.
    * Agent catalog entries, Agent messages/runs, workspaces, and private Codex
    * thread state are deliberately outside this mutation and remain intact.
@@ -406,6 +530,17 @@ export class OrchestrationService {
         database.orchestrationContinuationPrompts.filter(
           (item) => item.sessionId !== id,
         );
+      // A Project's `teamId` must never outlive the session it points at, or
+      // the Project keeps claiming a Team that no longer exists.
+      for (const project of database.projects) {
+        if (project.teamId === id) {
+          const replacement = database.orchestrations.find(
+            (item) => item.projectId === project.id,
+          );
+          project.teamId = replacement?.id ?? null;
+          project.updatedAt = now();
+        }
+      }
     });
     return { deleted: true };
   }
@@ -457,6 +592,14 @@ export class OrchestrationService {
     const session = this.store.snapshot().orchestrations.find((item) => item.id === id);
     if (!session) throw new HttpError(404, "Orchestration not found");
     return session;
+  }
+
+  private assertActiveProject(projectId: string | null | undefined): void {
+    if (projectId === undefined || projectId === null) return;
+    const project = this.store.snapshot().projects.find((item) => item.id === projectId);
+    if (!project || project.status !== "active") {
+      throw lifecycleConflict("This Workspace is archived or no longer available");
+    }
   }
 
   private async listCurrentAgents(): Promise<Agent[]> {

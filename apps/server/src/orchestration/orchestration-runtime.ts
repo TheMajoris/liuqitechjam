@@ -31,7 +31,21 @@ export type OrchestrationGraphRunner = LangGraphOrchestrationRunner;
 
 /** The Project association seam used by shared Team workspaces. */
 export interface OrchestrationProjectBinding {
-  bindTeam(projectId: string, teamId: string, agentIds: string[]): Promise<void>;
+  /** Preferred binding path: one Project may own many conversations. */
+  bindConversation?(
+    projectId: string,
+    conversationId: string,
+    agentIds: string[],
+  ): Promise<void>;
+  /** Legacy alias retained for callers created before Workspace support. */
+  bindTeam?(projectId: string, teamId: string, agentIds: string[]): Promise<void>;
+  /**
+   * Legacy lifecycle hook retained for source compatibility. Conversation
+   * deletion no longer invokes it; Workspace archive owns Project lifecycle.
+   *
+   * @deprecated use ProjectService's Workspace archive lifecycle instead.
+   */
+  archiveProject?(projectId: string): Promise<void>;
 }
 
 export interface OrchestrationServiceDependencies {

@@ -1,4 +1,4 @@
-import type { Agent, AgentSkills, SkillMetadata } from "../../types";
+import type { Agent, AgentRole, AgentSkills, SkillMetadata } from "../../types";
 import type { AgentForm } from "../../playground/agent-form";
 import type { ModelCatalogController } from "../../playground/use-model-catalog";
 import { AgentSkillsPanel } from "../AgentSkillsPanel";
@@ -29,6 +29,7 @@ interface AgentFormFieldsProps {
   skillsDisabled?: boolean;
   agent?: Agent;
   isNew?: boolean;
+  roles?: AgentRole[];
   onChange: (changes: Partial<AgentForm>) => void;
 }
 
@@ -44,6 +45,7 @@ export function AgentFormFields({
   skillsDisabled = disabled,
   agent,
   isNew = false,
+  roles = [],
   onChange,
 }: AgentFormFieldsProps) {
   return (
@@ -69,6 +71,23 @@ export function AgentFormFields({
             maxLength={500}
           />
         </label>
+        {isNew && (
+          <label className="agent-form-role-field">
+            <span>Agent role <em>Optional</em></span>
+            <select
+              aria-label="Global Agent role"
+              value={form.globalRoleId ?? ""}
+              onChange={(event) => onChange({ globalRoleId: event.target.value || null })}
+              disabled={disabled}
+            >
+              <option value="">No role</option>
+              {roles.map((role) => (
+                <option value={role.id} key={role.id}>{role.name}</option>
+              ))}
+            </select>
+            <small>Supplies the Agent&apos;s skills and tools when no Workspace override applies.</small>
+          </label>
+        )}
       </div>
       <label>
         {isNew ? "Instructions" : "System instructions"}

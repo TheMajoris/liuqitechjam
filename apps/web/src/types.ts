@@ -87,18 +87,61 @@ export interface ProviderModelsResponse {
   models: ModelDescriptor[];
 }
 
+export type AgentAccessory = "none" | "glasses" | "headset" | "cap";
+
+/** Cosmetic character choices for the 2D workspace. Never an authorization input. */
+export interface AgentAppearance {
+  hue?: number;
+  hair?: number;
+  skin?: number;
+  accessory?: AgentAccessory;
+}
+
 export interface Agent {
   id: string;
   name: string;
   description: string;
   instructions: string;
   status: AgentStatus;
+  /** Omitted until someone customizes this Agent's character. */
+  appearance?: AgentAppearance;
   workspacePath: string;
   codexThreadId: string | null;
   lastError: string | null;
   skillIds?: string[];
+  /** Optional Agent-wide role; Workspace memberships may override it. */
+  globalRoleId?: string | null;
   /** Omitted on legacy persisted Agents, which use the runtime default. */
   modelRef?: ModelRef;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ApprovalKind = "operation_approval" | "access_request";
+
+export type ApprovalStatus =
+  | "pending"
+  | "approved"
+  | "denied"
+  | "expired"
+  | "consumed"
+  | "revoked"
+  | "unknown";
+
+/**
+ * Safe projection of one Permit approval. Permit owns the decision; this
+ * record only mirrors it so the UI can show and act on what already exists.
+ */
+export interface ApprovalRecord {
+  id: string;
+  kind: ApprovalKind;
+  scope: "once" | "project";
+  agentId: string;
+  projectId: string | null;
+  runId: string | null;
+  toolId: string;
+  safeSummary: string;
+  status: ApprovalStatus;
   createdAt: string;
   updatedAt: string;
 }
@@ -135,7 +178,7 @@ export interface AgentCapabilities {
   tools: ToolCapabilityView[];
 }
 
-export type SkillSource = "built-in";
+export type SkillSource = "built-in" | "user" | "installed";
 
 export interface SkillMetadata {
   id: string;
@@ -145,6 +188,34 @@ export interface SkillMetadata {
   capabilityTags: string[];
   source: SkillSource;
   version: string;
+}
+
+export interface SkillCatalogEntry extends SkillMetadata {
+  installed: boolean;
+  installable: boolean;
+}
+
+/** A bounded web candidate returned by the backend discovery adapter. */
+export interface SkillDiscoveryResult {
+  title: string;
+  url: string;
+  /** Derived by the client when the provider only returns title/url/description. */
+  domain?: string;
+  description: string;
+}
+
+export interface AgentRole {
+  id: string;
+  name: string;
+  description: string;
+  skillIds: string[];
+  toolIds: string[];
+  permissionIds: string[];
+  source: "system" | "user";
+  createdAt: string;
+  updatedAt: string;
+  assignedAgentCount: number;
+  assignedProjectCount: number;
 }
 
 export interface SkillToolCapability {
@@ -384,6 +455,7 @@ export type ProjectRole = "owner" | "editor" | "viewer";
 export interface ProjectMembership {
   agentId: string;
   role: ProjectRole;
+  roleId?: string;
 }
 
 export interface ContinueOrchestrationInput {
@@ -399,4 +471,116 @@ export interface SystemInfo {
   runtimeProvider: "local-process" | "container";
   containerEngine: string | null;
   runtime: string;
+}
+
+export type UsageAvailability = "available" | "partial" | "unavailable";
+
+export interface UsageTokenTotals {
+  availability: UsageAvailability;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  runsReporting: number;
+}
+
+export interface UsageRunTotals {
+  total: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  active: number;
+}
+
+export interface UsageActivityTotals {
+  toolCalls: number;
+  toolFailures: number;
+  approvalsRequired: number;
+  skillInvocations: number;
+  authorizationDenials: number;
+}
+
+export interface UsageLatency {
+  samples: number;
+  averageMs: number;
+  p95Ms: number;
+  maxMs: number;
+}
+
+export interface UsageTotals {
+  runs: UsageRunTotals;
+  tokens: UsageTokenTotals;
+  activity: UsageActivityTotals;
+  latency: UsageLatency;
+  messages: number;
+}
+
+export interface UsageAgentBreakdown extends UsageTotals {
+  agentId: string;
+  name: string | null;
+  status: string | null;
+  modelLabel: string | null;
+  lastActiveAt: string | null;
+}
+
+export interface UsageWorkspaceBreakdown extends UsageTotals {
+  orchestrationId: string;
+  name: string | null;
+  status: string | null;
+  projectId: string | null;
+  participants: number;
+  lastActiveAt: string | null;
+}
+
+export interface UsageProjectBreakdown extends UsageTotals {
+  projectId: string;
+  name: string | null;
+  /** Kept for response compatibility; named rows are always live. */
+  archived: boolean;
+  lastActiveAt: string | null;
+}
+
+export interface UsageDailyPoint {
+  date: string;
+  runs: number;
+  completed: number;
+  failed: number;
+  totalTokens: number;
+  toolCalls: number;
+}
+
+export interface UsageRetiredSummary extends UsageTotals {
+  subjects: number;
+}
+
+export interface UsageRetired {
+  agents: UsageRetiredSummary | null;
+  workspaces: UsageRetiredSummary | null;
+  projects: UsageRetiredSummary | null;
+}
+
+export interface UsageReport {
+  since: string | null;
+  generatedAt: string;
+  totals: UsageTotals;
+  agents: UsageAgentBreakdown[];
+  workspaces: UsageWorkspaceBreakdown[];
+  projects: UsageProjectBreakdown[];
+  retired: UsageRetired;
+  daily: UsageDailyPoint[];
+}
+
+/** Safe audit projection the workspace polls to see live tool activity. */
+export interface AuditEventRecord {
+  id: string;
+  type: string;
+  status: "success" | "failure";
+  summary: string;
+  createdAt: string;
+  agentId?: string;
+  projectId?: string;
+  runId?: string;
+  orchestrationId?: string;
+  permission?: string;
+  resource?: { kind: string; id: string };
 }

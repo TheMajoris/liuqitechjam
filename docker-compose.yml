@@ -19,12 +19,17 @@ services:
       AGENT_WORKSPACE_ROOT: /app/workspaces
       CODEX_HOME: /app/codex-home
       CODEX_SANDBOX_MODE: ${CODEX_SANDBOX_MODE:-workspace-write}
+      SEARCH_PROVIDER: ${SEARCH_PROVIDER:-searxng}
+      SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080/search}
     ports:
       - "${PUBLIC_PORT:-3000}:3000"
     volumes:
       - ./data:/app/data
       - ./workspaces:/app/workspaces
       - ./codex-home:/app/codex-home
+    depends_on:
+      searxng:
+        condition: service_started
     init: true
     security_opt:
       - no-new-privileges:true
@@ -33,3 +38,22 @@ services:
     pids_limit: 512
     mem_limit: 4g
     cpus: 2
+
+  # Local-first web research. The service is intentionally optional at the
+  # application layer: set SEARCH_PROVIDER=brave or disabled to use another
+  # mode, but the default compose path has a self-hosted search endpoint.
+  searxng:
+    image: ${SEARXNG_IMAGE:-searxng/searxng:latest}
+    restart: unless-stopped
+    volumes:
+      - ./deploy/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    ports:
+      - "127.0.0.1:${SEARXNG_PUBLIC_PORT:-8080}:8080"
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 1

@@ -7,19 +7,28 @@ import { McpSessionService } from "./tools/mcp-session-service.js";
 import { ToolApprovalRequiredError, ToolError } from "./tools/tool-errors.js";
 import { ToolService } from "./tools/tool-service.js";
 import type { SkillService } from "./skills/skill-service.js";
+import type { RoleService } from "./roles/role-service.js";
 import type { PermitApprovalService } from "./access/permit-approval-service.js";
 import type { AuditReader } from "./audit/audit-types.js";
 import { correlationAttributes, type RuntimeTelemetry, type TelemetryCarrier } from "./telemetry/telemetry-types.js";
+import type { SearchProvider } from "./tools/search-provider.js";
+import type { WebFetchAdapter } from "./tools/web-fetch-adapter.js";
 
 export interface McpRouteDependencies {
   sessions: McpSessionService;
   toolService: ToolService;
   /** Optional so isolated Wave 9 route tests can omit the skill plane. */
   skillService?: SkillService;
+  /** Optional reusable Agent role-template control plane. */
+  roleService?: RoleService;
   /** Optional in isolated tests; production wires the Permit-backed service. */
   approvalService?: PermitApprovalService;
   /** Read-only server-owned activity projection; clients cannot append events. */
   auditService?: AuditReader;
+  /** The selected provider is exposed only through safe health metadata. */
+  searchProvider?: SearchProvider;
+  /** Safe public-only fetcher reused for explicit skill Markdown imports. */
+  webFetch?: Pick<WebFetchAdapter, "fetch">;
   telemetry?: RuntimeTelemetry;
 }
 

@@ -30,6 +30,11 @@ import type {
 } from "./tool-types.js";
 
 const MAX_SAFE_REASON_LENGTH = 512;
+const DIRECT_AGENT_TOOL_IDS = new Set(["web.search", "web.fetch"]);
+
+function isDirectAgentTool(toolId: string): boolean {
+  return DIRECT_AGENT_TOOL_IDS.has(toolId);
+}
 
 function safeReason(value: string): string {
   const redacted = redactSensitiveText(value).trim();
@@ -64,6 +69,14 @@ export interface CreateCapabilityGrantInput {
   scope: "once" | "project";
 }
 
+export interface ProjectRoleToolResolver {
+  /** Resolve the explicit Project override, then the Agent-global role. */
+  getEffectiveRole(
+    agentId: string,
+    projectId?: string,
+  ): { toolIds: string[] } | undefined;
+}
+
 export type ToolApprovalGateway = Pick<
   PermitApprovalService,
   | "isAvailable"
@@ -79,12 +92,14 @@ export type ToolApprovalGateway = Pick<
 >;
 
 /**
- * Typed gateway for all registered executors.  Permit remains the sole
- * authorization authority.  The legacy store parameter is retained for
- * construction compatibility, but local approval/grant collections are never
- * read or written by this class.
+ * Typed gateway for all registered executors. Permit remains the policy
+ * authority for Project-scoped calls; an explicitly assigned Agent-global
+ * role is the authority for direct network calls. The legacy store parameter
+ * is retained for construction compatibility, but local approval/grant
+ * collections are never read or written by this class.
  */
 export class ToolService {
+  private roleTools?: ProjectRoleToolResolver;
   constructor(
     private readonly registry: ToolRegistry,
     private readonly authorization: AuthorizationService,
@@ -96,6 +111,58 @@ export class ToolService {
 
   getRegistry(): ToolRegistry {
     return this.registry;
+  }
+
+  /** Attach reusable role tools after RoleService has been constructed. */
+  setProjectRoleToolResolver(resolver: ProjectRoleToolResolver): void {
+    this.roleTools = resolver;
+  }
+
+  private roleAllowsTool(
+    agentId: string,
+    projectId: string | undefined,
+    toolId: string,
+    requireRole = false,
+    requiredPermission?: PermissionId,
+  ): boolean {
+    if (
+      projectId === undefined &&
+      requireRole &&
+      (requiredPermission === undefined ||
+        !this.directGlobalRoleAllowsTool(agentId, toolId, requiredPermission))
+    ) {
+      return false;
+    }
+    // The global-role check above is authoritative for direct network runs;
+    // no Project resolver is needed for that scope. This also keeps isolated
+    // ToolService consumers safe when RoleService is not wired in.
+    if (projectId === undefined && requireRole) return true;
+    if (!this.roleTools) return !requireRole;
+    // Outside a Project, an Agent-global role is the only role scope. A
+    // roleless Agent keeps the existing Project membership baseline, while a
+    // direct network tool requires an explicit global role assignment.
+    const role = this.roleTools.getEffectiveRole(agentId, projectId);
+    if (!role) return !requireRole;
+    return role?.toolIds.includes(toolId) ?? false;
+  }
+
+  /**
+   * Direct runs have no Project policy resource. For the two public network
+   * tools, the human-assigned Agent-global role is the complete authority:
+   * both the executable tool and its corresponding permission must be
+   * present. Project-only tools never reach this path.
+   */
+  private directGlobalRoleAllowsTool(
+    agentId: string,
+    toolId: string,
+    requiredPermission: PermissionId,
+  ): boolean {
+    const snapshot = this._store.snapshot();
+    const agent = snapshot.agents.find((item) => item.id === agentId);
+    if (!agent?.globalRoleId) return false;
+    const role = snapshot.roles.find((item) => item.id === agent.globalRoleId);
+    return role?.toolIds.includes(toolId) === true &&
+      role.permissionIds.includes(requiredPermission);
   }
 
   listMetadata(): ToolMetadata[] {
@@ -114,12 +181,28 @@ export class ToolService {
     if (context.principal.kind === "agent" && context.principal.id !== context.agentId) {
       throw new ToolError("PERMISSION_DENIED", 403, "Tool identity does not match the run");
     }
-    if (context.principal.kind === "agent" && context.projectId === undefined) {
+    if (
+      context.principal.kind === "agent" &&
+      context.projectId === undefined &&
+      !isDirectAgentTool(toolId)
+    ) {
       throw new ToolError(
         "PERMISSION_DENIED",
         403,
         "A Project-scoped Agent run is required for this tool",
       );
+    }
+    if (
+      context.principal.kind === "agent" &&
+      !this.roleAllowsTool(
+        context.agentId,
+        context.projectId,
+        toolId,
+        context.projectId === undefined,
+        definition.requiredPermission,
+      )
+    ) {
+      throw new ToolError("PERMISSION_DENIED", 403, "The assigned Agent role does not include this tool");
     }
     // Check the raw payload before Zod object parsing (which may strip
     // unknown keys), so a caller cannot smuggle a different Project selector
@@ -145,19 +228,35 @@ export class ToolService {
       throw new ToolError("PERMISSION_DENIED", 403, "Tool input cannot change the run Project");
     }
 
-    const decision = await this.authorization.decide({
-      principal: context.principal,
-      permission: definition.requiredPermission,
-      resource: toolResource(toolId),
-      context: { ...contextForAuthorization(context), toolId },
-    });
+    const directGlobalRole =
+      context.principal.kind === "agent" &&
+      context.projectId === undefined &&
+      isDirectAgentTool(toolId) &&
+      this.directGlobalRoleAllowsTool(
+        context.agentId,
+        toolId,
+        definition.requiredPermission,
+      );
+    // A direct Agent has no Project membership resource. Once the explicit
+    // global role/tool/permission gate above succeeds, do not ask a
+    // Project-oriented policy adapter to invent one. The normal approval
+    // consumption gate below still runs with projectId omitted.
+    const decision: AuthorizationDecision = directGlobalRole
+      ? { result: "allow", reason: "Agent global role authorized " + toolId }
+      : await this.authorization.decide({
+          principal: context.principal,
+          permission: definition.requiredPermission,
+          resource: toolResource(toolId),
+          context: { ...contextForAuthorization(context), toolId },
+        });
     if (decision.result !== "allow") {
-      // Only web.search is approval-eligible in this wave.  Its baseline
+      // Network research tools are approval-eligible when a Permit policy
+      // requires a temporary grant. Their baseline
       // Project read permission is checked independently, so an approval can
       // never elevate an Agent without the underlying role.
       if (
         context.principal.kind === "agent" &&
-        toolId === "web.search" &&
+        (toolId === "web.search" || toolId === "web.fetch") &&
         context.projectId !== undefined
       ) {
         const baseline = await this.authorization.decide({
@@ -367,29 +466,72 @@ export class ToolService {
   ): Promise<ToolCapabilitiesView> {
     const tools = await Promise.all(
       this.registry.metadata().map(async (tool) => {
-        let decision: AuthorizationDecision;
-        try {
-          decision = await this.authorization.decide({
-            principal: agentPrincipal(agentId),
-            permission: tool.requiredPermission,
-            resource: toolResource(tool.id),
-            context: {
-              agentId,
-              runId: "capability-preview",
-              toolId: tool.id,
-              ...(projectId === undefined ? {} : { projectId }),
-            },
-          });
-        } catch {
-          decision = {
-            result: "deny",
-            reason: "Capability state is unavailable",
-            errorCode: "PERMISSION_DENIED",
-          };
+        if (
+          projectId === undefined &&
+          !isDirectAgentTool(tool.id)
+        ) {
+          return {
+            tool,
+            availability: "denied",
+            reason: "A Project-scoped Agent capability is required",
+            grant: null,
+          } satisfies ToolCapabilityView;
+        }
+        if (
+          !this.roleAllowsTool(
+            agentId,
+            projectId,
+            tool.id,
+            projectId === undefined,
+            tool.requiredPermission,
+          )
+        ) {
+          return {
+            tool,
+            availability: "denied",
+            reason: "The assigned Agent role does not include this tool",
+            grant: null,
+          } satisfies ToolCapabilityView;
+        }
+        const directGlobalRole =
+          projectId === undefined &&
+          isDirectAgentTool(tool.id) &&
+          this.directGlobalRoleAllowsTool(agentId, tool.id, tool.requiredPermission);
+        let decision: AuthorizationDecision = directGlobalRole
+          ? { result: "allow", reason: "Agent global role authorized " + tool.id }
+          : {
+              result: "deny",
+              reason: "Capability state is unavailable",
+              errorCode: "PERMISSION_DENIED",
+            };
+        if (!directGlobalRole) {
+          try {
+            decision = await this.authorization.decide({
+              principal: agentPrincipal(agentId),
+              permission: tool.requiredPermission,
+              resource: toolResource(tool.id),
+              context: {
+                agentId,
+                runId: "capability-preview",
+                toolId: tool.id,
+                ...(projectId === undefined ? {} : { projectId }),
+              },
+            });
+          } catch {
+            // Keep the fail-closed decision above.
+          }
+        }
+        if (decision.result === "approval_required") {
+          return {
+            tool,
+            availability: "approval_required",
+            reason: safeReason(decision.reason),
+            grant: null,
+          } satisfies ToolCapabilityView;
         }
         if (decision.result === "deny") {
           if (
-            tool.id === "web.search" &&
+            (tool.id === "web.search" || tool.id === "web.fetch") &&
             projectId !== undefined &&
             this.approvals?.isAvailable()
           ) {
@@ -415,11 +557,11 @@ export class ToolService {
             grant: null,
           } satisfies ToolCapabilityView;
         }
-        if (agentId.length === 0 || projectId === undefined) {
+        if (agentId.length === 0) {
           return {
             tool,
             availability: "denied",
-            reason: "A Project-scoped Agent capability is required",
+            reason: "An Agent identity is required",
             grant: null,
           } satisfies ToolCapabilityView;
         }
@@ -537,6 +679,7 @@ export class ToolService {
 }
 
 export type { BraveSearchResult } from "./brave-search-adapter.js";
+export type { SearchResult } from "./search-provider.js";
 // Compatibility exports keep existing composition roots stable while the
 // code-owned definitions live in their focused module.
 export {
@@ -546,6 +689,7 @@ export {
 } from "./built-in-tools.js";
 export type {
   BuiltInToolDependencies,
+  ToolFetchService,
   ToolPreviewService,
   ToolSearchService,
 } from "./built-in-tools.js";

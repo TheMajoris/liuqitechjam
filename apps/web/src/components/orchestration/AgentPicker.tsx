@@ -137,7 +137,7 @@ export function AgentPicker({
         (agents.length === 0 ? (
           <div className="orch-picker-empty" id="orch-catalog" role="status">
             <strong>No Agents yet</strong>
-            <span>Create an Agent in the Playground, then invite it here.</span>
+            <span>Create an Agent first, then invite it here.</span>
           </div>
         ) : (
           <div className="orch-catalog" id="orch-catalog">

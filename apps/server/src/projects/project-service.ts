@@ -5,7 +5,7 @@ import {
 } from "../access/authorization-service.js";
 import type { Principal, ProjectRole } from "../access/access-types.js";
 import type { JsonStore } from "../store.js";
-import type { Agent } from "../types.js";
+import type { Agent, Database } from "../types.js";
 import type { SkillRuntimeContext } from "../skills/skill-types.js";
 import type { SkillService } from "../skills/skill-service.js";
 import type { PermitDirectoryReconciliationSink } from "../access/permit-directory-reconciler.js";
@@ -22,8 +22,14 @@ import {
   type UpdateProjectInput,
   ProjectRoleSchema,
 } from "./project-types.js";
+import { LEGACY_ROLE_IDS } from "../roles/role-types.js";
 
 const now = (): string => new Date().toISOString();
+const activeConversationStatuses = new Set(["queued", "running", "stopping"]);
+
+function statusIsActiveSession(status: string): boolean {
+  return activeConversationStatuses.has(status);
+}
 
 /** Minimal Agent lookup seam; ProjectService never depends on AgentService. */
 export interface ProjectAgentDirectory {
@@ -45,16 +51,27 @@ export interface ProjectPreviewLifecycleCleanup {
   stopForProject(projectId: string): Promise<void>;
 }
 
+/** Narrow lifecycle seam for stopping/removing Project-owned conversations. */
+export interface ProjectConversationLifecycleCleanup {
+  /** Stop active child conversations while retaining their persisted history. */
+  stopForProject?(projectId: string): Promise<void>;
+  /** Remove child conversation records for a permanent Workspace delete. */
+  removeForProject?(projectId: string): Promise<void>;
+}
+
 export function publicProject(
   project: Project,
   membershipsOrAgentIds: readonly ProjectAgentAttachment[] | readonly string[] | readonly ProjectMembershipView[],
 ): ProjectView {
-  const memberships: ProjectMembershipView[] = membershipsOrAgentIds.map((item) =>
+  const memberships: ProjectMembershipView[] = (
+    project.status === "archived" ? [] : membershipsOrAgentIds
+  ).map((item) =>
     typeof item === "string"
       ? { agentId: item, role: "editor" }
       : {
           agentId: item.agentId,
           role: item.role ?? "editor",
+          ...(item.roleId === undefined ? {} : { roleId: item.roleId }),
         },
   );
   return {
@@ -101,6 +118,7 @@ export class ProjectService {
   private readonly leaseCoordinator: ProjectWriteLeaseCoordinator;
   private skillService: SkillService | undefined;
   private permitDirectory: PermitDirectoryReconciliationSink | undefined;
+  private conversationLifecycle: ProjectConversationLifecycleCleanup | undefined;
 
   constructor(
     private readonly store: JsonStore,
@@ -125,6 +143,13 @@ export class ProjectService {
     previewLifecycle: ProjectPreviewLifecycleCleanup,
   ): void {
     this.projectPreviewLifecycle = previewLifecycle;
+  }
+
+  /** Attach orchestration cleanup after the app graph is assembled. */
+  setConversationLifecycle(
+    conversationLifecycle: ProjectConversationLifecycleCleanup,
+  ): void {
+    this.conversationLifecycle = conversationLifecycle;
   }
 
   /** Attach the code-owned skill composer after the app graph is assembled. */
@@ -202,10 +227,12 @@ export class ProjectService {
     }
   }
 
+  /** Archiving is how a Project is removed, so an archived one is not listed. */
   async list(principal: Principal = DEMO_HUMAN_PRINCIPAL): Promise<ProjectView[]> {
     await this.authorization.require({ principal, permission: "project.read" });
     const database = this.store.snapshot();
     return database.projects
+      .filter((project) => project.status !== "archived")
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .map((project) => publicProject(project, this.attachedMemberships(project.id)));
   }
@@ -272,13 +299,14 @@ export class ProjectService {
   }
 
   /**
-   * Archives a Project: attachments and leases are dropped, but the shared
-   * workspace is moved aside rather than deleted. Hackathon-safe by default.
+   * Archives a Project: active child conversations are stopped, the shared
+   * workspace is moved aside rather than deleted, and all Project history is
+   * retained for recovery. Transient write leases are the one exception.
    */
   async archive(
     projectId: string,
     principal: Principal = DEMO_HUMAN_PRINCIPAL,
-  ): Promise<{ archivedWorkspace: string }> {
+  ): Promise<{ archivedWorkspace: string | null }> {
     await this.authorization.require({
       principal,
       permission: "project.manage",
@@ -291,23 +319,28 @@ export class ProjectService {
       // Stop the shared Preview before moving its workspace. This is an
       // injected lifecycle seam so ProjectService never reaches runtime code.
       await this.projectPreviewLifecycle?.stopForProject(projectId);
-      // Cleanup can yield to a waiting runner; reject if one acquired a lease
-      // before the filesystem move rather than deleting that lease below.
+      // Archive stops active conversations but deliberately keeps their
+      // sessions, turns, events, and continuation prompts as history.
+      await this.conversationLifecycle?.stopForProject?.(projectId);
+      this.assertNoActiveProjectConversations(projectId);
+      this.assertNoActiveProjectPreview(projectId);
       this.leaseCoordinator.requireNoWriteLease(projectId);
+      // Stop/finalization may persist terminal child state. Roll back to this
+      // safe snapshot if the subsequent filesystem or Permit operation fails;
+      // restoring an active pre-stop record would create a phantom runner.
+      const afterStop = this.store.snapshot();
       const archivedWorkspace = await this.workspaces.archive(project);
-      const before = this.store.snapshot();
       try {
         await this.store.mutate((database) => {
           this.leaseCoordinator.assertDatabaseLeaseFree(database, projectId);
           const stored = database.projects.find((item) => item.id === projectId);
-          if (stored) {
-            stored.status = "archived";
-            stored.teamId = null;
-            stored.updatedAt = now();
-          }
-          database.projectAgents = database.projectAgents.filter(
-            (item) => item.projectId !== projectId,
-          );
+          if (!stored) throw new ProjectError("PROJECT_NOT_FOUND", 404, "Project not found");
+          stored.status = "archived";
+          stored.teamId = null;
+          stored.updatedAt = now();
+          // Leases are coordination state, not recoverable history. A stopped
+          // child should already have released its lease, but filter defensively
+          // inside the same mutation as the status transition.
           database.projectLeases = database.projectLeases.filter(
             (item) => item.projectId !== projectId,
           );
@@ -317,38 +350,145 @@ export class ProjectService {
         return { archivedWorkspace };
       } catch (error) {
         // Archive changes both repository authority and the physical shared
-        // workspace. If Permit cannot converge, restore both sides so the
-        // archive can be retried without silently losing membership facts.
-        await this.store.mutate((database) => {
-          const previousProject = before.projects.find((item) => item.id === projectId);
-          if (previousProject) {
-            const stored = database.projects.find((item) => item.id === projectId);
-            if (stored) Object.assign(stored, structuredClone(previousProject));
-            else database.projects.push(structuredClone(previousProject));
-          }
-          database.projectAgents = database.projectAgents.filter(
-            (item) => item.projectId !== projectId,
-          );
-          database.projectAgents.push(
-            ...before.projectAgents
-              .filter((item) => item.projectId === projectId)
-              .map((item) => structuredClone(item)),
-          );
-          database.projectLeases = database.projectLeases.filter(
-            (item) => item.projectId !== projectId,
-          );
-          database.projectLeases.push(
-            ...before.projectLeases
-              .filter((item) => item.projectId === projectId)
-              .map((item) => structuredClone(item)),
-          );
-        });
-        await this.workspaces.restore(project, archivedWorkspace).catch(() => undefined);
+        // workspace. Restore the last safe persisted state before moving the
+        // files back so the archive can be retried without losing history.
+        await this.restoreProjectSnapshot(afterStop, projectId);
+        if (archivedWorkspace !== null) {
+          await this.workspaces.restore(project, archivedWorkspace).catch(() => undefined);
+        }
         throw error;
       }
     } finally {
       this.leaseCoordinator.endArchive(projectId);
     }
+  }
+
+  /**
+   * Permanently removes a Workspace's database records after first moving its
+   * files through the recoverable archive path. Agent identity, private Agent
+   * messages/runs, audit history, and other Workspaces remain untouched.
+   */
+  async deletePermanently(
+    projectId: string,
+    principal: Principal = DEMO_HUMAN_PRINCIPAL,
+  ): Promise<{ deleted: boolean }> {
+    await this.authorization.require({
+      principal,
+      permission: "project.manage",
+      projectId,
+      resource: { kind: "project", id: projectId },
+    });
+    const project = this.requireProject(projectId);
+    this.leaseCoordinator.beginArchive(projectId);
+    try {
+      // Runtime cleanup runs before the filesystem move. The production seam
+      // stops active children but does not delete their persisted history;
+      // this method owns the final all-or-nothing database purge below.
+      await this.projectPreviewLifecycle?.stopForProject(projectId);
+      await this.conversationLifecycle?.stopForProject?.(projectId);
+      this.assertNoActiveProjectConversations(projectId);
+      this.assertNoActiveProjectPreview(projectId);
+      this.leaseCoordinator.requireNoWriteLease(projectId);
+      const afterStop = this.store.snapshot();
+      const childIdsToRemove = new Set(
+        afterStop.orchestrations
+          .filter((session) => session.projectId === projectId)
+          .map((session) => session.id),
+      );
+
+      let archivedWorkspace: string | null = null;
+      // An archived Project has already had its live workspace moved. Its
+      // recoverable archive is intentionally left in place while the DB row is
+      // deleted. Active Projects are moved exactly once through the manager.
+      if (project.status === "active") {
+        archivedWorkspace = await this.workspaces.archive(project);
+      }
+
+      try {
+        // The orchestration service owns its in-process cancellation map and
+        // child-session cleanup. Production wiring has already stopped the
+        // children above; this second seam removes those child records after
+        // the recoverable filesystem move. The final mutation below remains
+        // authoritative for callers that do not provide that seam.
+        await this.conversationLifecycle?.removeForProject?.(projectId);
+        await this.store.mutate((database) => {
+          this.leaseCoordinator.assertDatabaseLeaseFree(database, projectId);
+          // Include IDs from the post-stop snapshot even when an injected
+          // lifecycle seam already removed the parent session. This prevents
+          // orphaned turns/events/continuations from surviving a delete.
+          const childIds = new Set(childIdsToRemove);
+          for (const session of database.orchestrations) {
+            if (session.projectId === projectId) childIds.add(session.id);
+          }
+          for (const childId of childIds) {
+            const session = database.orchestrations.find((item) => item.id === childId);
+            if (session && statusIsActiveSession(session.status)) {
+              throw new ProjectError(
+                "PROJECT_BUSY",
+                409,
+                "Stop the active Conversation before deleting this Workspace",
+              );
+            }
+          }
+
+          database.projects = database.projects.filter((item) => item.id !== projectId);
+          database.projectAgents = database.projectAgents.filter(
+            (item) => item.projectId !== projectId,
+          );
+          database.projectLeases = database.projectLeases.filter(
+            (item) => item.projectId !== projectId,
+          );
+          database.orchestrations = database.orchestrations.filter(
+            (item) => !childIds.has(item.id),
+          );
+          database.orchestrationTurns = database.orchestrationTurns.filter(
+            (item) => !childIds.has(item.sessionId),
+          );
+          database.orchestrationEvents = database.orchestrationEvents.filter(
+            (item) => !childIds.has(item.sessionId),
+          );
+          database.orchestrationContinuationPrompts =
+            database.orchestrationContinuationPrompts.filter(
+              (item) => !childIds.has(item.sessionId),
+            );
+          database.previews = database.previews.filter(
+            (item) => item.projectId !== projectId,
+          );
+          database.approvalRequests = database.approvalRequests.filter(
+            (item) => item.projectId !== projectId,
+          );
+          database.capabilityGrants = database.capabilityGrants.filter(
+            (item) => item.projectId !== projectId,
+          );
+          database.permitApprovalCorrelations = database.permitApprovalCorrelations.filter(
+            (item) => item.projectId !== projectId,
+          );
+        });
+        await this.permitDirectory?.reconcile();
+        this.onEvent({ type: "project_deleted", projectId, status: "deleted" });
+        return { deleted: true };
+      } catch (error) {
+        // The JSON store mutation is atomic. If external Permit reconciliation
+        // fails, restore the last safe post-stop snapshot and put the moved
+        // workspace back. Restoration is best effort; the original stable
+        // operation error remains the response if a host rename itself fails.
+        await this.restoreProjectSnapshot(afterStop, projectId);
+        if (archivedWorkspace !== null) {
+          await this.workspaces.restore(project, archivedWorkspace).catch(() => undefined);
+        }
+        throw error;
+      }
+    } finally {
+      this.leaseCoordinator.endArchive(projectId);
+    }
+  }
+
+  /** Alias that keeps the destructive operation explicit at service callers. */
+  async delete(
+    projectId: string,
+    principal: Principal = DEMO_HUMAN_PRINCIPAL,
+  ): Promise<{ deleted: boolean }> {
+    return this.deletePermanently(projectId, principal);
   }
 
   // --------------------------------------------------------------- attachment
@@ -380,7 +520,6 @@ export class ProjectService {
       agentId,
       codexThreadId: null,
       attachedAt,
-      role: "editor",
       toolGrants: [],
       updatedAt: attachedAt,
     };
@@ -449,6 +588,109 @@ export class ProjectService {
           }
         });
       }
+      throw error;
+    }
+  }
+
+  /**
+   * Bind one orchestration conversation to a Project and union its Agents into
+   * the Project membership set. Unlike the legacy `attachTeam` method, this
+   * operation is intentionally repeatable: a Project may own many
+   * conversations, while `teamId` remains only the first-conversation pointer
+   * needed by older records and callers.
+   */
+  async bindConversation(
+    projectId: string,
+    conversationId: string,
+    agentIds: readonly string[],
+    principal: Principal = DEMO_HUMAN_PRINCIPAL,
+  ): Promise<ProjectView> {
+    await this.authorization.require({
+      principal,
+      permission: "project.members.manage",
+      projectId,
+      resource: { kind: "project", id: projectId },
+    });
+    this.requireActiveProject(projectId);
+    const uniqueAgentIds = [...new Set(agentIds)];
+    for (const agentId of uniqueAgentIds) this.agents.getAgent(agentId);
+
+    const before = this.store.snapshot();
+    const updated = await this.store.mutate((database) => {
+      const stored = database.projects.find((item) => item.id === projectId);
+      if (!stored) throw new ProjectError("PROJECT_NOT_FOUND", 404, "Project not found");
+      if (stored.status !== "active") {
+        throw new ProjectError("PROJECT_ARCHIVED", 409, "This Project is archived");
+      }
+
+      let changed = false;
+      // Preserve the legacy pointer for existing consumers, but never reject a
+      // second conversation just because that pointer is occupied.
+      if (stored.teamId === null) {
+        stored.teamId = conversationId;
+        changed = true;
+      }
+      for (const agentId of uniqueAgentIds) {
+        if (
+          database.projectAgents.some(
+            (item) => item.projectId === projectId && item.agentId === agentId,
+          )
+        ) {
+          continue;
+        }
+        const timestamp = now();
+        database.projectAgents.push({
+          projectId,
+          agentId,
+          codexThreadId: null,
+          attachedAt: timestamp,
+          toolGrants: [],
+          updatedAt: timestamp,
+        });
+        changed = true;
+      }
+      if (changed) stored.updatedAt = now();
+      return structuredClone(stored);
+    });
+
+    try {
+      await this.permitDirectory?.reconcile();
+      const newlyAttached = uniqueAgentIds.filter(
+        (agentId) =>
+          !before.projectAgents.some(
+            (item) => item.projectId === projectId && item.agentId === agentId,
+          ),
+      );
+      for (const agentId of newlyAttached) {
+        this.onEvent({
+          type: "project_agent_attached",
+          projectId,
+          agentId,
+          teamId: conversationId,
+          status: "attached",
+        });
+      }
+      this.onEvent({
+        type: "project_conversation_bound",
+        projectId,
+        teamId: conversationId,
+        status: "attached",
+      });
+      return publicProject(updated, this.attachedMemberships(projectId));
+    } catch (error) {
+      await this.store.mutate((database) => {
+        const previousProject = before.projects.find((item) => item.id === projectId);
+        const stored = database.projects.find((item) => item.id === projectId);
+        if (previousProject && stored) Object.assign(stored, structuredClone(previousProject));
+        database.projectAgents = database.projectAgents.filter(
+          (item) => item.projectId !== projectId,
+        );
+        database.projectAgents.push(
+          ...before.projectAgents
+            .filter((item) => item.projectId === projectId)
+            .map((item) => structuredClone(item)),
+        );
+      });
       throw error;
     }
   }
@@ -564,6 +806,7 @@ export class ProjectService {
         );
       }
       attachment.role = parsedRole.data;
+      attachment.roleId = LEGACY_ROLE_IDS[parsedRole.data];
       attachment.updatedAt = now();
       const project = database.projects.find((item) => item.id === projectId);
       if (!project) throw new ProjectError("PROJECT_NOT_FOUND", 404, "Project not found");
@@ -726,6 +969,129 @@ export class ProjectService {
 
   // ---------------------------------------------------------------- internals
 
+  private assertNoActiveProjectConversations(projectId: string): void {
+    const active = this.store.snapshot().orchestrations.some(
+      (session) => session.projectId === projectId && statusIsActiveSession(session.status),
+    );
+    if (active) {
+      throw new ProjectError(
+        "PROJECT_BUSY",
+        409,
+        "Stop the active Conversation before changing this Workspace",
+      );
+    }
+  }
+
+  private assertNoActiveProjectPreview(projectId: string): void {
+    const active = this.store.snapshot().previews.some(
+      (preview) =>
+        preview.projectId === projectId &&
+        (statusIsActiveSession(preview.status) || preview.runtimeId !== null),
+    );
+    if (active) {
+      throw new ProjectError(
+        "PROJECT_BUSY",
+        409,
+        "Stop the active Workspace preview before changing this Workspace",
+      );
+    }
+  }
+
+  /**
+   * Restore only records owned by one Project. Unrelated concurrent store
+   * changes stay intact, while deleted children and access projections return
+   * to the post-stop state used for a safe retry.
+   */
+  private async restoreProjectSnapshot(
+    snapshot: Database,
+    projectId: string,
+  ): Promise<void> {
+    await this.store.mutate((database) => {
+      const childIds = new Set(
+        snapshot.orchestrations
+          .filter((session) => session.projectId === projectId)
+          .map((session) => session.id),
+      );
+      database.projects = database.projects
+        .filter((item) => item.id !== projectId)
+        .concat(
+          snapshot.projects
+            .filter((item) => item.id === projectId)
+            .map((item) => structuredClone(item)),
+        );
+      database.projectAgents = database.projectAgents
+        .filter((item) => item.projectId !== projectId)
+        .concat(
+          snapshot.projectAgents
+            .filter((item) => item.projectId === projectId)
+            .map((item) => structuredClone(item)),
+        );
+      database.projectLeases = database.projectLeases
+        .filter((item) => item.projectId !== projectId)
+        .concat(
+          snapshot.projectLeases
+            .filter((item) => item.projectId === projectId)
+            .map((item) => structuredClone(item)),
+        );
+      database.orchestrations = database.orchestrations
+        .filter((item) => item.projectId !== projectId && !childIds.has(item.id))
+        .concat(
+          snapshot.orchestrations
+            .filter((item) => item.projectId === projectId)
+            .map((item) => structuredClone(item)),
+        );
+      database.orchestrationTurns = database.orchestrationTurns
+        .filter((item) => !childIds.has(item.sessionId))
+        .concat(
+          snapshot.orchestrationTurns
+            .filter((item) => childIds.has(item.sessionId))
+            .map((item) => structuredClone(item)),
+        );
+      database.orchestrationEvents = database.orchestrationEvents
+        .filter((item) => !childIds.has(item.sessionId))
+        .concat(
+          snapshot.orchestrationEvents
+            .filter((item) => childIds.has(item.sessionId))
+            .map((item) => structuredClone(item)),
+        );
+      database.orchestrationContinuationPrompts = database.orchestrationContinuationPrompts
+        .filter((item) => !childIds.has(item.sessionId))
+        .concat(
+          snapshot.orchestrationContinuationPrompts
+            .filter((item) => childIds.has(item.sessionId))
+            .map((item) => structuredClone(item)),
+        );
+      database.previews = database.previews
+        .filter((item) => item.projectId !== projectId)
+        .concat(
+          snapshot.previews
+            .filter((item) => item.projectId === projectId)
+            .map((item) => structuredClone(item)),
+        );
+      database.approvalRequests = database.approvalRequests
+        .filter((item) => item.projectId !== projectId)
+        .concat(
+          snapshot.approvalRequests
+            .filter((item) => item.projectId === projectId)
+            .map((item) => structuredClone(item)),
+        );
+      database.capabilityGrants = database.capabilityGrants
+        .filter((item) => item.projectId !== projectId)
+        .concat(
+          snapshot.capabilityGrants
+            .filter((item) => item.projectId === projectId)
+            .map((item) => structuredClone(item)),
+        );
+      database.permitApprovalCorrelations = database.permitApprovalCorrelations
+        .filter((item) => item.projectId !== projectId)
+        .concat(
+          snapshot.permitApprovalCorrelations
+            .filter((item) => item.projectId === projectId)
+            .map((item) => structuredClone(item)),
+        );
+    });
+  }
+
   private attachedAgentIds(projectId: string): string[] {
     return this.attachedMemberships(projectId).map((membership) => membership.agentId);
   }
@@ -735,7 +1101,11 @@ export class ProjectService {
       .snapshot()
       .projectAgents.filter((item) => item.projectId === projectId)
       .sort((left, right) => left.attachedAt.localeCompare(right.attachedAt))
-      .map((item) => ({ agentId: item.agentId, role: item.role ?? "editor" }));
+      .map((item) => ({
+        agentId: item.agentId,
+        role: item.role ?? "editor",
+        ...(item.roleId === undefined ? {} : { roleId: item.roleId }),
+      }));
   }
 
   private requireProject(projectId: string): Project {

@@ -10,7 +10,9 @@
     "test": "vitest run --config ../../vitest.web.config.ts"
   },
   "dependencies": {
+    "@pixi/react": "^8.0.5",
     "@vitejs/plugin-react": "^5.1.1",
+    "pixi.js": "^8.20.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-markdown": "^10.1.0",

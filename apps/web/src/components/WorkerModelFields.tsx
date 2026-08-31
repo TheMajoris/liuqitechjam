@@ -121,7 +121,7 @@ export function WorkerModelFields({
         <span className="worker-model-lock" aria-hidden="true">Backend resolved</span>
       </div>
       <p className="worker-model-help">
-        The selected configuration is used whenever this Agent is invoked in the Playground or
+        The selected configuration is used whenever this Agent is invoked on its own or
         Team. Provider credentials stay on the server.
       </p>
 
