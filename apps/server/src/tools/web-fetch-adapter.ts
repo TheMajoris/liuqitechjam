@@ -363,8 +363,18 @@ function fetchWithPinnedAddress(
       path: url.pathname + url.search,
       method: String(init.method ?? "GET"),
       headers: headersForNodeRequest(init),
-      lookup: (_lookupHostname, _lookupOptions, callback) =>
-        callback(null, pinnedAddress.address, pinnedAddress.family),
+      // Node passes `all: true` whenever it uses the multi-address connect
+      // path (autoSelectFamily, on by default since Node 20) and then expects
+      // an address array. The positional form is only valid without it, and
+      // answering in the wrong shape fails the connect with
+      // ERR_INVALID_IP_ADDRESS rather than reaching the host.
+      lookup: (_lookupHostname, lookupOptions, callback) => {
+        if (lookupOptions.all === true) {
+          callback(null, [{ address: pinnedAddress.address, family: pinnedAddress.family }]);
+          return;
+        }
+        callback(null, pinnedAddress.address, pinnedAddress.family);
+      },
     };
     const onResponse = (response: import("node:http").IncomingMessage) => {
       const status = response.statusCode;
