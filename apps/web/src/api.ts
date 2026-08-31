@@ -3,7 +3,10 @@ import type {
   AgentRun,
   CreateOrchestrationInput,
   ModelProvidersResponse,
+  ModelCatalogResponse,
+  ModelCatalogUpdate,
   ModelRef,
+  ModelScope,
   Message,
   OrchestrationSession,
   OrchestrationSessionDetail,
@@ -84,12 +87,24 @@ export const api = {
       "/api/usage" + (suffix ? "?" + suffix : ""),
     );
   },
-  listModelProviders: () =>
-    request<ModelProvidersResponse>("/api/model-providers"),
-  listProviderModels: (providerId: string) =>
+  listModelProviders: (scope: ModelScope = "worker") =>
+    request<ModelProvidersResponse>("/api/model-providers?scope=" + encodeURIComponent(scope)),
+  listProviderModels: (providerId: string, scope: ModelScope = "worker") =>
     request<ProviderModelsResponse>(
-      "/api/model-providers/" + encodeURIComponent(providerId) + "/models",
+      "/api/model-providers/" + encodeURIComponent(providerId) + "/models?scope=" + encodeURIComponent(scope),
     ),
+  /**
+   * Operator-only catalog projection/update. The current runtime exposes the
+   * provider listings above; these endpoints are intentionally kept behind a
+   * narrow client seam so the settings view can use the atomic control-plane
+   * contract when enabled.
+   */
+  getModelCatalog: () => request<ModelCatalogResponse>("/api/model-catalog"),
+  updateModelCatalog: (body: ModelCatalogUpdate) =>
+    request<ModelCatalogResponse>("/api/model-catalog", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
   listAgents: () => request<{ agents: Agent[] }>("/api/agents"),
   projectActivity: (projectId: string, limit = 200) =>
     request<{ events: import("./types").AuditEventRecord[] }>(
@@ -198,6 +213,7 @@ export const api = {
     description: string;
     instructions: string;
     modelRef?: ModelRef;
+    fallbackModelRefs?: ModelRef[];
     skillIds?: string[];
     globalRoleId?: string | null;
   }) =>
@@ -212,6 +228,7 @@ export const api = {
       description?: string;
       instructions?: string;
       modelRef?: ModelRef;
+      fallbackModelRefs?: ModelRef[];
       skillIds?: string[];
       globalRoleId?: string | null;
     },
@@ -230,7 +247,7 @@ export const api = {
       body: JSON.stringify(appearance),
     }),
   deleteAgent: (id: string) =>
-    request<{ archivedWorkspace: string }>("/api/agents/" + id, {
+    request<{ archivedWorkspace: string | null }>("/api/agents/" + id, {
       method: "DELETE",
     }),
   startAgent: (id: string) =>
@@ -395,10 +412,12 @@ export const api = {
     }),
   getOrchestration: (id: string) =>
     request<OrchestrationSessionDetail>("/api/orchestrations/" + id),
-  startOrchestration: (id: string) =>
+  startOrchestration: (id: string, prompt?: string) =>
     request<{ session: OrchestrationSession }>(
       "/api/orchestrations/" + id + "/start",
-      { method: "POST" },
+      prompt === undefined
+        ? { method: "POST" }
+        : { method: "POST", body: JSON.stringify({ prompt }) },
     ),
   stopOrchestration: (id: string) =>
     request<{ session: OrchestrationSession }>(

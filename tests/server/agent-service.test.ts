@@ -149,6 +149,19 @@ describe("Agent lifecycle", () => {
     expect(service.listAgents()).toHaveLength(0);
   });
 
+  it("deletes an Agent when its workspace was removed externally", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Orphaned" });
+    const { rm } = await import("node:fs/promises");
+    await rm(agent.workspacePath, { recursive: true, force: true });
+
+    const result = await service.deleteAgent(agent.id);
+
+    expect(result.archivedWorkspace).toBeNull();
+    expect(service.listAgents()).toHaveLength(0);
+    expect(() => service.getAgent(agent.id)).toThrow(/Agent not found/);
+  });
+
   it("persists a playground conversation", async () => {
     const service = await makeService();
     const agent = await service.createAgent({ name: "Coder" });

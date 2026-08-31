@@ -1,4 +1,12 @@
-import { useCallback, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import { api } from "../api";
 import { workerProviders } from "../components/WorkerModelFields";
 import type {
@@ -27,6 +35,10 @@ export interface ModelCatalogController {
   changeProvider: (providerId: string) => void;
   changeModel: (modelId: string) => void;
   changeReasoning: (effort: ReasoningEffort | undefined) => void;
+  addFallbackModel: () => void;
+  removeFallbackModel: (index: number) => void;
+  changeFallbackProvider: (index: number, providerId: string) => void;
+  changeFallbackModel: (index: number, modelId: string) => void;
   retry: () => void;
   clearError: () => void;
 }
@@ -39,6 +51,36 @@ function chooseDefaultEffort(model: ModelDescriptor | undefined): ReasoningEffor
   const efforts = model?.capabilities.reasoningEfforts ?? [];
   if (model?.capabilities.reasoning !== true || efforts.length === 0) return undefined;
   return efforts.includes("medium") ? "medium" : efforts[0];
+}
+
+function cloneModelRef(modelRef: ModelRef): ModelRef {
+  return {
+    providerId: modelRef.providerId,
+    modelId: modelRef.modelId,
+    ...(modelRef.reasoning?.effort === undefined
+      ? {}
+      : { reasoning: { effort: modelRef.reasoning.effort } }),
+  };
+}
+
+function isInvalidModelRef(
+  modelRef: ModelRef | undefined,
+  modelsByProvider: Record<string, ModelDescriptor[]>,
+  loadingByProvider: Record<string, boolean>,
+  error: string | null,
+): boolean {
+  if (!modelRef?.providerId || !modelRef.modelId) return true;
+  if (loadingByProvider[modelRef.providerId] || error) return true;
+  const model = (modelsByProvider[modelRef.providerId] ?? []).find(
+    (candidate) => candidate.id === modelRef.modelId && candidate.providerId === modelRef.providerId,
+  );
+  if (!model) return true;
+  const effort = modelRef.reasoning?.effort;
+  const efforts = model.capabilities.reasoningEfforts ?? [];
+  if (effort !== undefined && (!model.capabilities.reasoning || !efforts.includes(effort))) {
+    return true;
+  }
+  return model.capabilities.reasoning && efforts.length > 0 && effort === undefined;
 }
 
 /**
@@ -56,12 +98,22 @@ export function useModelCatalog(
   const [providersLoading, setProvidersLoading] = useState(false);
   const [loadingByProvider, setLoadingByProvider] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
-  const requests = useRef(new Set<string>());
+  const [catalogEpoch, setCatalogEpoch] = useState(0);
+  const requests = useRef(new Map<string, number>());
+  const requestSequence = useRef(0);
   const loadedProviders = useRef(new Set<string>());
 
   const refresh = useCallback(async () => {
     setProvidersLoading(true);
     setError(null);
+    // Provider metadata and per-provider model lists share the same server
+    // catalog. Invalidate both caches so an operator update is visible in
+    // already-open Agent forms as well as in newly mounted forms.
+    setModelsByProvider({});
+    setLoadingByProvider({});
+    loadedProviders.current.clear();
+    requests.current.clear();
+    setCatalogEpoch((current) => current + 1);
     try {
       const response = await api.listModelProviders();
       setProviders(response.providers);
@@ -80,7 +132,8 @@ export function useModelCatalog(
       requests.current.has(normalizedProviderId) ||
       (!force && loadedProviders.current.has(normalizedProviderId))
     ) return;
-    requests.current.add(normalizedProviderId);
+    const requestId = ++requestSequence.current;
+    requests.current.set(normalizedProviderId, requestId);
     setLoadingByProvider((current) => ({ ...current, [normalizedProviderId]: true }));
     setError(null);
     try {
@@ -90,13 +143,21 @@ export function useModelCatalog(
           model.providerId === normalizedProviderId &&
           model.capabilities.scopes.includes("worker"),
       );
-      setModelsByProvider((current) => ({ ...current, [normalizedProviderId]: models }));
-      loadedProviders.current.add(normalizedProviderId);
+      // A refresh can invalidate an older request while it is in flight. Do
+      // not let that stale response repopulate the Agent form cache.
+      if (requests.current.get(normalizedProviderId) === requestId) {
+        setModelsByProvider((current) => ({ ...current, [normalizedProviderId]: models }));
+        loadedProviders.current.add(normalizedProviderId);
+      }
     } catch (reason) {
-      setError(errorMessage(reason));
+      if (requests.current.get(normalizedProviderId) === requestId) {
+        setError(errorMessage(reason));
+      }
     } finally {
-      requests.current.delete(normalizedProviderId);
-      setLoadingByProvider((current) => ({ ...current, [normalizedProviderId]: false }));
+      if (requests.current.get(normalizedProviderId) === requestId) {
+        requests.current.delete(normalizedProviderId);
+        setLoadingByProvider((current) => ({ ...current, [normalizedProviderId]: false }));
+      }
     }
   }, []);
 
@@ -122,25 +183,26 @@ export function useModelCatalog(
     selectedAgentReasoning !== undefined &&
     selectedAgentModel?.capabilities.reasoning === true &&
     selectedAgentModel.capabilities.reasoningEfforts?.includes(selectedAgentReasoning) === true;
-  const selectedFormModel = form.modelRef?.modelId
-    ? selectedFormModels.find((model) => model.id === form.modelRef?.modelId)
-    : undefined;
-  const selectedFormReasoning = form.modelRef?.reasoning?.effort;
-  const selectedFormEfforts = selectedFormModel?.capabilities.reasoningEfforts ?? [];
-  const modelSelectionInvalid = Boolean(
-    form.modelRef &&
-      (!form.modelRef.providerId ||
-        !form.modelRef.modelId ||
-        selectedFormModelsLoading ||
-        Boolean(error) ||
-        !selectedFormModel ||
-        (selectedFormModel.capabilities.reasoning &&
-          selectedFormEfforts.length > 0 &&
-          (!selectedFormReasoning || !selectedFormEfforts.includes(selectedFormReasoning))) ||
-        (selectedFormReasoning !== undefined &&
-          (!selectedFormModel.capabilities.reasoning ||
-            !selectedFormEfforts.includes(selectedFormReasoning)))),
+  const fallbackModelRefs = form.fallbackModelRefs ?? [];
+  const primaryModelSelectionInvalid = isInvalidModelRef(
+    form.modelRef,
+    modelsByProvider,
+    loadingByProvider,
+    error,
   );
+  const fallbackModelSelectionInvalid = fallbackModelRefs.some((modelRef) =>
+    isInvalidModelRef(modelRef, modelsByProvider, loadingByProvider, error),
+  );
+  const modelSelectionInvalid = primaryModelSelectionInvalid || fallbackModelSelectionInvalid;
+
+  useEffect(() => {
+    const providerIds = new Set<string>();
+    if (form.modelRef?.providerId) providerIds.add(form.modelRef.providerId);
+    for (const modelRef of fallbackModelRefs) {
+      if (modelRef.providerId) providerIds.add(modelRef.providerId);
+    }
+    for (const providerId of providerIds) void loadProviderModels(providerId);
+  }, [catalogEpoch, fallbackModelRefs, form.modelRef?.providerId, loadProviderModels]);
 
   const changeProvider = useCallback(
     (providerId: string) => {
@@ -162,7 +224,7 @@ export function useModelCatalog(
   const changeModel = useCallback(
     (modelId: string) => {
       const providerId = form.modelRef?.providerId;
-      if (!providerId || !modelId) return;
+      if (!providerId) return;
       setError(null);
       const model = (modelsByProvider[providerId] ?? []).find((candidate) => candidate.id === modelId);
       const effort = chooseDefaultEffort(model);
@@ -176,6 +238,70 @@ export function useModelCatalog(
       }));
     },
     [form.modelRef?.providerId, modelsByProvider, setForm],
+  );
+
+  const addFallbackModel = useCallback(() => {
+    setError(null);
+    setForm((current) => ({
+      ...current,
+      fallbackModelRefs: [
+        ...(current.fallbackModelRefs ?? []).map(cloneModelRef),
+        { providerId: "", modelId: "" },
+      ],
+    }));
+  }, [setForm]);
+
+  const removeFallbackModel = useCallback(
+    (index: number) => {
+      setError(null);
+      setForm((current) => ({
+        ...current,
+        fallbackModelRefs: (current.fallbackModelRefs ?? [])
+          .filter((_, candidateIndex) => candidateIndex !== index)
+          .map(cloneModelRef),
+      }));
+    },
+    [setForm],
+  );
+
+  const changeFallbackProvider = useCallback(
+    (index: number, providerId: string) => {
+      const normalizedProviderId = providerId.trim();
+      setError(null);
+      setForm((current) => {
+        const fallbackModelRefs = (current.fallbackModelRefs ?? []).map(cloneModelRef);
+        if (!fallbackModelRefs[index]) return current;
+        fallbackModelRefs[index] = {
+          providerId: normalizedProviderId,
+          modelId: "",
+        };
+        return { ...current, fallbackModelRefs };
+      });
+      if (normalizedProviderId) void loadProviderModels(normalizedProviderId);
+    },
+    [loadProviderModels, setForm],
+  );
+
+  const changeFallbackModel = useCallback(
+    (index: number, modelId: string) => {
+      setError(null);
+      setForm((current) => {
+        const fallbackModelRefs = (current.fallbackModelRefs ?? []).map(cloneModelRef);
+        const currentRef = fallbackModelRefs[index];
+        if (!currentRef) return current;
+        const model = (modelsByProvider[currentRef.providerId] ?? []).find(
+          (candidate) => candidate.id === modelId,
+        );
+        const effort = chooseDefaultEffort(model);
+        fallbackModelRefs[index] = {
+          providerId: currentRef.providerId,
+          modelId,
+          ...(effort ? { reasoning: { effort } } : {}),
+        };
+        return { ...current, fallbackModelRefs };
+      });
+    },
+    [modelsByProvider, setForm],
   );
 
   const changeReasoning = useCallback(
@@ -197,8 +323,13 @@ export function useModelCatalog(
 
   const retry = useCallback(() => {
     void refresh();
-    if (form.modelRef?.providerId) void loadProviderModels(form.modelRef.providerId, true);
-  }, [form.modelRef?.providerId, loadProviderModels, refresh]);
+    const providerIds = new Set<string>();
+    if (form.modelRef?.providerId) providerIds.add(form.modelRef.providerId);
+    for (const modelRef of form.fallbackModelRefs ?? []) {
+      if (modelRef.providerId) providerIds.add(modelRef.providerId);
+    }
+    for (const providerId of providerIds) void loadProviderModels(providerId, true);
+  }, [form.fallbackModelRefs, form.modelRef?.providerId, loadProviderModels, refresh]);
 
   const clearError = useCallback(() => setError(null), []);
 
@@ -219,6 +350,10 @@ export function useModelCatalog(
     changeProvider,
     changeModel,
     changeReasoning,
+    addFallbackModel,
+    removeFallbackModel,
+    changeFallbackProvider,
+    changeFallbackModel,
     retry,
     clearError,
   };

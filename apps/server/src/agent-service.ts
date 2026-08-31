@@ -18,6 +18,7 @@ import type {
   Agent,
   AgentAppearance,
   AgentConversation,
+  AgentModelSnapshot,
   AgentRun,
   AgentRunner,
   CreateAgentInput,
@@ -42,6 +43,7 @@ import type { SkillRuntimeContext } from "./skills/skill-types.js";
 import type { SkillService } from "./skills/skill-service.js";
 import { AgentRuntimePromptComposer } from "./agent-runtime-prompt.js";
 import type { RuntimeTelemetry } from "./telemetry/telemetry-types.js";
+import type { AuditRecorder } from "./audit/audit-types.js";
 import type { McpSessionService } from "./tools/mcp-session-service.js";
 import type { PermitDirectoryReconciliationSink } from "./access/permit-directory-reconciler.js";
 import { buildUsageReport } from "./usage/usage-aggregator.js";
@@ -58,7 +60,30 @@ const now = () => new Date().toISOString();
 type AgentModelResolver = WorkerModelResolver & {
   defaultModelRef?: () => ModelRef | undefined;
   effectiveModelRef?: (modelRef: ModelRef | undefined) => ModelRef | undefined;
+  /** Optional revision exposed by a live model catalog implementation. */
+  getCatalogRevision?: () => string | number | undefined;
+  catalogRevision?: () => string | number | undefined;
 };
+
+interface AgentRuntimeModelPlan {
+  primaryRef: ModelRef;
+  fallbackRefs: ModelRef[];
+  primary: WorkerRuntimeModelConfig;
+  fallbacks: WorkerRuntimeModelConfig[];
+  snapshot: AgentModelSnapshot;
+}
+
+function modelRefListEqual(
+  left: readonly ModelRef[] | undefined,
+  right: readonly ModelRef[] | undefined,
+): boolean {
+  const leftList = left ?? [];
+  const rightList = right ?? [];
+  return (
+    leftList.length === rightList.length &&
+    leftList.every((item, index) => modelRefsEqual(item, rightList[index]))
+  );
+}
 
 export class AgentService {
   private readonly conversations: AgentConversationService;
@@ -69,6 +94,7 @@ export class AgentService {
   private mcpSessions: McpSessionService | undefined;
   private skillService: SkillService | undefined;
   private telemetry: RuntimeTelemetry | undefined;
+  private audit: AuditRecorder | undefined;
   private permitDirectory: PermitDirectoryReconciliationSink | undefined;
 
   constructor(
@@ -98,6 +124,7 @@ export class AgentService {
       getProjectScope: () => this.projectScope,
       getMcpSessions: () => this.mcpSessions,
       getTelemetry: () => this.telemetry,
+      getAudit: () => this.audit,
       getRun: (runId) => this.getRun(runId),
     });
     this.previewLifecycle = previewLifecycle;
@@ -135,6 +162,11 @@ export class AgentService {
     this.telemetry = telemetry;
   }
 
+  /** Attach the server-owned audit sink used for model fallback evidence. */
+  setAuditRecorder(audit: AuditRecorder): void {
+    this.audit = audit;
+  }
+
   /** Attach the Permit directory synchronization seam after app assembly. */
   setPermitDirectoryReconciler(
     reconciler: PermitDirectoryReconciliationSink,
@@ -159,6 +191,48 @@ export class AgentService {
         if (agent.status === "busy") {
           agent.status = "ready";
           agent.updatedAt = now();
+        }
+
+        // Materialize the configured default for legacy records. New Agents
+        // always persist an explicit primary model, but old stores may have
+        // omitted modelRef and must remain readable during a live upgrade.
+        if (agent.modelRef === undefined) {
+          const defaultModelRef = this.effectiveModelRef(undefined);
+          if (defaultModelRef !== undefined) {
+            agent.modelRef = defaultModelRef;
+            agent.updatedAt = now();
+          }
+        } else {
+          // Normalize persisted whitespace/reasoning shape without resolving
+          // it here: a removed catalog entry must remain visible and should
+          // invalidate only new execution, not server startup.
+          try {
+            const normalized = normalizeModelRef(agent.modelRef);
+            if (!modelRefsEqual(agent.modelRef, normalized)) {
+              agent.modelRef = normalized;
+              agent.updatedAt = now();
+            }
+          } catch {
+            // Preserve malformed legacy data for the Agent settings surface;
+            // sendMessage will return the stable model configuration error.
+          }
+        }
+
+        if (Array.isArray(agent.fallbackModelRefs)) {
+          try {
+            const normalized = this.normalizeFallbackModelRefs(
+              agent.fallbackModelRefs,
+              agent.modelRef,
+              false,
+            );
+            if (!modelRefListEqual(agent.fallbackModelRefs, normalized)) {
+              agent.fallbackModelRefs = normalized;
+              agent.updatedAt = now();
+            }
+          } catch {
+            // As with a removed primary, retain malformed/removed fallbacks so
+            // the UI can show the assignment and an operator can replace it.
+          }
         }
       }
       this.conversations.migrateLegacyConversations(database);
@@ -235,6 +309,11 @@ export class AgentService {
       await this.skillService?.authorizeAssignment([], input.skillIds, id);
     }
     const modelRef = this.resolveModelRefForCreate(input.modelRef);
+    const fallbackModelRefs = this.normalizeFallbackModelRefs(
+      input.fallbackModelRefs,
+      modelRef,
+      true,
+    );
     const skillIds = this.normalizeSkillIds(input.skillIds);
     const appearance = normalizeAppearance(input.appearance);
     const agent: Agent = {
@@ -246,7 +325,10 @@ export class AgentService {
       ...(globalRoleId === undefined ? {} : { globalRoleId }),
       ...(appearance === undefined ? {} : { appearance }),
       status: "ready",
-      ...(modelRef === undefined ? {} : { modelRef }),
+      modelRef,
+      ...(input.fallbackModelRefs === undefined && fallbackModelRefs.length === 0
+        ? {}
+        : { fallbackModelRefs }),
       workspacePath: this.workspaces.workspacePath(id),
       codexThreadId: null,
       lastError: null,
@@ -294,10 +376,40 @@ export class AgentService {
       input.globalRoleId === undefined
         ? current.globalRoleId
         : this.validateGlobalRoleId(input.globalRoleId);
+    const currentEffectiveModelRef = this.effectiveModelRef(current.modelRef);
     const nextModelRef =
       input.modelRef === undefined
-        ? current.modelRef
+        ? currentEffectiveModelRef
         : this.effectiveModelRef(input.modelRef);
+    if (nextModelRef === undefined) {
+      throw new ModelCatalogError(
+        "MODEL_RUNTIME_CONFIGURATION_INVALID",
+        503,
+        "The Agent has no configured primary worker model.",
+      );
+    }
+    const currentFallbackModelRefs = current.fallbackModelRefs ?? [];
+    let nextFallbackModelRefs = structuredClone(currentFallbackModelRefs);
+    if (input.fallbackModelRefs !== undefined) {
+      nextFallbackModelRefs = this.normalizeFallbackModelRefs(
+        input.fallbackModelRefs,
+        nextModelRef,
+        true,
+      );
+    } else {
+      try {
+        nextFallbackModelRefs = this.normalizeFallbackModelRefs(
+          currentFallbackModelRefs,
+          nextModelRef,
+          false,
+        );
+      } catch (error) {
+        // Keep a removed/malformed legacy fallback visible while unrelated
+        // fields are edited. Changing the primary in that state is rejected
+        // because it could create a duplicate assignment silently.
+        if (input.modelRef !== undefined) throw error;
+      }
+    }
     const nextSkillIds =
       input.skillIds === undefined
         ? current.skillIds
@@ -305,15 +417,11 @@ export class AgentService {
     if (input.modelRef !== undefined) {
       // Validate before entering the store mutation so invalid model changes
       // cannot partially update the Agent or its workspace instructions.
-      this.modelResolver.resolve(input.modelRef);
+      this.modelResolver.resolve(nextModelRef);
     }
-    const currentEffectiveModelRef = this.effectiveModelRef(current.modelRef);
-    const modelChanged = !modelRefsEqual(
-      currentEffectiveModelRef,
-      input.modelRef === undefined
-        ? currentEffectiveModelRef
-        : nextModelRef,
-    );
+    const modelChanged =
+      !modelRefsEqual(currentEffectiveModelRef, nextModelRef) ||
+      !modelRefListEqual(currentFallbackModelRefs, nextFallbackModelRefs);
     const before = this.store.snapshot().agents.find((item) => item.id === id);
     if (!before) throw new HttpError(404, "Agent not found");
     const updated = await this.store.mutate((database) => {
@@ -337,12 +445,13 @@ export class AgentService {
           agent.globalRoleId = nextGlobalRoleId;
         }
       }
-      if (input.modelRef !== undefined) {
-        if (nextModelRef === undefined) {
-          delete agent.modelRef;
-        } else {
-          agent.modelRef = nextModelRef;
-        }
+      // New and updated Agents always carry an explicit primary assignment.
+      // This also upgrades a legacy Agent when any other field is edited.
+      agent.modelRef = nextModelRef;
+      if (input.fallbackModelRefs !== undefined || nextFallbackModelRefs.length > 0) {
+        agent.fallbackModelRefs = nextFallbackModelRefs;
+      } else {
+        delete agent.fallbackModelRefs;
       }
       if (modelChanged) {
         // Codex sessions are model/provider-specific. Keep the old session
@@ -426,7 +535,7 @@ export class AgentService {
     return this.skillService.readAgentSkills(agent, projectId);
   }
 
-  async deleteAgent(id: string): Promise<{ archivedWorkspace: string }> {
+  async deleteAgent(id: string): Promise<{ archivedWorkspace: string | null }> {
     const agent = this.getAgent(id);
     await this.cancelExecution(id);
     // Close the PreviewService start gate before cleanup. Any start already
@@ -506,7 +615,9 @@ export class AgentService {
             .map((item) => structuredClone(item)),
         );
       });
-      await this.workspaces.restore(stoppedAgent, archivedWorkspace).catch(() => undefined);
+      if (archivedWorkspace !== null) {
+        await this.workspaces.restore(stoppedAgent, archivedWorkspace).catch(() => undefined);
+      }
       throw error;
     }
   }
@@ -601,7 +712,10 @@ export class AgentService {
         "Worker runtime credentials are not configured.",
       );
     }
-    const runtimeModel = this.modelResolver.resolve(agentBeforeRun.modelRef);
+    // Resolve the complete assignment before creating a queued Run. The
+    // resolver is the catalog authority, so removed providers/models produce
+    // a stable error and never leave an orphaned queued record behind.
+    const modelPlan = this.resolveAgentModelPlan(agentBeforeRun);
     // Only direct Playground turns belong to a private conversation. Team turns
     // keep their own session scope and stay out of private history entirely.
     const origin: MessageOrigin = options.origin ?? "direct";
@@ -620,6 +734,7 @@ export class AgentService {
       output: null,
       error: null,
       usage: null,
+      modelSnapshot: modelPlan.snapshot,
       startedAt: null,
       completedAt: null,
       createdAt: timestamp,
@@ -645,6 +760,20 @@ export class AgentService {
       if (storedAgent.status === "busy") {
         throw new HttpError(409, "This Agent is already running");
       }
+      // Agent edits are rejected while busy, but a model update may have
+      // completed between the read above and this atomic queue mutation. Do
+      // not run with a stale assignment in that race.
+      const storedPrimary = this.effectiveModelRef(storedAgent.modelRef);
+      const storedFallbacks = storedAgent.fallbackModelRefs ?? [];
+      const currentCatalogRevision = this.readCatalogRevision();
+      if (
+        !modelRefsEqual(storedPrimary, modelPlan.primaryRef) ||
+        !modelRefListEqual(storedFallbacks, modelPlan.fallbackRefs) ||
+        (modelPlan.snapshot.catalogRevision !== undefined &&
+          currentCatalogRevision !== modelPlan.snapshot.catalogRevision)
+      ) {
+        throw new HttpError(409, "Agent model assignments changed; retry the Run");
+      }
       database.runs.push(run);
       database.messages.push(message);
       if (conversation !== null) {
@@ -667,11 +796,13 @@ export class AgentService {
     this.runCoordinator.start(
       agentAtStart,
       run,
-      runtimeModel,
+      modelPlan.primary,
       projectId,
       origin,
       conversation,
       options.orchestrationId,
+      modelPlan.fallbacks,
+      modelPlan.snapshot,
     );
     return { run, message };
   }
@@ -760,14 +891,19 @@ export class AgentService {
     }
   }
 
-  private resolveModelRefForCreate(modelRef: ModelRef | undefined): ModelRef | undefined {
+  private resolveModelRefForCreate(modelRef: ModelRef | undefined): ModelRef {
     const effective = this.effectiveModelRef(modelRef);
     // Validate before creating the workspace/store record. In particular, a
     // malformed explicit ref must not leave a partially-created Agent behind.
-    if (modelRef !== undefined || effective !== undefined) {
-      this.modelResolver.resolve(modelRef);
+    if (effective === undefined) {
+      throw new ModelCatalogError(
+        "MODEL_RUNTIME_CONFIGURATION_INVALID",
+        503,
+        "The Agent has no configured primary worker model.",
+      );
     }
-    return effective;
+    this.modelResolver.resolve(effective);
+    return structuredClone(effective);
   }
 
   private effectiveModelRef(modelRef: ModelRef | undefined): ModelRef | undefined {
@@ -780,6 +916,92 @@ export class AgentService {
       providerId: "volcengine_ark",
       modelId: this.config.arkModel,
     };
+  }
+
+  /**
+   * Normalize an Agent's ordered fallback list and, when requested, resolve
+   * each entry through the same runtime/catalog authority as the primary.
+   * Removed entries intentionally remain persistable so settings can show an
+   * unavailable assignment and let an operator replace it.
+   */
+  private normalizeFallbackModelRefs(
+    fallbackModelRefs: readonly ModelRef[] | undefined,
+    primaryModelRef: ModelRef | undefined,
+    validate: boolean,
+  ): ModelRef[] {
+    if (fallbackModelRefs === undefined) return [];
+    if (!Array.isArray(fallbackModelRefs)) {
+      throw new ModelCatalogError(
+        "MODEL_RUNTIME_CONFIGURATION_INVALID",
+        422,
+        "Fallback worker models must be an array.",
+      );
+    }
+    const normalized: ModelRef[] = [];
+    for (const fallback of fallbackModelRefs) {
+      const modelRef = normalizeModelRef(fallback);
+      if (primaryModelRef !== undefined && modelRefsEqual(modelRef, primaryModelRef)) {
+        throw new ModelCatalogError(
+          "MODEL_RUNTIME_CONFIGURATION_INVALID",
+          422,
+          "A fallback worker model must differ from the primary model.",
+        );
+      }
+      if (normalized.some((item) => modelRefsEqual(item, modelRef))) {
+        throw new ModelCatalogError(
+          "MODEL_RUNTIME_CONFIGURATION_INVALID",
+          422,
+          "Fallback worker models must be unique and ordered.",
+        );
+      }
+      if (validate) this.modelResolver.resolve(modelRef);
+      normalized.push(modelRef);
+    }
+    return normalized;
+  }
+
+  /** Resolve and snapshot the complete assignment for one accepted Run. */
+  private resolveAgentModelPlan(agent: Agent): AgentRuntimeModelPlan {
+    const primaryRef = this.effectiveModelRef(agent.modelRef);
+    if (primaryRef === undefined) {
+      throw new ModelCatalogError(
+        "MODEL_RUNTIME_CONFIGURATION_INVALID",
+        503,
+        "The Agent has no configured primary worker model.",
+      );
+    }
+    const normalizedPrimary = normalizeModelRef(primaryRef);
+    const fallbackRefs = this.normalizeFallbackModelRefs(
+      agent.fallbackModelRefs,
+      normalizedPrimary,
+      true,
+    );
+    const catalogRevision = this.readCatalogRevision();
+    return {
+      primaryRef: normalizedPrimary,
+      fallbackRefs,
+      primary: this.modelResolver.resolve(normalizedPrimary),
+      fallbacks: fallbackRefs.map((modelRef) => this.modelResolver.resolve(modelRef)),
+      snapshot: {
+        modelRef: structuredClone(normalizedPrimary),
+        fallbackModelRefs: structuredClone(fallbackRefs),
+        ...(catalogRevision === undefined ? {} : { catalogRevision }),
+      },
+    };
+  }
+
+  private readCatalogRevision(): string | number | undefined {
+    const resolver = this.modelResolver;
+    const candidate =
+      typeof resolver.getCatalogRevision === "function"
+        ? resolver.getCatalogRevision()
+        : typeof resolver.catalogRevision === "function"
+          ? resolver.catalogRevision()
+          : undefined;
+    return typeof candidate === "string" ||
+      (typeof candidate === "number" && Number.isFinite(candidate))
+      ? candidate
+      : undefined;
   }
 
   private async setStatus(id: string, status: Agent["status"]): Promise<Agent> {

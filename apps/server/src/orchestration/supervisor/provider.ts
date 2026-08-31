@@ -18,7 +18,8 @@ export const DEFAULT_SUPERVISOR_MAX_ERROR_MESSAGE_CHARS = 2_000;
 export interface ArkResponsesSupervisorProviderOptions {
   apiKey: string;
   baseUrl: string;
-  model: string;
+  /** Optional legacy/default model; new sessions supply one per Agent. */
+  model?: string;
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
   maxResponseBytes?: number;
@@ -175,19 +176,16 @@ export class ArkResponsesSupervisorProvider implements SupervisorProvider {
 
   constructor(options: ArkResponsesSupervisorProviderOptions) {
     const apiKey = options.apiKey.trim();
-    const model = options.model.trim();
+    const model = options.model?.trim() ?? "";
     if (!apiKey || apiKey.startsWith("replace-")) {
       throw new SupervisorError(
         "SUPERVISOR_NOT_CONFIGURED",
         "Supervisor requires ARK_API_KEY",
       );
     }
-    if (!model || model.includes("replace-")) {
-      throw new SupervisorError(
-        "SUPERVISOR_NOT_CONFIGURED",
-        "Supervisor requires SUPERVISOR_MODEL or ARK_MODEL",
-      );
-    }
+    // A model may be supplied per call by a supervisor Agent. Keep accepting
+    // a configured default for legacy callers, but do not require a global
+    // model merely to construct the provider.
     const timeoutMs = positiveLimit(
       options.timeoutMs,
       DEFAULT_SUPERVISOR_TIMEOUT_MS,
@@ -218,6 +216,13 @@ export class ArkResponsesSupervisorProvider implements SupervisorProvider {
     options: SupervisorProviderOptions = {},
   ): Promise<SupervisorRoutingDecision> {
     if (options.signal?.aborted) throw createAbortError();
+    const model = options.model?.trim() || this.model;
+    if (!model || model.includes("replace-")) {
+      throw new SupervisorError(
+        "SUPERVISOR_NOT_CONFIGURED",
+        "Supervisor requires an Agent model assignment",
+      );
+    }
     const controller = new AbortController();
     const timeoutMs = positiveLimit(options.timeoutMs, this.timeoutMs);
     let timedOut = false;
@@ -240,7 +245,7 @@ export class ArkResponsesSupervisorProvider implements SupervisorProvider {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: this.model,
+          model,
           input: buildSupervisorPrompt(context),
           store: false,
           // Routing needs only the declared JSON decision. Do not request or

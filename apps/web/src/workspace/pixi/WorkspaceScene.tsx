@@ -3,13 +3,13 @@ import type { Container } from "pixi.js";
 import { useApplication } from "@pixi/react";
 import "./pixi-elements";
 import { AgentSprite } from "./AgentSprite";
-import { Desk } from "./Desk";
+import { Desk, DeskChair } from "./Desk";
 import { HandoffToken } from "./HandoffToken";
 import { AccessDoor, BoardStation, PreviewStation } from "./Stations";
 import { Room } from "./Room";
 import { avatarLook } from "./art/avatar-look";
 import { agentPresentation } from "./agent-presentation";
-import type { StageTransform, WorkspaceSeat } from "../workspace-layout";
+import { officeSeats, type StageTransform, type WorkspaceSeat } from "../workspace-layout";
 import { DOOR_STATE_LABEL, PREVIEW_ACTIVITY_LABEL } from "../workspace-view-model";
 import type { WorkspaceViewModel } from "../workspace-view-model";
 
@@ -24,6 +24,8 @@ export interface WorkspaceSceneProps {
   onOpenConversation: () => void;
   onOpenPreview: () => void;
   onOpenApprovals: () => void;
+  /** Reports where an Agent currently stands, so its HTML plate can follow. */
+  onAgentPosition?: (agentId: string, x: number, y: number) => void;
 }
 
 const BUSY_ACTIVITIES = new Set(["working", "reviewing", "testing", "thinking"]);
@@ -47,6 +49,7 @@ export function WorkspaceScene({
   onOpenConversation,
   onOpenPreview,
   onOpenApprovals,
+  onAgentPosition,
 }: WorkspaceSceneProps) {
   const seated = useMemo(
     () => viewModel.agents.slice(0, seats.length).map((agent, index) => ({
@@ -55,6 +58,12 @@ export function WorkspaceScene({
     })),
     [seats, viewModel.agents],
   );
+
+  /** The built office, with whoever happens to be sitting at each desk. */
+  const workstations = useMemo(() => {
+    const occupants = new Map(seated.map(({ agent, seat }) => [seat.index, agent]));
+    return officeSeats().map((seat) => ({ seat, agent: occupants.get(seat.index) ?? null }));
+  }, [seated]);
 
   const rootRef = useRef<Container>(null);
   const { app, isInitialised } = useApplication();
@@ -121,13 +130,22 @@ export function WorkspaceScene({
           onActivate={onOpenConversation}
           label="Shared board — open the conversation"
         />
-        {seated.map(({ agent, seat }) => (
-          <pixiContainer key={`desk-${agent.agentId}`} zIndex={seat.desk.y + 11}>
+        {/* Every workstation is furnished, occupied or not: an office with
+            nobody in it is still an office. The chair sits behind whoever is
+            using it and the desk in front, so each takes its own depth. */}
+        {workstations.map(({ seat }) => (
+          <pixiContainer key={`chair-${seat.index}`} zIndex={seat.anchor.y - 2}>
+            <DeskChair seat={seat} />
+          </pixiContainer>
+        ))}
+        {workstations.map(({ seat, agent }) => (
+          <pixiContainer key={`desk-${seat.index}`} zIndex={seat.desk.y + 11}>
             <Desk
               seat={seat}
-              accent={avatarLook(agent.agentId).accent}
-              busy={BUSY_ACTIVITIES.has(agent.activity)}
-              dimmed={agentPresentation(agent.activity).dimmed}
+              accent={agent ? avatarLook(agent.agentId).accent : 0}
+              busy={agent ? BUSY_ACTIVITIES.has(agent.activity) : false}
+              dimmed={agent ? agentPresentation(agent.activity).dimmed : false}
+              occupied={agent !== null}
             />
           </pixiContainer>
         ))}
@@ -139,6 +157,7 @@ export function WorkspaceScene({
             hovered={hoveredAgentId === agent.agentId}
             onSelect={onSelectAgent}
             onHoverChange={onHoverAgent}
+            {...(onAgentPosition ? { onPositionChange: onAgentPosition } : {})}
           />
         ))}
         <HandoffToken

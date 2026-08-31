@@ -1,5 +1,6 @@
 import type { AppConfig } from "../config.js";
 import { ARK_WORKER_PROVIDER_ID } from "./ark-provider.js";
+import type { ModelCatalogReader } from "./catalog.js";
 import { ModelCatalogError, type ModelErrorCode } from "./errors.js";
 import type {
   ModelDescriptor,
@@ -44,6 +45,8 @@ export interface WorkerModelCatalog {
 export interface WorkerModelResolverOptions {
   /** Default used for legacy Agents and newly created Agents. */
   defaultModelRef?: ModelRef;
+  /** Optional live default; undefined falls back to defaultModelRef, null clears it. */
+  defaultModelRefReader?: () => ModelRef | null | undefined;
   /** Catalog containing only provider/model metadata, never credentials. */
   catalog?: WorkerModelCatalog;
 }
@@ -91,18 +94,24 @@ function createDefaultCatalog(defaultModelRef: ModelRef | undefined): WorkerMode
 function createAllowlistedCatalog(
   defaultModelRef: ModelRef | undefined,
   allowedModelIds: readonly string[] = [],
+  liveCatalog?: ModelCatalogReader,
 ): WorkerModelCatalog {
   const provider = defaultProviderDescriptor();
   const allowed = new Set(
     allowedModelIds.map((value) => value.trim()).filter(Boolean),
   );
-  if (defaultModelRef?.modelId) allowed.add(defaultModelRef.modelId.trim());
+  if (!liveCatalog && defaultModelRef?.modelId) {
+    allowed.add(defaultModelRef.modelId.trim());
+  }
   return {
     getProvider(providerId) {
       return providerId === provider.id ? provider : undefined;
     },
     getModel(providerId, modelId) {
-      return providerId === provider.id && allowed.has(modelId)
+      const liveAllowed = liveCatalog === undefined
+        ? allowed
+        : new Set(liveCatalog.get().models);
+      return providerId === provider.id && liveAllowed.has(modelId)
         ? descriptorForModel(modelId)
         : undefined;
     },
@@ -211,16 +220,25 @@ export function modelRefsEqual(
 /** Resolve Agent settings into the narrow Codex worker runtime contract. */
 export class WorkerModelResolver implements WorkerModelResolverContract {
   private readonly defaultModel: ModelRef | undefined;
+  private readonly defaultModelRefReader:
+    | (() => ModelRef | null | undefined)
+    | undefined;
   private readonly catalog: WorkerModelCatalog;
 
   constructor(options: WorkerModelResolverOptions = {}) {
     this.defaultModel = options.defaultModelRef
       ? normalizeModelRef(options.defaultModelRef)
       : undefined;
+    this.defaultModelRefReader = options.defaultModelRefReader;
     this.catalog = options.catalog ?? createDefaultCatalog(this.defaultModel);
   }
 
   defaultModelRef(): ModelRef | undefined {
+    const liveDefault = this.defaultModelRefReader?.();
+    if (liveDefault === null) return undefined;
+    if (liveDefault !== undefined) {
+      return cloneModelRef(normalizeModelRef(liveDefault));
+    }
     return this.defaultModel ? cloneModelRef(this.defaultModel) : undefined;
   }
 
@@ -330,10 +348,14 @@ export class WorkerModelResolver implements WorkerModelResolverContract {
 export interface ArkWorkerModelResolverOptions {
   defaultModelId?: string;
   allowedModelIds?: readonly string[];
+  /** Live server-owned Ark metadata; it never contains credentials. */
+  catalog?: ModelCatalogReader;
 }
 
 /** Worker resolver configured for the current Ark/ModelArk runtime. */
 export class ArkWorkerModelResolver extends WorkerModelResolver {
+  private readonly liveCatalog: ModelCatalogReader | undefined;
+
   constructor(options: ArkWorkerModelResolverOptions = {}) {
     const defaultModelId = options.defaultModelId?.trim() ?? "";
     const defaultModelRef = defaultModelId
@@ -341,8 +363,26 @@ export class ArkWorkerModelResolver extends WorkerModelResolver {
       : undefined;
     super({
       ...(defaultModelRef === undefined ? {} : { defaultModelRef }),
-      catalog: createAllowlistedCatalog(defaultModelRef, options.allowedModelIds),
+      ...(options.catalog === undefined
+        ? {}
+        : {
+            defaultModelRefReader: () => {
+              const liveDefault = options.catalog?.get().defaultModelRef;
+              return liveDefault === undefined ? defaultModelRef : liveDefault;
+            },
+          }),
+      catalog: createAllowlistedCatalog(
+        defaultModelRef,
+        options.allowedModelIds,
+        options.catalog,
+      ),
     });
+    this.liveCatalog = options.catalog;
+  }
+
+  /** Revision used to reject a catalog update racing with Run acceptance. */
+  getCatalogRevision(): number | undefined {
+    return this.liveCatalog?.get().revision;
   }
 }
 
@@ -356,9 +396,11 @@ export function createDefaultWorkerModelResolver(
 
 export function createWorkerModelResolver(
   config: Pick<AppConfig, "arkModel" | "workerCuratedModels">,
+  options: Pick<ArkWorkerModelResolverOptions, "catalog"> = {},
 ): ArkWorkerModelResolver {
   return new ArkWorkerModelResolver({
     defaultModelId: config.arkModel,
     allowedModelIds: config.workerCuratedModels,
+    ...(options.catalog === undefined ? {} : { catalog: options.catalog }),
   });
 }

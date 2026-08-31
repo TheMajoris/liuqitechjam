@@ -9,6 +9,7 @@ export const AUDIT_EVENT_TYPES = [
   "tool_failed",
   "tool_approval_required",
   "skill_invoked",
+  "model_fallback",
 ] as const;
 
 export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number];

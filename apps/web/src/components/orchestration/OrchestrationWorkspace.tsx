@@ -3,8 +3,11 @@ import { api } from "../../api";
 import type {
   Agent,
   AgentAppearance,
+  AgentRole,
   ModelProviderDescriptor,
   Project,
+  ProjectMembership,
+  ProjectRole,
 } from "../../types";
 import { NewConversationDialog } from "./NewConversationDialog";
 import { OrchestrationRunView } from "./OrchestrationRunView";
@@ -23,10 +26,30 @@ import { useProjectPreview } from "../../workspace/use-project-preview";
 import { useWorkspaceApprovals } from "../../workspace/use-workspace-approvals";
 import { useWorkspaceActivity } from "../../workspace/use-workspace-activity";
 import type { AgentLifecycleAction } from "../../workspace/AgentInspector";
+import { WorkspaceRoster, type WorkspaceRosterMember } from "../../workspace/WorkspaceRoster";
+
+/** Memberships written before named roles existed still resolve to a preset. */
+const LEGACY_ROLE_IDS: Record<ProjectRole, string> = {
+  owner: "legacy-owner",
+  editor: "legacy-editor",
+  viewer: "legacy-viewer",
+};
+
+const AGENT_STATUS_LABEL: Record<string, string> = {
+  busy: "Working",
+  stopped: "Stopped",
+  error: "Needs attention",
+};
+
+function errorMessage(reason: unknown): string {
+  return reason instanceof Error ? reason.message : String(reason);
+}
 
 interface OrchestrationWorkspaceProps {
   agents: Agent[];
   projects: Project[];
+  /** Access presets available to this Workspace's members. */
+  roles: AgentRole[];
   /** Owned by the app shell so the sidebar can list the same conversations. */
   orchestration: UseOrchestrationResult;
   composerOpen: boolean;
@@ -43,6 +66,7 @@ interface OrchestrationWorkspaceProps {
 export function OrchestrationWorkspace({
   agents,
   projects,
+  roles,
   orchestration,
   composerOpen,
   composerMode,
@@ -66,6 +90,8 @@ export function OrchestrationWorkspace({
   const [activeTab, setActiveTab] = useState<RunTab>("workspace");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [lifecyclePending, setLifecyclePending] = useState<AgentLifecycleAction | null>(null);
+  const [rosterBusy, setRosterBusy] = useState(false);
+  const [rosterError, setRosterError] = useState<string | null>(null);
   // Use the list projection immediately when switching parents; the detail
   // request fills in memberships without briefly seeding the composer from
   // the previously selected Workspace.
@@ -169,6 +195,56 @@ export function OrchestrationWorkspace({
     [onAgentsChanged],
   );
 
+  /**
+   * Room membership edits go through the same routes the Assignments tab uses.
+   * The Project is refetched afterwards so the roster, the canvas, and the
+   * shell agree without waiting for a poll.
+   */
+  const runRosterTask = useCallback(
+    async (task: () => Promise<unknown>) => {
+      if (!projectId) return;
+      setRosterBusy(true);
+      setRosterError(null);
+      try {
+        await task();
+        const { project: next } = await api.getProject(projectId);
+        setProject(next);
+        await onAgentsChanged();
+      } catch (reason) {
+        setRosterError(errorMessage(reason));
+      } finally {
+        setRosterBusy(false);
+      }
+    },
+    [onAgentsChanged, projectId],
+  );
+
+  const rosterMembers = useMemo<WorkspaceRosterMember[]>(() => {
+    if (!workspaceProject) return [];
+    // Older Projects stored membership as bare Agent IDs; both shapes read the same.
+    const source: ProjectMembership[] = workspaceProject.memberships?.length
+      ? workspaceProject.memberships
+      : workspaceProject.agentIds.map((agentId) => ({ agentId, role: "editor" as ProjectRole }));
+    return source.map((membership) => {
+      const agent = agents.find((item) => item.id === membership.agentId);
+      const roleId = membership.roleId ?? LEGACY_ROLE_IDS[membership.role];
+      return {
+        agentId: membership.agentId,
+        name: agent?.name ?? "Unavailable Agent",
+        roleId,
+        statusLabel: agent ? AGENT_STATUS_LABEL[agent.status] ?? "Available" : "No longer exists",
+        available: Boolean(agent),
+      };
+    });
+  }, [agents, workspaceProject]);
+
+  const addableAgents = useMemo(() => {
+    const assigned = new Set(rosterMembers.map((member) => member.agentId));
+    return agents
+      .filter((agent) => !assigned.has(agent.id))
+      .map((agent) => ({ id: agent.id, name: agent.name }));
+  }, [agents, rosterMembers]);
+
   /** Agent lifecycle from the room reuses the platform's own endpoints. */
   const handleLifecycle = useCallback(
     async (agentId: string, action: AgentLifecycleAction) => {
@@ -249,6 +325,21 @@ export function OrchestrationWorkspace({
     setActiveTab("workspace");
   }, [detail?.session.id, projectId]);
 
+  const roster = workspaceProject ? (
+    <WorkspaceRoster
+      projectName={workspaceProject.name}
+      members={rosterMembers}
+      roles={roles}
+      addableAgents={addableAgents}
+      busy={rosterBusy}
+      error={rosterError}
+      onAssignRole={(agentId, roleId) => void runRosterTask(() => api.assignProjectRole(workspaceProject.id, agentId, roleId))}
+      onRemove={(agentId) => void runRosterTask(() => api.detachProjectAgent(workspaceProject.id, agentId))}
+      onAdd={(agentId) => void runRosterTask(() => api.attachProjectAgent(workspaceProject.id, agentId))}
+      onSelectAgent={setSelectedAgentId}
+    />
+  ) : null;
+
   const workspaceView = (
     <WorkspaceView
       viewModel={viewModel}
@@ -270,6 +361,7 @@ export function OrchestrationWorkspace({
       onApprove={(id, scope) => void approvalsController.approve(id, scope)}
       onDeny={(id) => void approvalsController.deny(id)}
       onAppearanceChange={handleAppearanceChange}
+      roster={roster}
     />
   );
 

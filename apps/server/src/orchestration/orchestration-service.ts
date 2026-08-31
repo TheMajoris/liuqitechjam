@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { HttpError } from "../errors.js";
 import type { Agent } from "../types.js";
+import type { ModelRef } from "../models/types.js";
 import { JsonStore } from "../store.js";
 import {
   ContinueOrchestrationSchema,
   CreateOrchestrationSchema,
   ORCHESTRATION_LIMITS,
   OrchestrationErrorCodeSchema,
+  StartOrchestrationSchema,
 } from "./schemas.js";
 import type { PlatformAgentInvokerContract } from "./platform-agent-invoker.js";
 import type {
@@ -54,6 +56,7 @@ import {
   type OrchestrationInvokerFactory,
   type OrchestrationProjectBinding,
   type OrchestrationServiceDependencies,
+  type SupervisorModelAssignment,
 } from "./orchestration-runtime.js";
 
 export type {
@@ -62,6 +65,8 @@ export type {
   OrchestrationInvokerFactory,
   OrchestrationProjectBinding,
   OrchestrationServiceDependencies,
+  OrchestrationSupervisorModelResolver,
+  SupervisorModelAssignment,
 } from "./orchestration-runtime.js";
 
 /** Maximum number of sessions returned by a default or bounded listing. */
@@ -72,6 +77,33 @@ export const EMPTY_ORCHESTRATION_START_MESSAGE =
 
 function lifecycleConflict(message: string): HttpError {
   return new HttpError(409, message);
+}
+
+function modelRefMatches(left: ModelRef | undefined, right: ModelRef): boolean {
+  return (
+    left?.providerId === right.providerId &&
+    left?.modelId === right.modelId &&
+    left?.reasoning?.effort === right.reasoning?.effort
+  );
+}
+
+function participantsMatch(
+  left: readonly OrchestrationParticipant[],
+  right: readonly OrchestrationParticipant[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((participant, index) => {
+      const other = right[index];
+      return (
+        other !== undefined &&
+        participant.id === other.id &&
+        participant.agentId === other.agentId &&
+        participant.role === other.role &&
+        participant.position === other.position
+      );
+    })
+  );
 }
 
 /**
@@ -86,6 +118,9 @@ export class OrchestrationService {
   private readonly agents: OrchestrationAgentAccess;
   private readonly invokerFactory: () => PlatformAgentInvokerContract;
   private readonly selectorFactory: () => OrchestrationParticipantSelector | undefined;
+  private readonly resolveSupervisorModel:
+    | ((agent: Agent) => SupervisorModelAssignment | Promise<SupervisorModelAssignment>)
+    | undefined;
   private readonly supervisorTimeoutMs: number | undefined;
   private readonly orchestratorFactory: () => Orchestrator;
   private readonly projectBinding: OrchestrationProjectBinding | undefined;
@@ -116,6 +151,7 @@ export class OrchestrationService {
     this.agents = normalized.agents;
     this.invokerFactory = normalized.invokerFactory;
     this.selectorFactory = normalized.selectorFactory;
+    this.resolveSupervisorModel = normalized.resolveSupervisorModel;
     this.supervisorTimeoutMs = normalized.supervisorTimeoutMs;
     this.orchestratorFactory = normalized.orchestratorFactory;
     this.projectBinding = normalized.projectBinding;
@@ -165,6 +201,16 @@ export class OrchestrationService {
     const participants = [...normalized.participants]
       .sort((left, right) => left.position - right.position)
       .map(safeParticipant);
+    const mode = normalized.mode ?? "sequential";
+    const supervisorAgentId =
+      mode === "supervisor"
+        ? await this.chooseSupervisorAgentId(
+            participants,
+            normalized.projectId,
+            normalized.supervisorAgentId,
+            true,
+          )
+        : undefined;
     const timestamp = now();
     const session: OrchestrationSession = {
       id: randomUUID(),
@@ -179,7 +225,10 @@ export class OrchestrationService {
         "[TASK TRUNCATED]",
       ),
       participants,
-      mode: normalized.mode ?? "sequential",
+      mode,
+      ...(supervisorAgentId === undefined
+        ? {}
+        : { supervisorAgentId }),
       ...(normalized.projectId ? { projectId: normalized.projectId } : {}),
       completionReason: null,
       status: "draft",
@@ -253,7 +302,10 @@ export class OrchestrationService {
     return this.journal.getSessionDetail(id);
   }
 
-  async startSession(id: string): Promise<OrchestrationSession> {
+  async startSession(
+    id: string,
+    firstPrompt?: string,
+  ): Promise<OrchestrationSession> {
     const current = this.findSession(id);
     this.assertActiveProject(current.projectId);
     if (current.status !== "draft") {
@@ -267,11 +319,13 @@ export class OrchestrationService {
       );
     }
 
-    if (!current.originalPrompt.trim() || current.participants.length === 0) {
+    const prepared = await this.prepareStartSession(current, firstPrompt);
+    if (!prepared.originalPrompt.trim() || prepared.participants.length === 0) {
       throw new HttpError(422, EMPTY_ORCHESTRATION_START_MESSAGE);
     }
 
-    await this.preflightRoster(current);
+    await this.preflightRoster(prepared);
+    const supervisorModel = await this.preflightSupervisor(prepared);
     const accepted = await this.store.mutate((database) => {
       const session = database.orchestrations.find((item) => item.id === id);
       if (!session) throw new HttpError(404, "Orchestration not found");
@@ -283,6 +337,42 @@ export class OrchestrationService {
       }
       if (session.status !== "draft") {
         throw lifecycleConflict("Orchestration is already active");
+      }
+      if (
+        session.originalPrompt !== current.originalPrompt ||
+        !participantsMatch(session.participants, current.participants) ||
+        session.supervisorAgentId !== current.supervisorAgentId
+      ) {
+        throw lifecycleConflict("Orchestration draft changed; retry the start request");
+      }
+      session.originalPrompt = prepared.originalPrompt;
+      session.participants = structuredClone(prepared.participants);
+      if (prepared.supervisorAgentId === undefined) {
+        delete session.supervisorAgentId;
+      } else {
+        session.supervisorAgentId = prepared.supervisorAgentId;
+      }
+      if (supervisorModel !== undefined) {
+        const supervisorAgent = database.agents.find(
+          (agent) => agent.id === session.supervisorAgentId,
+        );
+        if (
+          !supervisorAgent ||
+          !modelRefMatches(supervisorAgent.modelRef, supervisorModel.modelRef)
+        ) {
+          throw lifecycleConflict(
+            "Supervisor Agent model assignment changed; retry the orchestration",
+          );
+        }
+        session.supervisorModelRef = structuredClone(supervisorModel.modelRef);
+        if (supervisorModel.catalogRevision === undefined) {
+          delete session.supervisorModelCatalogRevision;
+        } else {
+          session.supervisorModelCatalogRevision = supervisorModel.catalogRevision;
+        }
+      } else {
+        delete session.supervisorModelRef;
+        delete session.supervisorModelCatalogRevision;
       }
       const timestamp = now();
       session.status = "queued";
@@ -332,6 +422,7 @@ export class OrchestrationService {
     }
 
     await this.preflightRoster(current);
+    const supervisorModel = await this.preflightSupervisor(current);
     const normalizedPrompt = boundedSafeText(
       parsed.data.prompt.trim(),
       ORCHESTRATION_LIMITS.maxPromptLength,
@@ -352,6 +443,25 @@ export class OrchestrationService {
             ? "Draft orchestrations cannot be continued"
             : "Stop the active orchestration before continuing it",
         );
+      }
+      if (supervisorModel !== undefined) {
+        const supervisorAgent = database.agents.find(
+          (agent) => agent.id === session.supervisorAgentId,
+        );
+        if (
+          !supervisorAgent ||
+          !modelRefMatches(supervisorAgent.modelRef, supervisorModel.modelRef)
+        ) {
+          throw lifecycleConflict(
+            "Supervisor Agent model assignment changed; retry the orchestration",
+          );
+        }
+        session.supervisorModelRef = structuredClone(supervisorModel.modelRef);
+        if (supervisorModel.catalogRevision === undefined) {
+          delete session.supervisorModelCatalogRevision;
+        } else {
+          session.supervisorModelCatalogRevision = supervisorModel.catalogRevision;
+        }
       }
       if (database.orchestrationContinuationPrompts.filter(
         (item) => item.sessionId === id,
@@ -602,6 +712,119 @@ export class OrchestrationService {
     }
   }
 
+  /**
+   * Choose a real Agent for supervisor routing. Roster order is authoritative;
+   * Project membership is the safe fallback for an empty/legacy roster. A
+   * ready Agent wins over a stopped/busy Agent, but the latter is retained so
+   * startSession can return the precise lifecycle error for an explicit choice.
+   */
+  private async chooseSupervisorAgentId(
+    participants: readonly OrchestrationParticipant[],
+    projectId: string | null | undefined,
+    explicitSupervisorAgentId?: string,
+    required = false,
+  ): Promise<string | undefined> {
+    if (explicitSupervisorAgentId !== undefined) return explicitSupervisorAgentId;
+
+    const database = this.store.snapshot();
+    const rosterIds = [...participants]
+      .sort((left, right) => left.position - right.position)
+      .map((participant) => participant.agentId);
+    const projectIds = projectId
+      ? database.projectAgents
+          .filter((attachment) => attachment.projectId === projectId)
+          .sort((left, right) =>
+            left.attachedAt.localeCompare(right.attachedAt) ||
+            left.agentId.localeCompare(right.agentId),
+          )
+          .map((attachment) => attachment.agentId)
+      : [];
+    const candidates = [...new Set([...rosterIds, ...projectIds])];
+    const agents = await this.listCurrentAgents();
+    const byId = new Map(agents.map((agent) => [agent.id, agent]));
+    const known = candidates.filter((agentId) => byId.has(agentId));
+    const selected =
+      known.find((agentId) => byId.get(agentId)?.status === "ready") ?? known[0];
+    if (selected !== undefined) return selected;
+    if (required) {
+      throw new HttpError(
+        422,
+        "A supervisor Agent is required for supervisor mode; add an Agent to the roster or Workspace",
+      );
+    }
+    return undefined;
+  }
+
+  /** Materialize a Project roster before the first prompt starts a draft. */
+  private async projectParticipants(
+    projectId: string,
+  ): Promise<OrchestrationParticipant[]> {
+    const database = this.store.snapshot();
+    const attachments = database.projectAgents
+      .filter((attachment) => attachment.projectId === projectId)
+      .sort((left, right) =>
+        left.attachedAt.localeCompare(right.attachedAt) ||
+        left.agentId.localeCompare(right.agentId),
+      );
+    const knownAgents = new Set((await this.listCurrentAgents()).map((agent) => agent.id));
+    let position = 0;
+    return attachments.flatMap((attachment) => {
+      // A deleted Agent should not be reintroduced into a legacy draft from a
+      // stale membership row. Current roster preflight still validates any
+      // explicitly persisted participant IDs.
+      if (!knownAgents.has(attachment.agentId)) return [];
+      const participant: OrchestrationParticipant = {
+        id: `project-member-${attachment.agentId}-${position}`,
+        agentId: attachment.agentId,
+        role: attachment.role ?? "Agent",
+        position,
+      };
+      position += 1;
+      return [safeParticipant(participant)];
+    });
+  }
+
+  /**
+   * Fill only draft-owned fields. The caller later commits these fields in
+   * the same mutation that changes draft -> queued, preventing a first prompt
+   * from racing another start or silently replacing an existing task.
+   */
+  private async prepareStartSession(
+    current: OrchestrationSession,
+    firstPrompt?: string,
+  ): Promise<OrchestrationSession> {
+    const prepared = structuredClone(current);
+    if (firstPrompt !== undefined) {
+      const parsed = StartOrchestrationSchema.safeParse({ prompt: firstPrompt });
+      if (!parsed.success || parsed.data.prompt === undefined) {
+        throw new HttpError(422, "Invalid orchestration start request");
+      }
+      if (prepared.originalPrompt.trim()) {
+        throw lifecycleConflict(
+          "This Conversation already has a task; use continue for another prompt",
+        );
+      }
+      prepared.originalPrompt = boundedSafeText(
+        parsed.data.prompt,
+        ORCHESTRATION_LIMITS.maxPromptLength,
+        "[TASK TRUNCATED]",
+      );
+    }
+    if (prepared.participants.length === 0 && prepared.projectId) {
+      prepared.participants = await this.projectParticipants(prepared.projectId);
+    }
+    if (
+      (prepared.mode ?? "sequential") === "supervisor" &&
+      prepared.supervisorAgentId === undefined
+    ) {
+      prepared.supervisorAgentId = await this.chooseSupervisorAgentId(
+        prepared.participants,
+        prepared.projectId,
+      );
+    }
+    return prepared;
+  }
+
   private async listCurrentAgents(): Promise<Agent[]> {
     return Promise.resolve(this.agents.listAgents());
   }
@@ -650,6 +873,62 @@ export class OrchestrationService {
       }
       this.assertAgentAvailable(agent, true);
     }
+  }
+
+  /**
+   * Resolve the dedicated supervisor Agent once per accepted cycle. The
+   * resolver is the model-catalog authority and must prove supervisor scope;
+   * this service only carries its credential-free model snapshot forward.
+   */
+  private async preflightSupervisor(
+    session: OrchestrationSession,
+  ): Promise<SupervisorModelAssignment | undefined> {
+    if ((session.mode ?? "sequential") !== "supervisor") return undefined;
+    const supervisorAgentId = session.supervisorAgentId;
+    if (supervisorAgentId === undefined) {
+      throw new HttpError(
+        422,
+        "A supervisor Agent is required for supervisor mode",
+      );
+    }
+    const agent = (await this.listCurrentAgents()).find(
+      (candidate) => candidate.id === supervisorAgentId,
+    );
+    if (!agent) {
+      throw new HttpError(
+        422,
+        "Supervisor Agent " + supervisorAgentId + " was not found",
+      );
+    }
+    this.assertAgentAvailable(agent, true);
+    if (!this.resolveSupervisorModel) {
+      throw new HttpError(
+        503,
+        "Supervisor model resolution is not configured",
+      );
+    }
+    const assignment = await this.resolveSupervisorModel(agent);
+    if (
+      !assignment ||
+      typeof assignment.modelId !== "string" ||
+      assignment.modelId.trim().length === 0 ||
+      !assignment.modelRef ||
+      typeof assignment.modelRef.providerId !== "string" ||
+      typeof assignment.modelRef.modelId !== "string" ||
+      assignment.modelRef.modelId !== assignment.modelId
+    ) {
+      throw new HttpError(
+        503,
+        "Supervisor model resolution returned an invalid assignment",
+      );
+    }
+    return {
+      modelRef: structuredClone(assignment.modelRef),
+      modelId: assignment.modelId.trim(),
+      ...(assignment.catalogRevision === undefined
+        ? {}
+        : { catalogRevision: assignment.catalogRevision }),
+    };
   }
 
   private assertAgentAvailable(agent: Agent, preflight: boolean): void {
@@ -708,7 +987,19 @@ export class OrchestrationService {
     let orchestrator: Orchestrator;
     try {
       invoker = this.invokerFactory();
-      selector = this.selectorFactory();
+      const configuredSelector = this.selectorFactory();
+      const supervisorModel =
+        (session.mode ?? "sequential") === "supervisor"
+          ? session.supervisorModelRef?.modelId
+          : undefined;
+      selector =
+        configuredSelector === undefined || supervisorModel === undefined
+          ? configuredSelector
+          : async (input, options) =>
+              configuredSelector(
+                { ...input, supervisorModel },
+                options,
+              );
       orchestrator = this.orchestratorFactory();
     } catch (error) {
       // Start is accepted before background execution begins. If dependency
@@ -722,6 +1013,9 @@ export class OrchestrationService {
       cyclePrompt: cycle.cyclePrompt ?? session.originalPrompt,
       stepOffset: cycle.stepOffset ?? 0,
       cycleIndex: cycle.cycleIndex ?? 0,
+      ...(session.supervisorModelRef?.modelId === undefined
+        ? {}
+        : { supervisorModel: session.supervisorModelRef.modelId }),
       controller: new AbortController(),
       invoker,
       ...(selector === undefined ? {} : { selector }),

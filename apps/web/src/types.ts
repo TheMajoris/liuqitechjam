@@ -44,6 +44,9 @@ export interface Preview {
 /** Normalized reasoning values shared by the model catalog and Agent forms. */
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 
+/** Runtime scope used when listing the Ark model catalog. */
+export type ModelScope = "worker" | "supervisor";
+
 export interface ModelRef {
   providerId: string;
   modelId: string;
@@ -87,6 +90,25 @@ export interface ProviderModelsResponse {
   models: ModelDescriptor[];
 }
 
+/**
+ * Operator-facing projection of the Ark model catalog. The provider/model
+ * listing endpoints remain the source of truth for individual descriptors;
+ * the optional aggregate fields let an operator settings surface render a
+ * single response when the control plane supports it.
+ */
+export interface ModelCatalogResponse extends ModelProvidersResponse {
+  models?: ModelDescriptor[];
+  modelsByProvider?: Record<string, ModelDescriptor[]>;
+  revision?: number;
+}
+
+/** Atomic operator catalog update. Credentials are never part of this shape. */
+export interface ModelCatalogUpdate {
+  defaultModelRef: ModelRef | null;
+  modelIds: string[];
+  revision?: number;
+}
+
 export type AgentAccessory = "none" | "glasses" | "headset" | "cap";
 
 /** Cosmetic character choices for the 2D workspace. Never an authorization input. */
@@ -113,6 +135,8 @@ export interface Agent {
   globalRoleId?: string | null;
   /** Omitted on legacy persisted Agents, which use the runtime default. */
   modelRef?: ModelRef;
+  /** Ordered fallback models attempted after the primary model fails. */
+  fallbackModelRefs?: ModelRef[];
   createdAt: string;
   updatedAt: string;
 }
@@ -360,6 +384,8 @@ export interface OrchestrationSession {
   participants: OrchestrationParticipant[];
   /** Omitted only by legacy persisted sessions; those run sequentially. */
   mode?: OrchestrationMode;
+  /** Agent used for supervisor routing; participants remain a separate roster. */
+  supervisorAgentId?: string | null;
   completionReason?: OrchestrationCompletionReason | null;
   status: OrchestrationStatus;
   currentParticipantId: string | null;
@@ -429,6 +455,8 @@ export interface CreateOrchestrationInput {
   originalPrompt: string;
   participants: OrchestrationParticipant[];
   mode: OrchestrationMode;
+  /** Required by supervisor mode; omitted for deterministic routing modes. */
+  supervisorAgentId?: string;
   projectId?: string;
   maxSteps: number;
   perAgentTimeoutMs: number;

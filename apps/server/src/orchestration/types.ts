@@ -1,3 +1,5 @@
+import type { ModelRef } from "../models/types.js";
+
 /**
  * Lifecycle states persisted for an orchestration session.
  *
@@ -121,6 +123,12 @@ export interface OrchestrationSession {
   participants: OrchestrationParticipant[];
   /** Omitted only on legacy persisted sessions; those run sequentially. */
   mode?: OrchestrationMode | undefined;
+  /** Required for newly created supervisor-mode sessions. */
+  supervisorAgentId?: string | undefined;
+  /** Primary model assignment captured when the current cycle was accepted. */
+  supervisorModelRef?: ModelRef | undefined;
+  /** Optional live-catalog revision captured with the supervisor model. */
+  supervisorModelCatalogRevision?: string | number | undefined;
   /** Omitted on legacy records; only natural roster completion sets it. */
   completionReason?: OrchestrationCompletionReason | null | undefined;
   status: OrchestrationStatus;
@@ -192,6 +200,11 @@ export interface ContinueOrchestrationInput {
   prompt: string;
 }
 
+/** Optional first prompt accepted when starting an idle Conversation draft. */
+export interface StartOrchestrationInput {
+  prompt?: string | undefined;
+}
+
 export interface OrchestrationSessionDetail {
   session: OrchestrationSession;
   turns: OrchestrationTurn[];
@@ -248,6 +261,8 @@ export interface CreateOrchestrationInput {
   projectId?: string | undefined;
   /** Defaults to sequential when omitted for backward-compatible clients. */
   mode?: OrchestrationMode | undefined;
+  /** Optional at create time; supervisor mode resolves it from the roster or Workspace. */
+  supervisorAgentId?: string | undefined;
   maxSteps: number;
   perAgentTimeoutMs: number;
 }

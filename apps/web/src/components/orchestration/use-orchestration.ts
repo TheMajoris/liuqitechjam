@@ -37,7 +37,7 @@ export interface UseOrchestrationResult {
   createWorkspace: (
     input: WorkspaceDraft,
   ) => Promise<{ project: Project; session: OrchestrationSession | null }>;
-  startSession: (sessionId?: string) => Promise<void>;
+  startSession: (sessionId?: string, prompt?: string) => Promise<void>;
   stopSession: (sessionId?: string) => Promise<void>;
   continueSession: (prompt: string, sessionId?: string) => Promise<void>;
   deleteSession: (sessionId?: string) => Promise<void>;
@@ -301,6 +301,9 @@ export function useOrchestration(): UseOrchestrationResult {
           originalPrompt: input.initialTask.trim(),
           participants,
           mode: input.mode,
+          ...(input.supervisorAgentId?.trim()
+            ? { supervisorAgentId: input.supervisorAgentId.trim() }
+            : {}),
           projectId: project.id,
           maxSteps: input.maxSteps,
           perAgentTimeoutMs: input.perAgentTimeoutMs,
@@ -332,12 +335,12 @@ export function useOrchestration(): UseOrchestrationResult {
     }
   }, [publishWorkspaceSelection]);
 
-  const startSession = useCallback(async (sessionId?: string) => {
+  const startSession = useCallback(async (sessionId?: string, prompt?: string) => {
     const target = sessionId ?? selectedSessionId;
     if (!target) return;
     setAction("start");
     try {
-      const result = await api.startOrchestration(target);
+      const result = await api.startOrchestration(target, prompt?.trim() || undefined);
       if (mountedRef.current) {
         setSessions((current) => replaceSession(current, result.session));
         setDetail((current) =>
@@ -381,6 +384,14 @@ export function useOrchestration(): UseOrchestrationResult {
   const continueSession = useCallback(async (prompt: string, sessionId?: string) => {
     const target = sessionId ?? selectedSessionId;
     if (!target || !prompt.trim()) return;
+    const selectedSession =
+      detail?.session.id === target
+        ? detail.session
+        : sessions.find((session) => session.id === target);
+    if (selectedSession?.status === "draft") {
+      await startSession(target, prompt);
+      return;
+    }
     setAction("continue");
     try {
       const result = await api.continueOrchestration(target, { prompt: prompt.trim() });
@@ -400,7 +411,7 @@ export function useOrchestration(): UseOrchestrationResult {
     } finally {
       if (mountedRef.current) setAction(null);
     }
-  }, [selectedSessionId]);
+  }, [detail, selectedSessionId, sessions, startSession]);
 
   const deleteSession = useCallback(async (sessionId?: string) => {
     const target = sessionId ?? selectedSessionId;

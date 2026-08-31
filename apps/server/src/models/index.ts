@@ -3,6 +3,16 @@ export {
   type ModelErrorCode,
 } from "./errors.js";
 export {
+  ArkModelCatalogSchema,
+  ArkModelCatalogService,
+  cloneArkModelCatalog,
+  parseArkModelCatalog,
+  type ArkModelCatalogInput,
+  type ArkModelCatalogRecord,
+  type ArkModelCatalogSelection,
+  type ModelCatalogReader,
+} from "./catalog.js";
+export {
   ArkModelProvider,
   ARK_WORKER_PROVIDER_ID,
   type ArkModelProviderOptions,

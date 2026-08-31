@@ -5,6 +5,7 @@ import type {
   OrchestrationSessionDetail,
   Project,
 } from "../../types";
+import { formatAgentWorkerModel } from "../WorkerModelFields";
 import { ParticipantBar } from "./ParticipantBar";
 import {
   agentName,
@@ -82,7 +83,13 @@ export function OrchestrationRunView({
     : null;
   const currentAgent = current ? agentName(agents, current.agentId) : null;
   const active = isOrchestrationActive(session.status);
-  const canStart = Boolean(session.originalPrompt.trim()) && session.participants.length > 0;
+  const supervisor = session.supervisorAgentId
+    ? agents.find((agent) => agent.id === session.supervisorAgentId)
+    : undefined;
+  const canStart =
+    Boolean(session.originalPrompt.trim()) &&
+    session.participants.length > 0 &&
+    (session.mode !== "supervisor" || Boolean(session.supervisorAgentId?.trim()));
   const failed = session.status === "failed";
   const showTechnicalErrorCode =
     session.errorCode !== null && !session.errorCode.startsWith("SUPERVISOR_");
@@ -110,10 +117,18 @@ export function OrchestrationRunView({
               type="button"
               className="orch-button orch-button-primary"
               disabled={action !== null || !canStart}
-              title={canStart ? "Start conversation" : "Add a task and at least one Agent before starting"}
+              title={
+                canStart
+                  ? "Start conversation"
+                  : "Add a task, at least one Agent, and a Supervisor Agent before starting"
+              }
               onClick={() => onStart(session.id)}
             >
-              {action === "start" ? "Starting…" : canStart ? "Start" : "Add task and Agent"}
+              {action === "start"
+                ? "Starting…"
+                : canStart
+                  ? "Start"
+                  : "Add task, Agent, and Supervisor"}
             </button>
           )}
           {active && (
@@ -141,6 +156,16 @@ export function OrchestrationRunView({
           </button>
         </div>
       </div>
+
+      {session.supervisorAgentId && (
+        <div className="orch-project-badge" role="status">
+          <span className="orch-eyebrow">Supervisor Agent</span>
+          <strong>{supervisor?.name ?? "Unavailable Agent"}</strong>
+          <span className="orch-field-help">
+            {formatAgentWorkerModel(supervisor ?? { modelRef: undefined }, modelProviders)}
+          </span>
+        </div>
+      )}
 
       <ParticipantBar
         participants={session.participants}

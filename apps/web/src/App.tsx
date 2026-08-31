@@ -7,6 +7,7 @@ import { InsightsView } from "./components/insights/InsightsView";
 import { RolesAndSkillsView } from "./components/access/RolesAndSkillsView";
 import { AgentWorkspaceView } from "./components/playground/AgentWorkspaceView";
 import { CreateAgentModal } from "./components/playground/CreateAgentModal";
+import { ModelCatalogSettingsView } from "./components/playground/ModelCatalogSettingsView";
 import { useOrchestration } from "./components/orchestration/use-orchestration";
 import { emptyAgentForm, formFromAgent, formPayload, type AgentForm } from "./playground/agent-form";
 import { useModelCatalog } from "./playground/use-model-catalog";
@@ -356,6 +357,7 @@ export default function App() {
         onNewAgent={openCreate}
         onSelectInsights={() => setView("insights")}
         onSelectAccess={() => setView("access")}
+        onSelectModelCatalog={() => setView("model-catalog")}
         onSelectSession={(sessionId) => {
           orchestration.selectSession(sessionId);
           setView("workspace");
@@ -387,7 +389,7 @@ export default function App() {
       <main
         className={
           "main " +
-          (view === "insights" || view === "access"
+          (view === "insights" || view === "access" || view === "model-catalog"
             ? "main-insights"
             : view === "workspace"
               ? "main-chat"
@@ -421,7 +423,14 @@ export default function App() {
           </div>
         )}
 
-        {view === "access" ? (
+        {view === "model-catalog" ? (
+          <ModelCatalogSettingsView
+            onCatalogChanged={async () => {
+              await modelCatalog.refresh();
+              await refreshAgents();
+            }}
+          />
+        ) : view === "access" ? (
           <RolesAndSkillsView
             agents={agents}
             projects={projects}
@@ -445,6 +454,7 @@ export default function App() {
             modelProviders={modelCatalog.providers}
             orchestration={orchestration}
             projects={projects}
+            roles={roles}
             composerOpen={composerOpen}
             composerMode={composerMode}
             onComposerOpenChange={setComposerOpen}

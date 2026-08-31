@@ -12,10 +12,12 @@ import {
   ProjectSchema,
   ProjectWriteLeaseSchema,
 } from "./projects/project-types.js";
+import { ArkModelCatalogSchema } from "./models/catalog.js";
 import type { Database } from "./types.js";
 
 const emptyDatabase = (): Database => ({
   version: 1,
+  modelCatalog: null,
   agents: [],
   agentConversations: [],
   messages: [],
@@ -86,6 +88,17 @@ function normalizeDatabase(value: unknown): Database {
   }
 
   const normalized: UnknownRecord = { ...value };
+  if (Object.prototype.hasOwnProperty.call(value, "modelCatalog")) {
+    if (value.modelCatalog === null) {
+      normalized.modelCatalog = null;
+    } else {
+      const catalog = ArkModelCatalogSchema.safeParse(value.modelCatalog);
+      if (!catalog.success) throw new Error("Unsupported database format");
+      normalized.modelCatalog = catalog.data;
+    }
+  } else {
+    normalized.modelCatalog = null;
+  }
   for (const collection of ADDITIVE_COLLECTIONS) {
     if (Object.prototype.hasOwnProperty.call(value, collection)) {
       if (!Array.isArray(value[collection])) {
@@ -167,6 +180,7 @@ function normalizeDatabase(value: unknown): Database {
 }
 
 function needsDatabaseMigration(value: UnknownRecord): boolean {
+  if (!Object.prototype.hasOwnProperty.call(value, "modelCatalog")) return true;
   if (
     ADDITIVE_COLLECTIONS.some(
     (collection) => !Object.prototype.hasOwnProperty.call(value, collection),

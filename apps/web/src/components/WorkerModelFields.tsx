@@ -9,7 +9,11 @@ import type {
 export interface WorkerModelFieldsProps {
   providers: ModelProviderDescriptor[];
   models: ModelDescriptor[];
+  /** Lazily loaded worker models keyed by provider, used by fallback rows. */
+  modelsByProvider?: Record<string, ModelDescriptor[]>;
+  loadingByProvider?: Record<string, boolean>;
   value?: ModelRef | null;
+  fallbackValues?: ModelRef[];
   loadingProviders?: boolean;
   loadingModels?: boolean;
   catalogError?: string | null;
@@ -19,6 +23,10 @@ export interface WorkerModelFieldsProps {
   onProviderChange: (providerId: string) => void;
   onModelChange: (modelId: string) => void;
   onReasoningChange: (effort: ReasoningEffort | undefined) => void;
+  onAddFallback?: () => void;
+  onRemoveFallback?: (index: number) => void;
+  onFallbackProviderChange?: (index: number, providerId: string) => void;
+  onFallbackModelChange?: (index: number, modelId: string) => void;
   onRetry?: () => void;
 }
 
@@ -86,7 +94,10 @@ function modelCapabilities(model: ModelDescriptor | undefined) {
 export function WorkerModelFields({
   providers,
   models,
+  modelsByProvider = {},
+  loadingByProvider = {},
   value,
+  fallbackValues = [],
   loadingProviders = false,
   loadingModels = false,
   catalogError = null,
@@ -95,6 +106,10 @@ export function WorkerModelFields({
   onProviderChange,
   onModelChange,
   onReasoningChange,
+  onAddFallback,
+  onRemoveFallback,
+  onFallbackProviderChange,
+  onFallbackModelChange,
   onRetry,
 }: WorkerModelFieldsProps) {
   const supportedProviders = workerProviders(providers);
@@ -268,6 +283,133 @@ export function WorkerModelFields({
           This legacy Agent has no explicit assignment and will use the server’s default runtime
           configuration until you choose a resolved provider and model.
         </p>
+      )}
+
+      {(onAddFallback || fallbackValues.length > 0) && (
+        <section className="worker-model-fallbacks" aria-labelledby="worker-model-fallback-heading">
+          <div className="worker-model-heading">
+            <div>
+              <span className="eyebrow">Reliability</span>
+              <h3 id="worker-model-fallback-heading">Fallback models</h3>
+            </div>
+            {onAddFallback && (
+              <button
+                type="button"
+                className="button button-ghost"
+                onClick={onAddFallback}
+                disabled={disabled || supportedProviders.length === 0}
+              >
+                + Add fallback
+              </button>
+            )}
+          </div>
+          <p className="worker-model-help">
+            Optional models tried in order if the primary model is unavailable. Fallbacks belong to
+            this Agent and never change its capabilities.
+          </p>
+          {fallbackValues.length === 0 ? (
+            <p className="worker-model-inline-status" role="status">
+              No fallback models configured.
+            </p>
+          ) : (
+            <div className="worker-model-fallback-list">
+              {fallbackValues.map((fallback, index) => {
+                const fallbackModels = fallback.providerId
+                  ? modelsByProvider[fallback.providerId] ?? []
+                  : [];
+                const fallbackLoading = fallback.providerId
+                  ? loadingByProvider[fallback.providerId] === true
+                  : false;
+                const fallbackModel = fallbackModels.find(
+                  (model) =>
+                    model.id === fallback.modelId && model.providerId === fallback.providerId,
+                );
+                return (
+                  <div className="worker-model-grid" key={`${index}:${fallback.providerId}`}>
+                    <label>
+                      <span>Fallback {index + 1} provider</span>
+                      <select
+                        aria-label={`Fallback ${index + 1} provider`}
+                        value={fallback.providerId}
+                        required
+                        disabled={disabled || loadingProviders || supportedProviders.length === 0}
+                        onChange={(event) => onFallbackProviderChange?.(index, event.target.value)}
+                      >
+                        <option value="">Select a resolved provider</option>
+                        {fallback.providerId &&
+                          !supportedProviders.some((provider) => provider.id === fallback.providerId) && (
+                            <option value={fallback.providerId} disabled>
+                              {formatProviderLabel(fallback.providerId, providers)} (unavailable)
+                            </option>
+                          )}
+                        {supportedProviders.map((provider) => (
+                          <option value={provider.id} key={provider.id}>
+                            {provider.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Fallback {index + 1} model</span>
+                      <select
+                        aria-label={`Fallback ${index + 1} model`}
+                        value={fallback.modelId}
+                        required
+                        disabled={
+                          disabled ||
+                          !fallback.providerId ||
+                          fallbackLoading ||
+                          fallbackModels.length === 0
+                        }
+                        onChange={(event) => onFallbackModelChange?.(index, event.target.value)}
+                      >
+                        <option value={fallbackLoading ? "" : fallback.modelId && !fallbackModel ? fallback.modelId : ""}>
+                          {fallbackLoading ? "Loading resolved models…" : "Select a resolved model"}
+                        </option>
+                        {fallback.modelId && !fallbackModel && !fallbackLoading && (
+                          <option value={fallback.modelId} disabled>
+                            {fallback.modelId} (unavailable)
+                          </option>
+                        )}
+                        {fallbackModels.map((model) => (
+                          <option value={model.id} key={`${model.providerId}:${model.id}`}>
+                            {model.label || model.id}
+                          </option>
+                        ))}
+                      </select>
+                      {fallback.providerId && fallbackLoading && (
+                        <span className="worker-model-inline-status" role="status">
+                          <span className="spinner" aria-hidden="true" /> Checking models available to Codex…
+                        </span>
+                      )}
+                      {fallback.providerId && !fallbackLoading && fallbackModels.length === 0 && !catalogError && (
+                        <span className="worker-model-inline-status" role="status">
+                          No resolved worker models are available for this provider.
+                        </span>
+                      )}
+                      {fallback.providerId && fallback.modelId && !fallbackModel && !fallbackLoading && !catalogError && (
+                        <span className="worker-model-field-error" role="alert">
+                          This fallback model is no longer available.
+                        </span>
+                      )}
+                    </label>
+                    {onRemoveFallback && (
+                      <button
+                        type="button"
+                        className="button button-danger"
+                        onClick={() => onRemoveFallback(index)}
+                        disabled={disabled}
+                        aria-label={`Remove fallback ${index + 1}`}
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
       )}
     </section>
   );

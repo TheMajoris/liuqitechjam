@@ -49,6 +49,7 @@ export type WorkspaceDraft = {
   participants: OrchestrationParticipant[];
   initialTask: string;
   mode: OrchestrationMode;
+  supervisorAgentId?: string;
   maxSteps: number;
   perAgentTimeoutMs: number;
 };
@@ -58,6 +59,7 @@ export type DraftErrors = Partial<
     | "name"
     | "originalPrompt"
     | "participants"
+    | "supervisorAgentId"
     | "projectName"
     | "maxSteps"
     | "perAgentTimeoutMs",
@@ -100,6 +102,21 @@ export function normalizeParticipants(
   }));
 }
 
+/** Keep a runnable Supervisor conversation useful on first render. */
+export function defaultSupervisorAgentId(
+  participants: OrchestrationParticipant[],
+  supervisorAgentId?: string,
+  fallbackAgentId?: string,
+): string {
+  const explicitId = supervisorAgentId?.trim();
+  if (explicitId) return explicitId;
+  return (
+    participants.find((participant) => participant.agentId.trim())?.agentId.trim() ??
+    fallbackAgentId?.trim() ??
+    ""
+  );
+}
+
 /**
  * The backend requires a session name and a responsibility label per roster
  * occurrence. Normal users are only asked who joins and what the task is, so
@@ -136,8 +153,8 @@ export function validateDraft(
   const errors: DraftErrors = {};
   // A Conversation created inside a Workspace may start life as an empty
   // draft. It is still a real persisted Conversation, but it cannot run until
-  // both a task and at least one valid Agent have been supplied. Text-only
-  // orchestrations keep the stricter legacy contract.
+  // a task and at least one valid roster Agent have been supplied. Every
+  // supervisor-mode draft also carries its dedicated supervisor Agent.
   const workspaceScoped = Boolean(draft.projectId?.trim());
   // Legacy callers that opt into a Workspace must actually name it.
   if (draft.projectName !== undefined && !draft.projectName.trim()) {
@@ -157,6 +174,15 @@ export function validateDraft(
     ) {
       errors.participants =
         "One or more Agents are no longer available. Refresh the Agent list or choose another.";
+    }
+  }
+  if (draft.mode === "supervisor") {
+    const available = new Set(agents.map((agent) => agent.id));
+    if (!draft.supervisorAgentId?.trim()) {
+      errors.supervisorAgentId = "Choose an existing Agent to supervise this conversation.";
+    } else if (!available.has(draft.supervisorAgentId)) {
+      errors.supervisorAgentId =
+        "The selected supervisor is no longer available. Choose another Agent.";
     }
   }
   if (
@@ -207,6 +233,14 @@ export function validateWorkspaceTask(
       draft.perAgentTimeoutMs > ORCHESTRATION_MAX_TIMEOUT_MS
     ) {
       errors.perAgentTimeoutMs = "Use a time limit between 1 second and 60 minutes.";
+    }
+    if (draft.mode === "supervisor") {
+      const available = new Set(agents.map((agent) => agent.id));
+      if (!draft.supervisorAgentId?.trim()) {
+        errors.supervisorAgentId = "Choose an existing Agent to supervise this workspace.";
+      } else if (!available.has(draft.supervisorAgentId)) {
+        errors.supervisorAgentId = "The selected supervisor is no longer available.";
+      }
     }
   }
   return errors;

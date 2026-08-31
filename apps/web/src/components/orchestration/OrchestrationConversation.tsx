@@ -114,7 +114,10 @@ export function OrchestrationConversation({
   const workingName = workingParticipant
     ? agentName(agents, workingParticipant.agentId)
     : null;
-  const composerLocked = active || action !== null || session.status === "draft";
+  // Drafts accept their first task through the same anchored composer. The
+  // owner routes that first message through the draft-start lifecycle call;
+  // only active runs and in-flight actions lock the field.
+  const composerLocked = active || action !== null;
 
   return (
     <div className="orch-chat-pane">
@@ -122,15 +125,17 @@ export function OrchestrationConversation({
     <section className="orch-chat" aria-labelledby="orch-conversation-heading">
       <h2 className="orch-sr-only" id="orch-conversation-heading">Conversation</h2>
       <ol className="orch-chat-list" aria-label="Task and Agent replies in order">
-        <li className="orch-chat-item orch-chat-item-user">
-          <div className="orch-chat-bubble">
-            <div className="orch-chat-topline">
-              <strong>You</strong>
-              <time dateTime={session.createdAt}>{formatDateTime(session.createdAt)}</time>
+        {session.originalPrompt.trim() && (
+          <li className="orch-chat-item orch-chat-item-user">
+            <div className="orch-chat-bubble">
+              <div className="orch-chat-topline">
+                <strong>You</strong>
+                <time dateTime={session.createdAt}>{formatDateTime(session.createdAt)}</time>
+              </div>
+              <p className="orch-chat-text">{session.originalPrompt}</p>
             </div>
-            <p className="orch-chat-text">{session.originalPrompt}</p>
-          </div>
-        </li>
+          </li>
+        )}
 
         {entries.map((entry) => {
           if (entry.kind === "prompt") {
@@ -262,16 +267,18 @@ export function OrchestrationConversation({
           value={followUp}
           placeholder={
             session.status === "draft"
-              ? "Start this conversation to reply…"
+              ? "Type the first task to start this conversation…"
               : "Ask the team to keep going…"
           }
           hint={
-            active
-              ? (workingName ?? "The team") + " is working…"
-              : "Enter to send · Shift + Enter for newline"
+            session.status === "draft"
+              ? "Enter to start · Shift + Enter for newline"
+              : active
+                ? (workingName ?? "The team") + " is working…"
+                : "Enter to send · Shift + Enter for newline"
           }
           disabled={composerLocked}
-          sending={action === "continue"}
+          sending={action === "continue" || action === "start"}
           onChange={setFollowUp}
           onSubmit={(event) => {
             event.preventDefault();

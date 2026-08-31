@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
-import { HttpError, RunCancelledError } from "./errors.js";
+import { HttpError, RetryableModelError, RunCancelledError } from "./errors.js";
 import { AgentRuntimePromptComposer } from "./agent-runtime-prompt.js";
 import type { WorkerRuntimeModelConfig } from "./models/types.js";
 import {
@@ -17,12 +17,15 @@ import { usageAttributes } from "./telemetry/telemetry-usage.js";
 import type {
   Agent,
   AgentConversation,
+  AgentModelSnapshot,
   AgentRun,
   AgentRunner,
   MessageOrigin,
+  RunnerResult,
 } from "./types.js";
 import { JsonStore } from "./store.js";
 import { safeRuntimeError } from "./safe-runtime-error.js";
+import type { AuditRecorder } from "./audit/audit-types.js";
 
 const RUN_POLL_INTERVAL_MS = 50;
 const now = () => new Date().toISOString();
@@ -41,6 +44,13 @@ function waitError(name: "AbortError" | "TimeoutError", message: string): Error 
   return error;
 }
 
+function modelRefForRuntime(runtimeModel: WorkerRuntimeModelConfig) {
+  return {
+    providerId: runtimeModel.providerId,
+    modelId: runtimeModel.modelId,
+  };
+}
+
 export interface AgentRunCoordinatorDependencies {
   config: AppConfig;
   store: JsonStore;
@@ -49,6 +59,8 @@ export interface AgentRunCoordinatorDependencies {
   getProjectScope: () => ProjectExecutionScope | undefined;
   getMcpSessions: () => McpSessionService | undefined;
   getTelemetry: () => RuntimeTelemetry | undefined;
+  /** Optional server-owned audit sink for fallback usage events. */
+  getAudit?: () => AuditRecorder | undefined;
   getRun: (runId: string) => AgentRun;
 }
 
@@ -84,6 +96,8 @@ export class AgentRunCoordinator {
     origin: MessageOrigin = "direct",
     conversation: AgentConversation | null = null,
     orchestrationId?: string,
+    fallbackModels: readonly WorkerRuntimeModelConfig[] = [],
+    modelSnapshot?: AgentModelSnapshot,
   ): void {
     const execution = this.executeRun(
       agentAtStart,
@@ -93,6 +107,8 @@ export class AgentRunCoordinator {
       origin,
       conversation,
       orchestrationId,
+      fallbackModels,
+      modelSnapshot,
     );
     this.activeExecutions.set(agentAtStart.id, { runId: run.id, execution });
     void execution
@@ -213,6 +229,8 @@ export class AgentRunCoordinator {
     origin: MessageOrigin = "direct",
     conversation: AgentConversation | null = null,
     orchestrationId?: string,
+    fallbackModels: readonly WorkerRuntimeModelConfig[] = [],
+    modelSnapshot?: AgentModelSnapshot,
   ): Promise<void> {
     const telemetry = this.dependencies.getTelemetry();
     const attributes = correlationAttributes({
@@ -240,6 +258,8 @@ export class AgentRunCoordinator {
           origin,
           conversation,
           orchestrationId,
+          fallbackModels,
+          modelSnapshot,
           span,
         ),
       );
@@ -253,6 +273,8 @@ export class AgentRunCoordinator {
       origin,
       conversation,
       orchestrationId,
+      fallbackModels,
+      modelSnapshot,
     );
   }
 
@@ -264,6 +286,8 @@ export class AgentRunCoordinator {
     origin: MessageOrigin = "direct",
     conversation: AgentConversation | null = null,
     orchestrationId?: string,
+    fallbackModels: readonly WorkerRuntimeModelConfig[] = [],
+    modelSnapshot?: AgentModelSnapshot,
     runSpan?: TelemetrySpan,
   ): Promise<void> {
     await this.dependencies.store.mutate((database) => {
@@ -319,32 +343,85 @@ export class AgentRunCoordinator {
             : { traceparent: traceCarrier.traceparent }),
         });
       }
-      const result = await this.dependencies.runner.run({
-        agentId: agentAtStart.id,
-        workspacePath: binding?.workspacePath ?? agentAtStart.workspacePath,
-        ...(projectId === undefined ? {} : { projectId }),
-        prompt: executionPrompt,
-        threadId: binding
-          ? binding.codexThreadId
-          : conversation
-            ? conversation.codexThreadId
-            : agentAtStart.codexThreadId,
-        model: runtimeModel,
-        ...(mcpUrl === undefined || mintedMcpSession === null
-          ? {}
-          : {
-              mcp: {
-                url: mcpUrl,
-                token: mintedMcpSession.token,
-                ...(mintedMcpSession.context.traceparent === undefined
-                  ? {}
-                  : { traceparent: mintedMcpSession.context.traceparent }),
-              },
-            }),
+      const initialThreadId = binding
+        ? binding.codexThreadId
+        : conversation
+          ? conversation.codexThreadId
+          : agentAtStart.codexThreadId;
+      const assignmentSnapshot =
+        modelSnapshot === undefined && run.modelSnapshot === undefined
+          ? undefined
+          : structuredClone(modelSnapshot ?? run.modelSnapshot);
+      const modelAttempts = [runtimeModel, ...fallbackModels];
+      let result: RunnerResult | undefined;
+      let selectedModelIndex = -1;
+      let lastModelError: unknown;
+      for (const [modelIndex, attempt] of modelAttempts.entries()) {
+        if (this.cancellationRequests.has(run.id)) {
+          throw new RunCancelledError();
+        }
+        try {
+          result = await this.dependencies.runner.run({
+            agentId: agentAtStart.id,
+            workspacePath: binding?.workspacePath ?? agentAtStart.workspacePath,
+            ...(projectId === undefined ? {} : { projectId }),
+            prompt: executionPrompt,
+            // A Codex thread is provider/model-specific. A fallback starts a
+            // fresh thread rather than attempting to resume the failed model's
+            // conversation with a different model.
+            threadId: modelIndex === 0 ? initialThreadId : null,
+            model: attempt,
+            ...(assignmentSnapshot === undefined
+              ? {}
+              : { modelSnapshot: structuredClone(assignmentSnapshot) }),
+            ...(mcpUrl === undefined || mintedMcpSession === null
+              ? {}
+              : {
+                  mcp: {
+                    url: mcpUrl,
+                    token: mintedMcpSession.token,
+                    ...(mintedMcpSession.context.traceparent === undefined
+                      ? {}
+                      : { traceparent: mintedMcpSession.context.traceparent }),
+                  },
+                }),
+          });
+          selectedModelIndex = modelIndex;
+          break;
+        } catch (error) {
+          if (
+            error instanceof RunCancelledError ||
+            this.cancellationRequests.has(run.id)
+          ) {
+            throw error;
+          }
+          // A generic runner failure may already have changed the workspace
+          // or invoked a tool. Only a runner-authored, explicitly typed
+          // pre-execution/model-availability signal is safe to retry.
+          if (!(error instanceof RetryableModelError)) throw error;
+          lastModelError = error;
+          if (modelIndex === modelAttempts.length - 1) throw error;
+        }
+      }
+      if (result === undefined) {
+        throw lastModelError ?? new Error("No worker model attempt completed");
+      }
+      const selectedModelRef = assignmentSnapshot
+        ? selectedModelIndex === 0
+          ? assignmentSnapshot.modelRef
+          : assignmentSnapshot.fallbackModelRefs[selectedModelIndex - 1] ??
+            modelRefForRuntime(modelAttempts[selectedModelIndex] ?? runtimeModel)
+        : modelRefForRuntime(modelAttempts[selectedModelIndex] ?? runtimeModel);
+      runSpan?.setAttributes({
+        ...usageAttributes(result.usage),
+        "gen_ai.response.model": (modelAttempts[selectedModelIndex] ?? runtimeModel).codexModel,
+        ...(selectedModelIndex > 0
+          ? { "launchpad.model.fallback_index": selectedModelIndex }
+          : {}),
       });
-      runSpan?.setAttributes(usageAttributes(result.usage));
       runSpan?.setStatus("ok");
       const completedAt = now();
+      let persistedCompletion = false;
       await this.dependencies.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -362,7 +439,15 @@ export class AgentRunCoordinator {
         storedRun.status = "completed";
         storedRun.output = result.output;
         storedRun.usage = result.usage;
+        storedRun.modelUsed = structuredClone(selectedModelRef);
+        if (selectedModelIndex > 0) {
+          storedRun.fallbackUsed = {
+            index: selectedModelIndex,
+            modelRef: structuredClone(selectedModelRef),
+          };
+        }
         storedRun.completedAt = completedAt;
+        persistedCompletion = true;
         database.messages.push({
           id: randomUUID(),
           agentId: agent.id,
@@ -390,6 +475,23 @@ export class AgentRunCoordinator {
         agent.lastError = null;
         agent.updatedAt = completedAt;
       });
+      if (selectedModelIndex > 0 && persistedCompletion) {
+        await this.dependencies.getAudit?.()?.record({
+          type: "model_fallback",
+          status: "success",
+          agentId: agentAtStart.id,
+          runId: run.id,
+          ...(projectId === undefined ? {} : { projectId }),
+          ...(orchestrationId === undefined ? {} : { orchestrationId }),
+          principal: { kind: "agent", id: agentAtStart.id },
+          summary: "Worker model fallback used",
+          metadata: {
+            fallbackIndex: selectedModelIndex,
+            primaryModel: runtimeModel.modelId,
+            selectedModel: (modelAttempts[selectedModelIndex] ?? runtimeModel).modelId,
+          },
+        }).catch(() => undefined);
+      }
       if (binding !== null) outcome = { codexThreadId: result.threadId };
     } catch (error) {
       const completedAt = now();

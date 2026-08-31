@@ -3,6 +3,7 @@ import { ArkModelProvider } from "./ark-provider.js";
 import { ModelListCache } from "./cache.js";
 import { ModelCatalogError } from "./errors.js";
 import { createWorkerModelResolver } from "./worker-model-resolver.js";
+import type { ModelCatalogReader } from "./catalog.js";
 import type {
   ModelDescriptor,
   ModelProviderAdapter,
@@ -17,6 +18,8 @@ import type {
 export interface ModelRegistryOptions {
   providers?: readonly ModelProviderAdapter[];
   workerResolver?: WorkerModelResolver;
+  /** Live server-owned metadata source for the Ark provider/resolver. */
+  catalog?: ModelCatalogReader;
   cache?: ModelListCache<ModelDescriptor[]>;
   cacheTtlMs?: number;
 }
@@ -97,7 +100,9 @@ export class ModelRegistryService implements ModelRegistry {
     const description = provider.describe();
     if (!supportsScope(description, scope)) {
       throw new ModelCatalogError(
-        "MODEL_NOT_SUPPORTED_FOR_WORKER",
+        scope === "worker"
+          ? "MODEL_NOT_SUPPORTED_FOR_WORKER"
+          : "MODEL_NOT_SUPPORTED_FOR_SUPERVISOR",
         422,
         "The requested provider does not support this model scope",
       );
@@ -148,6 +153,10 @@ export class ModelRegistryService implements ModelRegistry {
   validateWorkerModelRef(modelRef: ModelRef): void {
     this.workerModelResolver.resolve(modelRef);
   }
+
+  invalidate(): void {
+    this.cache.clear();
+  }
 }
 
 export function createModelRegistry(
@@ -163,7 +172,10 @@ export function createModelRegistry(
   options: ModelRegistryOptions = {},
 ): ModelRegistryService {
   const workerResolver =
-    options.workerResolver ?? createWorkerModelResolver(config);
+    options.workerResolver ??
+    createWorkerModelResolver(config, {
+      ...(options.catalog === undefined ? {} : { catalog: options.catalog }),
+    });
   const providers =
     options.providers ?? [
       new ArkModelProvider({
@@ -171,6 +183,7 @@ export function createModelRegistry(
         baseUrl: config.arkBaseUrl,
         curatedModelIds: config.workerCuratedModels,
         timeoutMs: config.workerModelListTimeoutMs,
+        ...(options.catalog === undefined ? {} : { catalog: options.catalog }),
       }),
     ];
   return new ModelRegistryService(providers, workerResolver, {

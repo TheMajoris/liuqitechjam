@@ -177,7 +177,12 @@ export function createOrchestrationParticipantSelector(
     }
     const selection = await selector.selectNextParticipant(
       supervisorContext(input),
-      options,
+      {
+        ...options,
+        ...(input.supervisorModel === undefined
+          ? {}
+          : { model: input.supervisorModel }),
+      },
     );
     if (selection.kind === "complete") {
       return {

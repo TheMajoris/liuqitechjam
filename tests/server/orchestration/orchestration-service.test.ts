@@ -306,4 +306,172 @@ describe("OrchestrationService", () => {
     expect(agents[0]?.status).toBe("ready");
   });
 
+  it("snapshots the selected supervisor Agent model and passes it to routing", async () => {
+    const store = await makeStore();
+    const agents = agentIds.map((id) => makeAgent(id));
+    const supervisorModel = {
+      providerId: "volcengine_ark",
+      modelId: "ep-supervisor",
+    } as const;
+    agents[1]!.modelRef = supervisorModel;
+    await store.mutate((database) => database.agents.push(...agents));
+    let selectedModel: string | undefined;
+    const service = new OrchestrationService({
+      store,
+      agents: makeAgentsAccess(agents),
+      invoker: new ImmediateInvoker(),
+      selectNextParticipant: async (input) => {
+        selectedModel = input.supervisorModel;
+        return { kind: "end", reason: "supervisor_completed" };
+      },
+      resolveSupervisorModel: () => ({
+        modelRef: supervisorModel,
+        modelId: supervisorModel.modelId,
+        catalogRevision: 7,
+      }),
+    });
+    const created = await service.createSession({
+      ...makeInput([{
+        id: "worker",
+        agentId: agentIds[0]!,
+        role: "Worker",
+        position: 0,
+      }]),
+      mode: "supervisor",
+      supervisorAgentId: agentIds[1],
+    });
+
+    await service.startSession(created.id);
+    const terminal = await waitForTerminal(service, created.id);
+    expect(terminal.status).toBe("completed");
+    expect(selectedModel).toBe(supervisorModel.modelId);
+    expect(terminal).toMatchObject({
+      supervisorAgentId: agentIds[1],
+      supervisorModelRef: supervisorModel,
+      supervisorModelCatalogRevision: 7,
+    });
+  });
+
+  it("assigns a Workspace Agent and starts an empty draft from its first prompt", async () => {
+    const store = await makeStore();
+    const projectId = "44444444-4444-4444-8444-444444444444";
+    const agents = [makeAgent(agentIds[0]!)];
+    const supervisorModel = {
+      providerId: "volcengine_ark",
+      modelId: "ep-supervisor",
+    } as const;
+    agents[0]!.modelRef = supervisorModel;
+    await store.mutate((database) => {
+      database.projects.push({
+        id: projectId,
+        name: "Workspace",
+        description: "",
+        workspacePath: "/tmp/workspace",
+        teamId: null,
+        ownerPrincipalId: "demo-owner",
+        status: "active",
+        createdAt: "2026-08-28T00:00:00.000Z",
+        updatedAt: "2026-08-28T00:00:00.000Z",
+      });
+      database.agents.push(...agents);
+      database.projectAgents.push({
+        projectId,
+        agentId: agents[0]!.id,
+        codexThreadId: null,
+        attachedAt: "2026-08-28T00:00:00.000Z",
+        role: "editor",
+        toolGrants: [],
+        updatedAt: "2026-08-28T00:00:00.000Z",
+      });
+    });
+    const service = new OrchestrationService({
+      store,
+      agents: makeAgentsAccess(agents),
+      invoker: new ImmediateInvoker(),
+      selectNextParticipant: async () => ({
+        kind: "end",
+        reason: "supervisor_completed",
+      }),
+      resolveSupervisorModel: () => ({
+        modelRef: supervisorModel,
+        modelId: supervisorModel.modelId,
+        catalogRevision: 8,
+      }),
+    });
+    const created = await service.createSession({
+      name: "Workspace draft",
+      originalPrompt: "",
+      participants: [],
+      projectId,
+      mode: "supervisor",
+      maxSteps: 4,
+      perAgentTimeoutMs: 1_000,
+    });
+
+    expect(created.status).toBe("draft");
+    expect(created.supervisorAgentId).toBe(agents[0]!.id);
+
+    const accepted = await service.startSession(created.id, "Ship the change");
+    expect(["queued", "running", "completed"]).toContain(accepted.status);
+    const terminal = await waitForTerminal(service, created.id);
+    expect(terminal).toMatchObject({
+      status: "completed",
+      originalPrompt: "Ship the change",
+      supervisorAgentId: agents[0]!.id,
+      supervisorModelRef: supervisorModel,
+      supervisorModelCatalogRevision: 8,
+    });
+    expect(terminal.participants).toMatchObject([
+      {
+        agentId: agents[0]!.id,
+        role: "editor",
+        position: 0,
+      },
+    ]);
+  });
+
+  it("repairs a legacy supervisor draft before accepting its first run", async () => {
+    const store = await makeStore();
+    const agents = [makeAgent(agentIds[0]!)];
+    const supervisorModel = {
+      providerId: "volcengine_ark",
+      modelId: "ep-supervisor",
+    } as const;
+    agents[0]!.modelRef = supervisorModel;
+    await store.mutate((database) => database.agents.push(...agents));
+    const service = new OrchestrationService({
+      store,
+      agents: makeAgentsAccess(agents),
+      invoker: new ImmediateInvoker(),
+      selectNextParticipant: async () => ({
+        kind: "end",
+        reason: "supervisor_completed",
+      }),
+      resolveSupervisorModel: () => ({
+        modelRef: supervisorModel,
+        modelId: supervisorModel.modelId,
+      }),
+    });
+    const created = await service.createSession({
+      ...makeInput([{
+        id: "worker",
+        agentId: agents[0]!.id,
+        role: "Worker",
+        position: 0,
+      }]),
+      mode: "supervisor",
+      supervisorAgentId: agents[0]!.id,
+    });
+    await store.mutate((database) => {
+      const session = database.orchestrations.find((item) => item.id === created.id);
+      if (session) delete session.supervisorAgentId;
+    });
+
+    const accepted = await service.startSession(created.id);
+    expect(["queued", "running", "completed"]).toContain(accepted.status);
+    const terminal = await waitForTerminal(service, created.id);
+    expect(terminal.status).toBe("completed");
+    expect(terminal.supervisorAgentId).toBe(agents[0]!.id);
+  });
+
 });

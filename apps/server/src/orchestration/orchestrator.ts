@@ -48,6 +48,8 @@ export interface OrchestrationSelectionInput {
   originalPrompt: string;
   participants: readonly OrchestrationParticipant[];
   mode: OrchestrationMode;
+  /** Runtime-only model selected from the session's supervisor Agent. */
+  supervisorModel?: string | undefined;
   stepIndex: number;
   maxSteps: number;
   turns: readonly OrchestrationExecutionTurn[];

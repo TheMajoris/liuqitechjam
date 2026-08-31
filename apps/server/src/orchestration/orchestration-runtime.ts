@@ -1,4 +1,5 @@
 import type { Agent, AgentRun, Message } from "../types.js";
+import type { ModelRef } from "../models/types.js";
 import { JsonStore } from "../store.js";
 import {
   LangGraphOrchestrator,
@@ -17,6 +18,21 @@ import type {
 export interface OrchestrationAgentAccess {
   listAgents(): Agent[] | Promise<Agent[]>;
 }
+
+/**
+ * Server-owned proof that one Agent model is valid for supervisor routing.
+ * The resolver is responsible for checking the live model catalog/scope; the
+ * orchestration service only persists this credential-free snapshot.
+ */
+export interface SupervisorModelAssignment {
+  modelRef: ModelRef;
+  modelId: string;
+  catalogRevision?: string | number | undefined;
+}
+
+export type OrchestrationSupervisorModelResolver = (
+  agent: Agent,
+) => SupervisorModelAssignment | Promise<SupervisorModelAssignment>;
 
 export type OrchestrationInvokerFactory =
   | PlatformAgentInvokerContract
@@ -60,6 +76,8 @@ export interface OrchestrationServiceDependencies {
   /** Optional supervisor selector; omitted means deterministic defaults. */
   selectNextParticipant?: OrchestrationParticipantSelector;
   selectorFactory?: () => OrchestrationParticipantSelector;
+  /** Resolves an Agent's explicit model against the supervisor model scope. */
+  resolveSupervisorModel?: OrchestrationSupervisorModelResolver;
   supervisorTimeoutMs?: number;
   orchestrator?: Orchestrator;
   orchestratorFactory?: () => Orchestrator;
@@ -75,6 +93,8 @@ export interface ActiveOrchestrationSession {
   stepOffset: number;
   /** One-based continuation number; zero identifies the initial cycle. */
   cycleIndex: number;
+  /** Runtime-only model selected from the session's supervisor Agent. */
+  supervisorModel?: string | undefined;
   controller: AbortController;
   invoker: PlatformAgentInvokerContract;
   selector?: OrchestrationParticipantSelector;
@@ -102,6 +122,7 @@ export interface NormalizedOrchestrationDependencies {
   agents: OrchestrationAgentAccess;
   invokerFactory: () => PlatformAgentInvokerContract;
   selectorFactory: () => OrchestrationParticipantSelector | undefined;
+  resolveSupervisorModel: OrchestrationSupervisorModelResolver | undefined;
   supervisorTimeoutMs: number | undefined;
   orchestratorFactory: () => Orchestrator;
   projectBinding: OrchestrationProjectBinding | undefined;
@@ -146,6 +167,7 @@ export function normalizeOrchestrationDependencies(
       agents: agentAccess,
       invokerFactory: factory ?? (() => createPlatformInvoker(agentAccess)),
       selectorFactory,
+      resolveSupervisorModel: configured.resolveSupervisorModel,
       supervisorTimeoutMs: configured.supervisorTimeoutMs,
       orchestratorFactory,
       projectBinding: configured.projectBinding,
@@ -166,6 +188,7 @@ export function normalizeOrchestrationDependencies(
     agents,
     invokerFactory: factory,
     selectorFactory: () => undefined,
+    resolveSupervisorModel: undefined,
     supervisorTimeoutMs: undefined,
     orchestratorFactory: graphRunner
       ? () => new LangGraphOrchestrator(graphRunner)

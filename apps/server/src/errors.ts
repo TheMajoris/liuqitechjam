@@ -14,3 +14,19 @@ export class RunCancelledError extends Error {
     this.name = "RunCancelledError";
   }
 }
+
+/**
+ * A runner may use this only when it knows that no model work was started.
+ *
+ * Model fallbacks are intentionally not inferred from generic runtime/tool
+ * failures: retrying those can repeat side effects in a workspace. Keeping a
+ * dedicated error type makes the retry decision an explicit runner signal.
+ */
+export class RetryableModelError extends Error {
+  readonly retryableModel = true;
+
+  constructor(message = "Worker model is unavailable", options?: ErrorOptions) {
+    super(message, options);
+    this.name = "RetryableModelError";
+  }
+}

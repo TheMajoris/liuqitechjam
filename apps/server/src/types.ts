@@ -5,6 +5,7 @@ import type {
   OrchestrationTurn,
 } from "./orchestration/types.js";
 import type { ModelRef, WorkerRuntimeModelConfig } from "./models/types.js";
+import type { ArkModelCatalogRecord } from "./models/catalog.js";
 import type { PreviewRecord } from "./preview/preview-types.js";
 import type {
   ApprovalRequest,
@@ -86,11 +87,27 @@ export interface Agent {
   status: AgentStatus;
   /** Omitted on legacy records; those resolve to the configured default. */
   modelRef?: ModelRef;
+  /** Ordered fallback models attempted when the primary model cannot run. */
+  fallbackModelRefs?: ModelRef[];
   workspacePath: string;
   codexThreadId: string | null;
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * Immutable model assignment captured when a Run is accepted.
+ *
+ * Agent records may be edited and the server-owned model catalog may be
+ * refreshed while a Run is in flight. Keeping this snapshot on the Run makes
+ * the execution auditable and ensures those changes affect only later Runs.
+ */
+export interface AgentModelSnapshot {
+  modelRef: ModelRef;
+  fallbackModelRefs: ModelRef[];
+  /** Optional catalog revision supplied by a runtime model resolver. */
+  catalogRevision?: string | number;
 }
 
 /**
@@ -150,6 +167,15 @@ export interface AgentRun {
   output: string | null;
   error: string | null;
   usage: RunUsage | null;
+  /** Assignment captured before execution; omitted on legacy Run records. */
+  modelSnapshot?: AgentModelSnapshot;
+  /** Model that produced the terminal result, including a fallback model. */
+  modelUsed?: ModelRef;
+  /** Present when a configured fallback produced the terminal result. */
+  fallbackUsed?: {
+    index: number;
+    modelRef: ModelRef;
+  };
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
@@ -157,6 +183,8 @@ export interface AgentRun {
 
 export interface Database {
   version: 1;
+  /** Runtime-editable Ark model metadata; credentials remain in env only. */
+  modelCatalog: ArkModelCatalogRecord | null;
   agents: Agent[];
   /** Additive Wave 7.2 collection; absent in pre-conversation stores. */
   agentConversations: AgentConversation[];
@@ -189,6 +217,8 @@ export interface CreateAgentInput {
   description?: string | undefined;
   instructions?: string | undefined;
   modelRef?: ModelRef | undefined;
+  /** Ordered fallback models attempted after the primary model fails. */
+  fallbackModelRefs?: ModelRef[] | undefined;
   /** Agent-global declarative skills; skills never grant tools. */
   skillIds?: string[] | undefined;
   /** Optional Agent-global role; null explicitly means no role. */
@@ -201,6 +231,8 @@ export interface UpdateAgentInput {
   description?: string | undefined;
   instructions?: string | undefined;
   modelRef?: ModelRef | undefined;
+  /** Replaces the ordered fallback model list when supplied. */
+  fallbackModelRefs?: ModelRef[] | undefined;
   /** Replaces Agent-global skill assignment when supplied. */
   skillIds?: string[] | undefined;
   /** Replaces the Agent-global role when supplied; null clears it. */
@@ -230,6 +262,8 @@ export interface RunnerRequest {
   threadId: string | null;
   /** Resolved worker settings; never contains credentials. */
   model?: WorkerRuntimeModelConfig;
+  /** The accepted assignment snapshot for runtime observability. */
+  modelSnapshot?: AgentModelSnapshot;
   /** Omitted for isolated/test runs where MCP is disabled. */
   mcp?: RunnerMcpConfig;
 }

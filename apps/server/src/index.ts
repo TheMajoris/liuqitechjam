@@ -2,13 +2,18 @@ import path from "node:path";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
 import {
-  isSupervisorConfigured,
   isPermitConfigured,
   loadConfig,
   writeCodexConfig,
 } from "./config.js";
 import { createRunner } from "./runner-factory.js";
-import { createModelRegistry, createWorkerModelResolver } from "./models/index.js";
+import {
+  ArkModelCatalogService,
+  ModelCatalogError,
+  createModelRegistry,
+  createWorkerModelResolver,
+  normalizeModelRef,
+} from "./models/index.js";
 import { JsonStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
 import { OrchestrationService } from "./orchestration/orchestration-service.js";
@@ -63,10 +68,32 @@ const telemetry = createRuntimeTelemetry(config);
 const workspaces = new WorkspaceManager(config.workspaceRoot);
 const runner = createRunner(config);
 const mcpSessions = new McpSessionService(config.mcpTokenTtlMs);
+const modelCatalog = new ArkModelCatalogService(store);
+// The live catalog must exist before AgentService.initialize() materializes
+// defaults for legacy Agent records.
+await store.initialize();
+const seededModelIds = Array.from(new Set([
+  ...config.workerCuratedModels,
+  ...(config.arkModel.length === 0 ? [] : [config.arkModel]),
+]));
+await modelCatalog.initialize({
+  provider: "volcengine_ark",
+  baseUrl: config.arkBaseUrl,
+  apiKeyEnv: "ARK_API_KEY",
+  models: seededModelIds,
+  defaultModelRef:
+    config.arkModel.length === 0
+      ? null
+      : { providerId: "volcengine_ark", modelId: config.arkModel },
+  revision: 1,
+});
 const permitSynchronizationGate = new PermitSynchronizationGate();
-const workerModelResolver = createWorkerModelResolver(config);
+const workerModelResolver = createWorkerModelResolver(config, {
+  catalog: modelCatalog,
+});
 const modelRegistry = createModelRegistry(config, {
   workerResolver: workerModelResolver,
+  catalog: modelCatalog,
 });
 const service = new AgentService(
   config,
@@ -75,6 +102,7 @@ const service = new AgentService(
   runner,
   workerModelResolver,
 );
+service.setAuditRecorder(audit);
 service.setMcpSessionService(mcpSessions);
 service.setTelemetry(telemetry);
 const permitMode = config.authorizationMode === "permit";
@@ -195,7 +223,9 @@ if (
 }
 await previewService.initialize();
 
-const supervisorSelector = isSupervisorConfigured(config)
+const supervisorCredentialsConfigured =
+  config.arkApiKey.length > 0 && !config.arkApiKey.startsWith("replace-");
+const supervisorSelector = supervisorCredentialsConfigured
   ? createOrchestrationParticipantSelector(
       new ArkResponsesSupervisorProvider({
         apiKey: config.arkApiKey,
@@ -224,6 +254,49 @@ const orchestrationService = new OrchestrationService({
   ...(supervisorSelector === undefined
     ? {}
     : { selectNextParticipant: supervisorSelector }),
+  resolveSupervisorModel: async (agent) => {
+    if (agent.modelRef === undefined) {
+      throw new ModelCatalogError(
+        "MODEL_RUNTIME_CONFIGURATION_INVALID",
+        422,
+        "Supervisor Agent must have an explicit primary model assignment",
+      );
+    }
+    const modelRef = normalizeModelRef(agent.modelRef);
+    const models = await modelRegistry.listModels(
+      modelRef.providerId,
+      "supervisor",
+    );
+    const descriptor = models.find((model) => model.id === modelRef.modelId);
+    if (
+      descriptor === undefined ||
+      !descriptor.capabilities.scopes.includes("supervisor")
+    ) {
+      throw new ModelCatalogError(
+        "MODEL_NOT_SUPPORTED_FOR_SUPERVISOR",
+        422,
+        "The Supervisor Agent model does not support supervisor routing",
+      );
+    }
+    if (
+      modelRef.reasoning?.effort !== undefined &&
+      (!descriptor.capabilities.reasoning ||
+        !descriptor.capabilities.reasoningEfforts?.includes(
+          modelRef.reasoning.effort,
+        ))
+    ) {
+      throw new ModelCatalogError(
+        "MODEL_REASONING_NOT_SUPPORTED",
+        422,
+        "The Supervisor Agent model does not support reasoning controls",
+      );
+    }
+    return {
+      modelRef,
+      modelId: descriptor.id,
+      catalogRevision: modelCatalog.get().revision ?? 0,
+    };
+  },
   supervisorTimeoutMs: config.supervisorTimeoutMs,
 });
 projectService.setConversationLifecycle({
@@ -255,6 +328,7 @@ const app = await createApp(
     webFetch,
     telemetry,
   },
+  modelCatalog,
 );
 
 const shutdown = async (signal: string) => {

@@ -55,6 +55,8 @@ export interface SupervisorProviderOptions {
   signal?: AbortSignal;
   /** Optional per-call override; providers still enforce their own default. */
   timeoutMs?: number;
+  /** Runtime-only model selected from the session's supervisor Agent. */
+  model?: string;
 }
 
 /** Provider boundary; model/provider implementations stay behind this seam. */

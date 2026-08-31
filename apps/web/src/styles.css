@@ -4731,6 +4731,9 @@ textarea:focus {
   flex-direction: column;
   padding: 14px clamp(16px, 3vw, 28px) 18px;
   gap: 12px;
+  /* The room carries a roster beneath the stage, so a short pane scrolls
+     instead of letting the fixed-height stage cover what follows. */
+  overflow-y: auto;
 }
 
 .ws-topbar {
@@ -4828,8 +4831,12 @@ textarea:focus {
 }
 
 .ws-body {
+  /* Basis stays 0: the stage sizes its canvas from this box, so letting the
+     box size from its content would feed the canvas back into its own height.
+     min-height keeps the room a room when the pane is too short to share:
+     the pane scrolls rather than squeezing the office into a strip. */
   flex: 1;
-  min-height: 0;
+  min-height: min(58vh, 520px);
   display: grid;
   grid-template-columns: minmax(0, 1fr) 288px;
   gap: 16px;
@@ -4855,6 +4862,11 @@ textarea:focus {
 }
 
 .ws-stage .ws-canvas {
+  /* Out of flow on purpose: the renderer sizes this canvas from the stage box,
+     so letting the canvas contribute its own height would feed that
+     measurement back into itself and the room would grow every frame. */
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
@@ -6083,20 +6095,11 @@ textarea:focus {
 .role-summary-assignment { margin: 16px 0 0; color: var(--muted); font-size: 12px; }
 
 .assignments-panel, .skills-panel { display: grid; gap: 16px; }
-.assignment-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.assignment-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
 .assignment-card { padding: 17px; }
 .assignment-card-heading { align-items: flex-start; padding-bottom: 13px; border-bottom: 1px solid var(--line); }
 .assignment-card-heading h3 { margin: 0; font-size: 16px; letter-spacing: -0.02em; }
 .assignment-card-heading p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
-.assignment-rows { display: grid; }
-.assignment-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 12px 0 0; }
-.assignment-agent { display: flex; align-items: center; gap: 9px; min-width: 0; }
-.assignment-agent > div { min-width: 0; }
-.assignment-agent strong, .assignment-agent span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.assignment-agent strong { font-size: 13px; }
-.assignment-agent span { margin-top: 2px; color: var(--muted); font-size: 11px; }
-.assignment-role-field { width: min(180px, 45%); flex-shrink: 0; }
-.assignment-role-field select { min-height: 38px; padding-top: 7px; padding-bottom: 7px; }
 .access-empty-state { display: grid; place-items: center; min-height: 260px; padding: 32px; border: 1px dashed #cbc8bd; border-radius: 14px; background: rgba(251, 250, 247, 0.6); text-align: center; }
 .access-empty-icon { display: grid; width: 42px; height: 42px; place-items: center; margin-bottom: 10px; border-radius: 12px; background: var(--purple-soft); color: var(--purple-dark); font-size: 24px; }
 .access-empty-state h3 { margin: 0; font-size: 16px; }
@@ -6150,7 +6153,7 @@ textarea:focus {
 
 @media (max-width: 940px) {
   .role-layout { grid-template-columns: minmax(210px, 250px) minmax(0, 1fr); }
-  .role-option-grid, .skill-library-sections, .assignment-list { grid-template-columns: 1fr; }
+  .role-option-grid, .skill-library-sections { grid-template-columns: 1fr; }
   .role-skills-card { grid-column: auto; }
 }
 
@@ -6185,9 +6188,6 @@ textarea:focus {
   .skill-url-form .button { width: 100%; }
   .skill-discovery-form { align-items: stretch; flex-direction: column; }
   .skill-discovery-form .button { width: 100%; }
-  .assignment-row { align-items: flex-start; flex-direction: column; }
-  .assignment-role-field { width: 100%; }
-  .assignment-role-field select { width: 100%; }
   .access-safety-chip { display: none; }
 }
 
@@ -6288,20 +6288,47 @@ button.assignment-archive:hover:not(:disabled) {
   letter-spacing: 0.02em;
 }
 
-/* Agent-centric Assignments: each roster member owns one card, while
-   workspace memberships stay compact and actionable underneath. */
+/* Agent-centric Assignments: one full-width card per roster member, read top
+   to bottom as identity, then global fallback, then Workspace overrides. */
 .assignment-agent-card { display: grid; gap: 0; }
+.assignment-agent-card .assignment-card-heading {
+  margin-bottom: 12px;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
 .assignment-agent-heading { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .assignment-agent-heading .assignment-card-title { display: block; }
 .assignment-agent-status { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
-.assignment-card-controls { display: flex; align-items: flex-start; justify-content: flex-end; gap: 10px; margin-top: 12px; }
-.assignment-global-role-field { display: grid; gap: 4px; width: min(220px, 42%); flex-shrink: 0; color: var(--ink); font-size: 11px; font-weight: 700; }
-.assignment-global-role-field select { width: 100%; min-height: 36px; padding: 7px 10px; border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--paper); color: var(--ink); font: inherit; font-size: 12px; outline: none; }
-.assignment-global-role-field select:focus { border-color: var(--purple); box-shadow: 0 0 0 3px var(--purple-soft); }
-.assignment-add-field { width: min(220px, 42%); flex-shrink: 0; }
+
+/* A quiet band separates policy from identity: two equal, shrinkable columns
+   holding the global fallback beside the one control that changes membership.
+   Selects are capped so a wide card does not stretch them into banners. */
+.assignment-card-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 14px 18px;
+  padding: 12px 13px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--paper);
+}
+.assignment-card-controls > * { min-width: 0; }
+.assignment-global-role-field,
+.assignment-add-field {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 700;
+}
+.assignment-global-role-field select,
 .assignment-add-field select,
 .assignment-workspace-row select {
   width: 100%;
+  min-width: 0;
   min-height: 36px;
   padding: 7px 10px;
   border: 1px solid var(--hairline);
@@ -6312,38 +6339,219 @@ button.assignment-archive:hover:not(:disabled) {
   font-size: 12px;
   outline: none;
 }
+.assignment-global-role-field select:focus,
 .assignment-add-field select:focus,
 .assignment-workspace-row select:focus {
   border-color: var(--purple);
   box-shadow: 0 0 0 3px var(--purple-soft);
 }
-.assignment-add-field select:disabled { color: var(--muted); opacity: 0.75; }
-.assignment-workspace-list { display: grid; gap: 8px; padding-top: 13px; }
+.assignment-card-controls select { max-width: 320px; }
+.assignment-card-controls select:disabled,
+.assignment-workspace-row select:disabled { color: var(--muted); opacity: 0.75; }
+.assignment-add-field small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
+/* Plain status, never a disabled input: there is no action left to offer. */
+.assignment-add-status { display: grid; gap: 4px; align-content: start; min-width: 0; }
+.assignment-add-status-label { color: var(--ink); font-size: 11px; font-weight: 700; }
+.assignment-add-status-value {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.assignment-add-status-check { color: var(--purple); font-size: 11px; }
+
+.assignment-workspace-list { display: grid; gap: 0; margin-top: 14px; }
 .assignment-workspace-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(130px, 180px) auto;
-  align-items: center;
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 190px) auto;
+  /* Bottom alignment keeps the name, the labelled select, and Remove on one
+     visual line even though the select carries a label above it. */
+  align-items: end;
+  gap: 8px 14px;
   min-width: 0;
-  padding: 8px 0;
+  padding: 9px 0;
   border-bottom: 1px solid var(--line);
 }
-.assignment-workspace-row:last-child { border-bottom: 0; }
-.assignment-workspace-copy { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; min-width: 0; }
-.assignment-workspace-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.assignment-workspace-row .assignment-role-field { display: grid; gap: 4px; width: auto; }
+.assignment-workspace-row:first-child { padding-top: 2px; }
+.assignment-workspace-row:last-child { padding-bottom: 2px; border-bottom: 0; }
+.assignment-workspace-copy { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; min-width: 0; padding-bottom: 8px; }
+/* Long Workspace names wrap rather than truncate; the title stays as a fallback. */
+.assignment-workspace-copy strong { min-width: 0; font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; }
+.assignment-workspace-row .assignment-role-field { display: grid; gap: 4px; width: auto; min-width: 0; }
 .assignment-field-label { color: var(--muted); font-size: 10px; font-weight: 600; }
-.assignment-remove { min-height: 34px; padding: 6px 9px; color: var(--muted); font-size: 11px; }
+.assignment-remove { min-height: 36px; padding: 6px 11px; color: var(--muted); font-size: 11px; }
 .assignment-remove:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
 .assignment-empty { margin: 0; padding: 6px 0 0; color: var(--muted); font-size: 12px; }
 
 @media (max-width: 580px) {
-.assignment-card-controls { align-items: stretch; flex-direction: column; }
-.assignment-global-role-field { width: 100%; }
-.assignment-add-field { width: 100%; margin-top: 12px; }
+  .assignment-card-controls { grid-template-columns: minmax(0, 1fr); }
+  .assignment-card-controls select { max-width: none; }
   .assignment-workspace-row { grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
+  .assignment-workspace-copy { padding-bottom: 0; }
   .assignment-workspace-row .assignment-role-field { grid-column: 1 / -1; width: 100%; }
   .assignment-workspace-row .assignment-remove { grid-column: 2; grid-row: 1; }
+}
+
+/* ============================================================
+   Workspace room roster: who is here and what they may do
+   ============================================================ */
+
+.ws-roster {
+  display: grid;
+  gap: 12px;
+  flex-shrink: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--orch-line-soft);
+  border-radius: var(--orch-radius-card);
+  background: var(--orch-surface-solid);
+}
+
+.ws-roster-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ws-roster-kicker {
+  display: block;
+  color: var(--orch-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ws-roster-head h3 {
+  margin: 3px 0 0;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.ws-roster-count {
+  flex-shrink: 0;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--orch-muted);
+  font-size: 11px;
+}
+
+.ws-roster-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  /* Capped at roughly three rows: the roster must not grow with the roster
+     count, or every Agent added would take height from the room above it. */
+  max-height: 204px;
+  overflow-y: auto;
+}
+
+.ws-roster-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 190px) auto;
+  align-items: end;
+  gap: 8px 14px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--orch-line-soft);
+}
+
+.ws-roster-row:last-child { border-bottom: 0; }
+
+/* Selecting from the roster is the same act as clicking someone in the room. */
+.ws-roster-identity {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 4px 6px 4px 4px;
+  border: 1px solid transparent;
+  border-radius: var(--orch-radius-control);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ws-roster-identity:hover { border-color: var(--orch-line); background: var(--paper); }
+.ws-roster-identity:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
+
+.ws-roster-copy { display: grid; gap: 2px; min-width: 0; }
+.ws-roster-copy strong { font-size: 12.5px; overflow-wrap: anywhere; }
+.ws-roster-status { color: var(--orch-muted); font-size: 11px; }
+
+.ws-roster-role,
+.ws-roster-add {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ws-roster-role-label {
+  color: var(--orch-muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.ws-roster select {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.ws-roster select:focus { border-color: var(--purple); box-shadow: 0 0 0 3px var(--purple-soft); }
+.ws-roster select:disabled { color: var(--orch-muted); opacity: 0.75; }
+
+.ws-roster-remove {
+  min-height: 36px;
+  padding: 6px 11px;
+  color: var(--orch-muted);
+  font-size: 11px;
+}
+
+.ws-roster-remove:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
+
+.ws-roster-add { max-width: 320px; }
+
+/* No Agent left to add is a fact, not a disabled control. */
+.ws-roster-all,
+.ws-roster-empty {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--orch-muted);
+  font-size: 12px;
+}
+
+.ws-roster-all-check { color: var(--purple); font-size: 11px; }
+
+@media (max-width: 580px) {
+  .ws-roster-row { grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
+  .ws-roster-role { grid-column: 1 / -1; }
+  .ws-roster-remove { grid-column: 2; grid-row: 1; }
+  .ws-roster-add { max-width: none; }
 }
 
 /* Workspace-first navigation: one persistent parent, many child Conversations. */

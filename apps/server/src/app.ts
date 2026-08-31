@@ -27,12 +27,15 @@ import {
   ModelProviderParamsSchema,
   ModelRefSchema,
   ModelScopeQuerySchema,
+  type ArkModelCatalogRecord,
+  type ModelDescriptor,
   type ModelRegistry,
 } from "./models/index.js";
 import {
   ContinueOrchestrationSchema,
   CreateOrchestrationSchema,
   OrchestrationRouteParamsSchema,
+  StartOrchestrationSchema,
 } from "./orchestration/schemas.js";
 import type {
   CreateOrchestrationInput,
@@ -58,7 +61,7 @@ export interface OrchestrationServiceContract {
   createSession(input: CreateOrchestrationInput): Promise<OrchestrationSession>;
   listSessions(): Promise<OrchestrationSession[]>;
   getSession(id: string): Promise<OrchestrationSessionDetail>;
-  startSession(id: string): Promise<OrchestrationSession>;
+  startSession(id: string, prompt?: string): Promise<OrchestrationSession>;
   stopSession(id: string): Promise<OrchestrationSession>;
   continueSession(id: string, prompt: string): Promise<OrchestrationSession>;
   deleteSession(id: string): Promise<{ deleted: boolean }>;
@@ -92,6 +95,12 @@ export interface PreviewServiceContract {
   logs(owner: PreviewOwnerRef, tail?: number): Promise<PreviewLogsView>;
 }
 
+/** Narrow operator-facing seam for the persisted Ark model catalog. */
+export interface ModelCatalogServiceContract {
+  get(): ArkModelCatalogRecord;
+  updateSelection?(input: unknown): Promise<ArkModelCatalogRecord>;
+}
+
 /** Cosmetic only. Every field is optional; absent means the ID-derived look. */
 const appearanceBody = z.object({
   hue: z.number().int().min(0).max(359).optional(),
@@ -105,6 +114,8 @@ const createAgentBody = z.object({
   description: z.string().max(500).optional(),
   instructions: z.string().max(10_000).optional(),
   modelRef: ModelRefSchema.optional(),
+  /** Ordered fallbacks used only for typed pre-execution model failures. */
+  fallbackModelRefs: z.array(ModelRefSchema).max(8).optional(),
   skillIds: z.array(z.string().min(1)).max(32).optional(),
   /** Optional global role; null is an explicit "No role" selection. */
   globalRoleId: z.string().min(1).max(128).nullable().optional(),
@@ -220,6 +231,17 @@ function parseContinuationInput(value: unknown): { prompt: string } {
   return parsed.data;
 }
 
+function parseStartInput(value: unknown): { prompt?: string | undefined } {
+  const parsed = StartOrchestrationSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new OrchestrationValidationError(
+      "Invalid orchestration start request",
+      parsed.error.issues,
+    );
+  }
+  return parsed.data;
+}
+
 export async function createApp(
   config: AppConfig,
   service: AgentService,
@@ -228,6 +250,7 @@ export async function createApp(
   previewService?: PreviewServiceContract,
   projectService?: ProjectServiceContract,
   mcp?: McpRouteDependencies,
+  modelCatalog?: ModelCatalogServiceContract,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -300,6 +323,60 @@ export async function createApp(
     };
   });
 
+  if (modelCatalog !== undefined) {
+    const aggregateModelCatalog = async (
+      catalog: ArkModelCatalogRecord = modelCatalog.get(),
+    ) => {
+      const providers = await modelRegistry.listProviders("worker");
+      const modelsByProvider: Record<string, ModelDescriptor[]> = {};
+      await Promise.all(
+        providers.map(async (provider) => {
+          if (!provider.capabilities.worker) return;
+          modelsByProvider[provider.id] = await modelRegistry.listModels(
+            provider.id,
+            "worker",
+          );
+        }),
+      );
+      const models = Object.values(modelsByProvider).flat();
+      let defaultModelRef = catalog.defaultModelRef;
+      if (defaultModelRef === undefined) {
+        try {
+          const resolved = modelRegistry.resolveWorkerModel();
+          defaultModelRef = {
+            providerId: resolved.providerId,
+            modelId: resolved.modelId,
+          };
+        } catch (error) {
+          if (!(error instanceof ModelCatalogError)) throw error;
+          defaultModelRef = null;
+        }
+      }
+      return {
+        providers,
+        models,
+        modelsByProvider,
+        defaultModelRef: defaultModelRef ?? null,
+        revision: catalog.revision ?? 0,
+        // Keep the metadata projection available to operator clients while
+        // leaving the UI-facing aggregate fields stable.
+        catalog,
+      };
+    };
+
+    app.get("/api/model-catalog", async () => aggregateModelCatalog());
+
+    app.put("/api/model-catalog", async (request) => {
+      if (typeof modelCatalog.updateSelection !== "function") {
+        throw new HttpError(503, "Model catalog updates are not configured");
+      }
+      const catalog = await modelCatalog.updateSelection(request.body);
+      modelRegistry.invalidate?.();
+      return aggregateModelCatalog(catalog);
+    });
+
+  }
+
   app.post("/api/orchestrations", async (request, reply) => {
     const input = parseOrchestrationInput(request.body);
     const session = await requireOrchestrationService(
@@ -322,9 +399,12 @@ export async function createApp(
 
   app.post("/api/orchestrations/:id/start", async (request, reply) => {
     const { id } = parseOrchestrationParams(request.params);
-    const session = await requireOrchestrationService(
-      orchestrationService,
-    ).startSession(id);
+    const { prompt } = parseStartInput(request.body === undefined ? {} : request.body);
+    const orchestration = requireOrchestrationService(orchestrationService);
+    const session =
+      prompt === undefined
+        ? await orchestration.startSession(id)
+        : await orchestration.startSession(id, prompt);
     return reply.code(202).send({ session });
   });
 

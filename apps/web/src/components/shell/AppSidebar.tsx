@@ -13,7 +13,7 @@ import {
 import type { UseOrchestrationResult } from "../orchestration/use-orchestration";
 
 /** What the main pane is showing. The sidebar selection decides it. */
-export type ShellView = "workspace" | "agent" | "insights" | "access";
+export type ShellView = "workspace" | "agent" | "insights" | "access" | "model-catalog";
 
 interface AppSidebarProps {
   collapsed: boolean;
@@ -28,6 +28,7 @@ interface AppSidebarProps {
   onNewAgent: () => void;
   onSelectInsights: () => void;
   onSelectAccess: () => void;
+  onSelectModelCatalog: () => void;
   onSelectSession: (sessionId: string) => void;
   onSelectWorkspace: (workspaceId: string) => void;
   onArchiveWorkspace: (workspaceId: string) => void;
@@ -64,6 +65,7 @@ export function AppSidebar({
   onNewAgent,
   onSelectInsights,
   onSelectAccess,
+  onSelectModelCatalog,
   onSelectSession,
   onSelectWorkspace,
   onArchiveWorkspace,
@@ -176,6 +178,16 @@ export function AppSidebar({
           </button>
           <button
             type="button"
+            className={"rail-item" + (view === "model-catalog" ? " is-active" : "")}
+            aria-label="Ark model catalog"
+            aria-current={view === "model-catalog" ? "page" : undefined}
+            onClick={onSelectModelCatalog}
+          >
+            <span aria-hidden="true">⌘</span>
+            <span className="rail-tip" aria-hidden="true">Ark model catalog</span>
+          </button>
+          <button
+            type="button"
             className={"rail-item" + (view === "insights" ? " is-active" : "")}
             aria-label="Insights"
             aria-current={view === "insights" ? "page" : undefined}
@@ -246,6 +258,15 @@ export function AppSidebar({
           >
             <span aria-hidden="true">⚙</span>
             Roles &amp; skills
+          </button>
+          <button
+            type="button"
+            className={"shell-nav-item" + (view === "model-catalog" ? " selected" : "")}
+            aria-current={view === "model-catalog" ? "page" : undefined}
+            onClick={onSelectModelCatalog}
+          >
+            <span aria-hidden="true">⌘</span>
+            Ark model catalog
           </button>
         </nav>
 

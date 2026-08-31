@@ -5,7 +5,7 @@ import {
   type ChildProcessExecution,
 } from "./child-process-execution.js";
 import type { AppConfig } from "./config.js";
-import { RunCancelledError } from "./errors.js";
+import { RetryableModelError, RunCancelledError } from "./errors.js";
 import { MCP_BEARER_TOKEN_ENV } from "./tools/mcp-session-service.js";
 import type {
   AgentRunner,
@@ -147,28 +147,43 @@ export class CodexRunner implements AgentRunner {
       errors: [],
     };
     let forceKillTimer: NodeJS.Timeout | null = null;
-    const execution = startChildProcessExecution({
-      command: this.config.codexBin,
-      args,
-      cwd: request.workspacePath,
-      env: this.childEnvironment(request),
-      timeoutMs: this.config.codexTimeoutMs,
-      maxOutputBytes: this.config.codexMaxOutputBytes,
-      startErrorMessage: "Codex could not start",
-      onLine: (line) => parseCodexEventLine(line, parsed),
-      stop: (child) => {
-        if (child.exitCode !== null || child.signalCode !== null) return;
-        child.kill("SIGTERM");
-        if (!forceKillTimer) {
-          forceKillTimer = setTimeout(() => child.kill("SIGKILL"), 3_000);
-          forceKillTimer.unref();
-        }
-      },
-    });
+    let execution: ChildProcessExecution;
+    try {
+      execution = startChildProcessExecution({
+        command: this.config.codexBin,
+        args,
+        cwd: request.workspacePath,
+        env: this.childEnvironment(request),
+        timeoutMs: this.config.codexTimeoutMs,
+        maxOutputBytes: this.config.codexMaxOutputBytes,
+        startErrorMessage: "Codex could not start",
+        onLine: (line) => parseCodexEventLine(line, parsed),
+        stop: (child) => {
+          if (child.exitCode !== null || child.signalCode !== null) return;
+          child.kill("SIGTERM");
+          if (!forceKillTimer) {
+            forceKillTimer = setTimeout(() => child.kill("SIGKILL"), 3_000);
+            forceKillTimer.unref();
+          }
+        },
+      });
+    } catch (error) {
+      // spawn() can fail before a child exists. This is the only runner-level
+      // startup condition classified as safe for a model fallback.
+      throw new RetryableModelError("Codex could not start", { cause: error });
+    }
     this.active.set(request.agentId, execution);
 
     try {
-      const result = await execution.completed;
+      let result;
+      try {
+        // An `error` event here means Node could not create the child process;
+        // it is still pre-execution and therefore safe to classify. Ordinary
+        // non-zero exits below remain non-retryable.
+        result = await execution.completed;
+      } catch (error) {
+        throw new RetryableModelError("Codex could not start", { cause: error });
+      }
       if (result.cancelled) {
         throw new RunCancelledError();
       }

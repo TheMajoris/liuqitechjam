@@ -1,7 +1,7 @@
 /**
  * Deterministic office geometry, in world units.
  *
- * The stage scales the whole floor by an integer factor, so keeping every
+ * The stage scales the whole floor by a fixed quarter-step factor, so keeping every
  * coordinate a whole number here is what keeps the pixel art crisp at any
  * container size. Layout is a pure function of how many Agents are seated:
  * the same Team always sits the same way, and a refresh rebuilds the office
@@ -85,7 +85,7 @@ export const BOARD = { x: 180, y: 76, width: 84, height: 28 } as const;
 export const PREVIEW_SCREEN = { x: 340, y: 150, width: 56, height: 30 } as const;
 /** The permission boundary sits in the open strip below the lower zones. */
 export const DOOR = { x: 355, y: 230, width: 30, height: 30 } as const;
-export const DESK = { width: 44, height: 20 } as const;
+export const DESK = { width: 40, height: 20 } as const;
 
 /** Bookshelves the library zone draws, and that a researching Agent faces. */
 export const SHELVES: readonly WorldRect[] = [
@@ -103,8 +103,8 @@ export const STATION_POINTS: Record<Exclude<StationName, "desk">, WorldPoint> = 
   lounge: { x: 228, y: 188 },
 };
 
-/** Room capacity. Extra Agents stay in the roster list rather than the office. */
-export const MAX_SEATS = 8;
+/** Room capacity: one Agent per built workstation. Extras stay in the roster. */
+export const MAX_SEATS = 6;
 
 export interface WorkspaceSeat {
   index: number;
@@ -113,8 +113,6 @@ export interface WorkspaceSeat {
   anchor: WorldPoint;
   /** Desk centre. Drawn in front of the Agent, hiding the legs. */
   desk: WorldPoint;
-  /** Anchor for this seat's HTML name plate, in world units. */
-  chip: WorldPoint;
   /** Corridor this seat steps out to. */
   lane: number;
   pod: "a" | "b";
@@ -125,51 +123,43 @@ export interface WorkspaceSeat {
 const DESK_OFFSET_Y = 6;
 /** The monitor occupies the right half of the desk; the Agent sits left. */
 const SEAT_OFFSET_X = -11;
-/** Where the HTML name plate for a seat is anchored, just below its desk. */
-const CHIP_OFFSET_Y = 12;
 const POD_A_Y = 88;
 const POD_B_Y = 172;
 
 /**
- * Hand-placed arrangements for the sizes this product actually sees. Seats
- * fill the upper pod first, so a small Team stays together instead of being
- * scattered across the floor.
+ * The workstations the office is built with, pod A first.
+ *
+ * Fixed rather than arranged per roster size: the furniture is drawn whether
+ * or not anyone sits at it, so a desk that moved when an Agent joined would
+ * rearrange the room under the people already in it.
  */
-const ARRANGEMENTS: Record<number, ReadonlyArray<readonly [number, "a" | "b"]>> = {
-  1: [[325, "a"]],
-  2: [[292, "a"], [358, "a"]],
-  3: [[292, "a"], [358, "a"], [60, "b"]],
-  4: [[292, "a"], [358, "a"], [60, "b"], [124, "b"]],
-  5: [[292, "a"], [358, "a"], [45, "b"], [87, "b"], [129, "b"]],
-  6: [[280, "a"], [325, "a"], [370, "a"], [45, "b"], [87, "b"], [129, "b"]],
-};
+const DESK_GRID: ReadonlyArray<readonly [number, "a" | "b"]> = [
+  [280, "a"],
+  [325, "a"],
+  [370, "a"],
+  [40, "b"],
+  [87, "b"],
+  [134, "b"],
+];
 
-function spread(count: number, from: number, to: number): number[] {
-  if (count === 0) return [];
-  if (count === 1) return [Math.round((from + to) / 2)];
-  const step = (to - from) / (count - 1);
-  return Array.from({ length: count }, (_, index) => Math.round(from + index * step));
+/** Every workstation in the room, occupied or not. */
+export function officeSeats(): WorkspaceSeat[] {
+  return buildSeats(DESK_GRID.length);
 }
 
-function generatedArrangement(count: number): Array<readonly [number, "a" | "b"]> {
-  const podACount = Math.min(4, Math.ceil(count / 2));
-  return [
-    ...spread(podACount, 276, 374).map((x) => [x, "a"] as const),
-    ...spread(count - podACount, 30, 150).map((x) => [x, "b"] as const),
-  ];
-}
-
+/** The workstations taken by the current roster, in seating order. */
 export function seatLayout(count: number): WorkspaceSeat[] {
-  const seats = Math.max(0, Math.min(count, MAX_SEATS));
-  if (seats === 0) return [];
-  const arrangement = ARRANGEMENTS[seats] ?? generatedArrangement(seats);
-  return arrangement.map(([x, pod], index) => {
+  return buildSeats(Math.max(0, Math.min(count, MAX_SEATS)));
+}
+
+function buildSeats(count: number): WorkspaceSeat[] {
+  if (count === 0) return [];
+  return DESK_GRID.slice(0, count).map(([x, pod], index) => {
     const anchorY = pod === "a" ? POD_A_Y : POD_B_Y;
     return {
       index,
       anchor: { x: x + SEAT_OFFSET_X, y: anchorY },
       desk: { x, y: anchorY + DESK_OFFSET_Y },
-      chip: { x, y: anchorY + DESK_OFFSET_Y + CHIP_OFFSET_Y },
       lane: pod === "a" ? CORRIDOR.top : CORRIDOR.bottom,
       pod,
       // Kept well inside the pod so a drifting Agent never touches a wall.
@@ -247,7 +237,10 @@ export function stageTransform(width: number, height: number): StageTransform {
   const safeWidth = Math.max(1, Math.floor(width));
   const safeHeight = Math.max(1, Math.floor(height));
   const raw = Math.min(safeWidth / WORLD.width, safeHeight / WORLD.height);
-  const scale = Math.max(1, Math.floor(raw * 2) / 2);
+  // Quarter steps rather than half: the pixel grid still lands on clean
+  // fractions, but the room fills far more of a wide pane than 2x then 2.5x
+  // allowed — the office was reading as a postage stamp in the middle.
+  const scale = Math.max(1, Math.floor(raw * 4) / 4);
   return {
     scale,
     offsetX: Math.round((safeWidth - WORLD.width * scale) / 2),

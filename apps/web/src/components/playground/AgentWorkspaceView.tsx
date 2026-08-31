@@ -101,6 +101,9 @@ export function AgentWorkspaceView({
             {modelCatalog.selectedAgentReasoningSupported && (
               <span>Reasoning: {formatReasoningEffort(modelCatalog.selectedAgentReasoning)}</span>
             )}
+            <span>
+              Fallbacks: {agent.fallbackModelRefs?.length ?? 0} configured
+            </span>
           </div>
         </div>
         <div className="header-actions">

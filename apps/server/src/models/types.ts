@@ -86,4 +86,6 @@ export interface ModelRegistry {
   listModels(providerId: string, scope: ModelScope): Promise<ModelDescriptor[]>;
   resolveWorkerModel(modelRef?: ModelRef): WorkerRuntimeModelConfig;
   validateWorkerModelRef(modelRef: ModelRef): void;
+  /** Drop dynamic discovery results after an operator catalog replacement. */
+  invalidate?(): void;
 }

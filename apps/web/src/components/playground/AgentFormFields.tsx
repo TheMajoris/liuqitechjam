@@ -8,6 +8,8 @@ import { WorkerModelFields } from "../WorkerModelFields";
 type ModelFields = Pick<
   ModelCatalogController,
   | "providers"
+  | "modelsByProvider"
+  | "loadingByProvider"
   | "selectedFormModels"
   | "providersLoading"
   | "selectedFormModelsLoading"
@@ -15,6 +17,10 @@ type ModelFields = Pick<
   | "changeProvider"
   | "changeModel"
   | "changeReasoning"
+  | "addFallbackModel"
+  | "removeFallbackModel"
+  | "changeFallbackProvider"
+  | "changeFallbackModel"
   | "retry"
 >;
 
@@ -101,7 +107,10 @@ export function AgentFormFields({
       <WorkerModelFields
         providers={modelCatalog.providers}
         models={modelCatalog.selectedFormModels}
+        modelsByProvider={modelCatalog.modelsByProvider}
+        loadingByProvider={modelCatalog.loadingByProvider}
         value={form.modelRef}
+        fallbackValues={form.fallbackModelRefs}
         loadingProviders={modelCatalog.providersLoading}
         loadingModels={modelCatalog.selectedFormModelsLoading}
         catalogError={modelCatalog.error}
@@ -110,6 +119,10 @@ export function AgentFormFields({
         onProviderChange={modelCatalog.changeProvider}
         onModelChange={modelCatalog.changeModel}
         onReasoningChange={modelCatalog.changeReasoning}
+        onAddFallback={modelCatalog.addFallbackModel}
+        onRemoveFallback={modelCatalog.removeFallbackModel}
+        onFallbackProviderChange={modelCatalog.changeFallbackProvider}
+        onFallbackModelChange={modelCatalog.changeFallbackModel}
         onRetry={modelCatalog.retry}
       />
       <AgentSkillsPanel

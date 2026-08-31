@@ -766,41 +766,56 @@ export function RolesAndSkillsView({ agents, projects, onProjectsChanged, onAgen
                           </span>
                         </div>
                       </div>
-                      <div className="assignment-card-controls">
-                        <label className="assignment-global-role-field">
-                          <span>Global Agent role <em>Optional</em></span>
-                          <select
-                            aria-label={`Global Agent role for ${agent.name}`}
-                            value={agent.globalRoleId ?? ""}
-                            disabled={busy}
-                            onChange={(event) => void changeGlobalRole(agent.id, event.target.value || null)}
-                          >
-                            <option value="">No role</option>
-                            {roles.map((role) => <option value={role.id} key={role.id}>{role.name}</option>)}
-                          </select>
-                          <small>Fallback outside Workspace overrides</small>
-                        </label>
+                    </header>
+                    {/* Policy band: the global fallback sits beside the only action
+                        that changes membership, so both read as one decision. */}
+                    <div className="assignment-card-controls">
+                      <label className="assignment-global-role-field">
+                        <span>Global Agent role <em>Optional</em></span>
+                        <select
+                          aria-label={`Global Agent role for ${agent.name}`}
+                          value={agent.globalRoleId ?? ""}
+                          disabled={busy}
+                          onChange={(event) => void changeGlobalRole(agent.id, event.target.value || null)}
+                        >
+                          <option value="">No role</option>
+                          {roles.map((role) => <option value={role.id} key={role.id}>{role.name}</option>)}
+                        </select>
+                        <small>Fallback outside Workspace overrides</small>
+                      </label>
+                      {/* A disabled select offers nothing, so the fully assigned
+                          state becomes quiet status text instead of a dead control. */}
+                      {addableWorkspaces.length > 0 ? (
                         <label className="assignment-add-field">
-                          <span className="sr-only">Add {agent.name} to workspace</span>
+                          <span>Workspace membership</span>
                           <select
                             aria-label={`Add ${agent.name} to workspace`}
                             value=""
-                            disabled={busy || addableWorkspaces.length === 0}
+                            disabled={busy}
                             onChange={(event) => {
                               const projectId = event.target.value;
                               if (projectId) void attachAgent(projectId, agent.id);
                             }}
                           >
-                            <option value="">{addableWorkspaces.length === 0 ? "All workspaces assigned" : "Add to workspace…"}</option>
+                            <option value="">Add to workspace…</option>
                             {addableWorkspaces.map(({ project, duplicateName }) => (
                               <option value={project.id} key={project.id}>
                                 {project.name}{duplicateName ? ` · ${project.id.slice(0, 8)}` : ""}
                               </option>
                             ))}
                           </select>
+                          <small>New assignments appear below</small>
                         </label>
-                      </div>
-                    </header>
+                      ) : (
+                        <div className="assignment-add-status">
+                          <span className="assignment-add-status-label">Workspace membership</span>
+                          <p className="assignment-add-status-value">
+                            <span className="assignment-add-status-check" aria-hidden="true">✓</span>
+                            All workspaces assigned
+                          </p>
+                        </div>
+                      )}
+                    </div>
                     <div className="assignment-workspace-list">
                       {memberships.length === 0 ? (
                         <p className="assignment-empty">Not assigned to a workspace</p>
@@ -809,7 +824,7 @@ export function RolesAndSkillsView({ agents, projects, onProjectsChanged, onAgen
                         return (
                           <div className="assignment-workspace-row" key={project.id}>
                             <div className="assignment-workspace-copy">
-                              <strong>{project.name}</strong>
+                              <strong title={project.name}>{project.name}</strong>
                               {duplicateName && <code className="assignment-discriminator" title={project.id}>{project.id.slice(0, 8)}</code>}
                             </div>
                             <label className="assignment-role-field">

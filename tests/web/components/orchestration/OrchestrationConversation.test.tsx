@@ -77,4 +77,21 @@ describe("Team conversation composer", () => {
     expect(html).toMatch(/<textarea class="composer-input"[^>]*disabled=""/);
     expect(html).toContain("fe builder2 is working…");
   });
+
+  it("keeps the first-message composer enabled for a draft", () => {
+    const detail = detailFor("draft");
+    detail.session.originalPrompt = "";
+    const html = renderToStaticMarkup(
+      <OrchestrationConversation
+        detail={detail}
+        agents={agents}
+        action={null}
+        onContinue={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("Type the first task to start this conversation…");
+    expect(html).toMatch(/<textarea class="composer-input"(?![^>]*disabled)/);
+    expect(html).not.toContain("orch-chat-item-user");
+  });
 });

@@ -10,7 +10,7 @@ import {
   parseCodexEventLine,
   type ParsedEvents,
 } from "./codex-runner.js";
-import { RunCancelledError } from "./errors.js";
+import { RetryableModelError, RunCancelledError } from "./errors.js";
 import { MCP_BEARER_TOKEN_ENV } from "./tools/mcp-session-service.js";
 import type {
   AgentRunner,
@@ -240,26 +240,40 @@ export class ContainerCodexRunner implements AgentRunner {
       this.config.runtimeInstanceId,
     );
     let termination: Promise<void> | null = null;
-    const execution = startChildProcessExecution({
-      command: this.config.containerEngine,
-      args: buildContainerRunArgs(request, this.config),
-      cwd: request.workspacePath,
-      env: this.childEnvironment(request),
-      timeoutMs: this.config.codexTimeoutMs,
-      maxOutputBytes: this.config.codexMaxOutputBytes,
-      startErrorMessage: "Container runtime could not start",
-      onLine: (line) => parseCodexEventLine(line, parsed),
-      stop: (child) => {
-        if (!termination) {
-          termination = this.removeContainer(activeContainerName, child);
-        }
-        return termination;
-      },
-    });
+    let execution: ChildProcessExecution;
+    try {
+      execution = startChildProcessExecution({
+        command: this.config.containerEngine,
+        args: buildContainerRunArgs(request, this.config),
+        cwd: request.workspacePath,
+        env: this.childEnvironment(request),
+        timeoutMs: this.config.codexTimeoutMs,
+        maxOutputBytes: this.config.codexMaxOutputBytes,
+        startErrorMessage: "Container runtime could not start",
+        onLine: (line) => parseCodexEventLine(line, parsed),
+        stop: (child) => {
+          if (!termination) {
+            termination = this.removeContainer(activeContainerName, child);
+          }
+          return termination;
+        },
+      });
+    } catch (error) {
+      throw new RetryableModelError("Container runtime could not start", {
+        cause: error,
+      });
+    }
     this.active.set(request.agentId, { execution });
 
     try {
-      const result = await execution.completed;
+      let result;
+      try {
+        result = await execution.completed;
+      } catch (error) {
+        throw new RetryableModelError("Container runtime could not start", {
+          cause: error,
+        });
+      }
       if (result.cancelled) throw new RunCancelledError();
       if (result.timedOut) {
         throw new Error("Runtime timed out after " + this.config.codexTimeoutMs + " ms");

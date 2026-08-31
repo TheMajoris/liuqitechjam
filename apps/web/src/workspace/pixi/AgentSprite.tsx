@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { Rectangle, type Container, type Graphics, type Sprite } from "pixi.js";
 import { useTick } from "@pixi/react";
 import "./pixi-elements";
@@ -13,7 +13,7 @@ import { ACCESSORY_OFFSET, FACE_OFFSET, HANDS_OFFSET } from "./art/sprites";
 import { agentPresentation } from "./agent-presentation";
 import { useReducedMotion } from "./use-reduced-motion";
 import { AgentIndicator } from "./AgentIndicator";
-import { nextIdleAction, WANDER_INTERVAL_MS } from "./idle-behaviour";
+import { idleTuning, nextIdleAction } from "./idle-behaviour";
 import { SCENE } from "./scene-theme";
 import {
   walkRoute,
@@ -22,9 +22,26 @@ import {
 } from "../workspace-layout";
 import type { WorkspaceAgentViewModel } from "../workspace-view-model";
 
+/**
+ * A route to this Agent's own corner of the lounge.
+ *
+ * `STATION_POINTS.lounge` is a single tile, so several Agents taking a break
+ * at once would stand inside each other. The offset is derived from the ID and
+ * stays well within the lounge zone.
+ */
+function loungeRoute(seat: WorkspaceSeat, from: WorldPoint, agentId: string): WorldPoint[] {
+  const route = walkRoute(seat, from, "lounge");
+  const last = route.at(-1);
+  if (!last) return route;
+  const spread = idleTuning(agentId);
+  return [
+    ...route.slice(0, -1),
+    { x: last.x + (spread.phaseMs % 33) - 16, y: last.y + (spread.walkSpeed % 13) - 6 },
+  ];
+}
+
 /** Feet at the origin, so `y` doubles as the depth-sorting key. */
 const HIT_AREA = new Rectangle(-10, -34, 20, 36);
-const WALK_SPEED = 52;
 const WALK_FRAME_MS = 150;
 const CELEBRATION_MS = 1000;
 
@@ -34,6 +51,8 @@ interface AgentSpriteProps {
   hovered: boolean;
   onSelect: (agentId: string) => void;
   onHoverChange: (agentId: string | null) => void;
+  /** Where this Agent stands right now, reported every frame it is drawn. */
+  onPositionChange?: (agentId: string, x: number, y: number) => void;
 }
 
 /**
@@ -51,6 +70,7 @@ export function AgentSprite({
   hovered,
   onSelect,
   onHoverChange,
+  onPositionChange,
 }: AgentSpriteProps) {
   const look = avatarLook(agent.agentId, agent.appearance);
   const presentation = agentPresentation(agent.activity);
@@ -63,14 +83,21 @@ export function AgentSprite({
   const sleepBadgeRef = useRef<Container>(null);
   const pulseRef = useRef<Graphics>(null);
 
+  // Timing is this Agent's own, so a roomful of them never moves as one body.
+  const tuning = useMemo(() => idleTuning(agent.agentId), [agent.agentId]);
+
   const position = useRef<WorldPoint>({ ...seat.anchor });
   const route = useRef<WorldPoint[]>([]);
-  const clock = useRef(0);
+  const clock = useRef(tuning.phaseMs);
   const celebrateUntil = useRef(0);
   /** When the Agent last had something to do. Drives wander, then dozing. */
   const idleSince = useRef(performance.now());
   const nextWanderAt = useRef(0);
   const dozing = useRef(false);
+  /** Away from the desk on a break or a nap, due back when the clock says so. */
+  const onBreak = useRef(false);
+  const breakUntil = useRef(0);
+  const napUntil = useRef(0);
 
   // `idle` is the only activity that decays into wandering and then sleep, so
   // every other activity resets the clock and wakes the Agent up.
@@ -78,12 +105,13 @@ export function AgentSprite({
   useEffect(() => {
     if (isIdle) {
       idleSince.current = performance.now();
-      nextWanderAt.current = performance.now() + WANDER_INTERVAL_MS;
+      nextWanderAt.current = performance.now() + tuning.wanderIntervalMs;
       return;
     }
     idleSince.current = performance.now();
     dozing.current = false;
-  }, [isIdle, agent.station]);
+    onBreak.current = false;
+  }, [isIdle, agent.station, tuning.wanderIntervalMs]);
 
   // A change of station — or of seat, when the roster grows — is the only
   // thing that makes an Agent walk. The route is recomputed from wherever the
@@ -111,7 +139,7 @@ export function AgentSprite({
     if (!container) return;
     clock.current += ticker.deltaMS;
 
-    let remaining = (WALK_SPEED * ticker.deltaMS) / 1000;
+    let remaining = (tuning.walkSpeed * ticker.deltaMS) / 1000;
     while (remaining > 0 && route.current.length > 0) {
       const target = route.current[0]!;
       const dx = target.x - position.current.x;
@@ -139,20 +167,37 @@ export function AgentSprite({
         atDesk: agent.station === "desk",
         walking: route.current.length > 0,
         dozing: dozing.current,
+        napUntil: napUntil.current,
+        onBreak: onBreak.current,
+        breakUntil: breakUntil.current,
         idleForMs: now - idleSince.current,
+        dozeAfterMs: tuning.dozeAfterMs,
         now,
         nextWanderAt: nextWanderAt.current,
         wander: seat.wander,
         random: Math.random,
       });
       if (action.kind === "wander") {
-        nextWanderAt.current = now + WANDER_INTERVAL_MS;
+        // Jittered, so two Agents that once moved together drift apart again.
+        nextWanderAt.current = now + tuning.wanderIntervalMs * (0.7 + Math.random() * 0.8);
         route.current = [action.point];
+      } else if (action.kind === "pause") {
+        nextWanderAt.current = now + action.forMs;
+      } else if (action.kind === "break") {
+        onBreak.current = true;
+        breakUntil.current = now + action.forMs;
+        route.current = loungeRoute(seat, position.current, agent.agentId);
       } else if (action.kind === "doze") {
         dozing.current = true;
-        route.current = walkRoute(seat, position.current, "lounge");
+        napUntil.current = now + action.forMs;
+        route.current = loungeRoute(seat, position.current, agent.agentId);
       } else if (action.kind === "wake") {
         dozing.current = false;
+        onBreak.current = false;
+        // The idle clock restarts at the desk, so a nap is followed by a spell
+        // of pottering about rather than by falling straight back to sleep.
+        idleSince.current = now;
+        nextWanderAt.current = now + tuning.wanderIntervalMs;
         route.current = walkRoute(seat, position.current, agent.station);
       }
     }
@@ -198,6 +243,9 @@ export function AgentSprite({
     container.x = Math.round(position.current.x);
     container.y = Math.round(position.current.y + offsetY);
     container.zIndex = Math.round(position.current.y);
+    // The HTML name plate is not part of the scene graph, so it is told where
+    // this Agent is rather than being parented to it.
+    onPositionChange?.(agent.agentId, position.current.x, position.current.y);
 
     const face = faceRef.current;
     if (face) {

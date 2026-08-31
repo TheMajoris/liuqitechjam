@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { AgentAppearance, ApprovalRecord } from "../types";
 import { AgentInspector, type AgentLifecycleAction } from "./AgentInspector";
 import { WorkspaceStage } from "./WorkspaceStage";
@@ -26,6 +26,8 @@ interface WorkspaceViewProps {
   onApprove: (id: string, scope: "once" | "project") => void;
   onDeny: (id: string) => void;
   onAppearanceChange?: (agentId: string, appearance: AgentAppearance) => Promise<void>;
+  /** Room membership and Workspace roles; owned by the caller that has the Project. */
+  roster?: ReactNode;
 }
 
 const INSPECTOR_PREFERENCE_KEY = "launchpad.workspaceInspector";
@@ -56,6 +58,7 @@ export function WorkspaceView({
   onApprove,
   onDeny,
   onAppearanceChange,
+  roster,
 }: WorkspaceViewProps) {
   const approvalsRef = useRef<HTMLDivElement>(null);
   const [inspectorOpen, setInspectorOpen] = useState(readInspectorPreference);
@@ -221,6 +224,8 @@ export function WorkspaceView({
           />
         )}
       </div>
+
+      {roster}
     </div>
   );
 }

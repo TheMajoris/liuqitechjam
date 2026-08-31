@@ -18,6 +18,15 @@ import {
  */
 const WorkspaceCanvas = lazy(() => import("./pixi/WorkspaceCanvas"));
 
+/**
+ * Where a name plate hangs, relative to the Agent's feet.
+ *
+ * Centred on the Agent and just below the shoes, so the plate reads as
+ * belonging to whoever it names wherever they wander. It used to hang under
+ * the *desk*, which is far below an Agent standing anywhere else.
+ */
+const PLATE_OFFSET = { x: 0, y: 5 } as const;
+
 interface WorkspaceStageProps {
   viewModel: WorkspaceViewModel;
   replies: number;
@@ -92,6 +101,27 @@ export function WorkspaceStage({
     [seats, viewModel.agents],
   );
 
+  /*
+   * The plates follow the sprites.
+   *
+   * An idle Agent drifts around its pod and eventually walks off to doze, so a
+   * plate pinned to the seat would drift away from the Agent it names. The
+   * canvas owns the animation, so it reports each position and the plate is
+   * moved by hand — through a ref rather than state, because this happens on
+   * the Pixi ticker and must never cost a React render.
+   */
+  const plateRefs = useRef(new Map<string, HTMLButtonElement | null>());
+  const liveRef = useRef({ transform, seated });
+  liveRef.current = { transform, seated };
+
+  const handleAgentPosition = useCallback((agentId: string, x: number, y: number) => {
+    const plate = plateRefs.current.get(agentId);
+    if (!plate) return;
+    const { transform: live } = liveRef.current;
+    plate.style.left = `${Math.round((x + PLATE_OFFSET.x) * live.scale)}px`;
+    plate.style.top = `${Math.round((y + PLATE_OFFSET.y) * live.scale)}px`;
+  }, []);
+
   const onFailure = useCallback(() => setRenderFailed(true), []);
   const canRender = supported && !renderFailed && size.width > 0 && size.height > 0;
   const overflow = viewModel.agents.length - seats.length;
@@ -112,6 +142,7 @@ export function WorkspaceStage({
             onOpenConversation={onOpenConversation}
             onOpenPreview={onOpenPreview}
             onOpenApprovals={onOpenApprovals}
+            onAgentPosition={handleAgentPosition}
           />
         </Suspense>
       ) : (
@@ -142,10 +173,17 @@ export function WorkspaceStage({
       >
         {seated.map(({ agent, seat }) => {
           const descriptor = WORKSPACE_ACTIVITY[agent.activity];
-          const point = worldToScreen(transform, seat.chip);
+          const point = worldToScreen(transform, {
+            x: seat.anchor.x + PLATE_OFFSET.x,
+            y: seat.anchor.y + PLATE_OFFSET.y,
+          });
           return (
             <button
               key={agent.agentId}
+              ref={(node) => {
+                if (node) plateRefs.current.set(agent.agentId, node);
+                else plateRefs.current.delete(agent.agentId);
+              }}
               type="button"
               className={
                 "ws-plate" +

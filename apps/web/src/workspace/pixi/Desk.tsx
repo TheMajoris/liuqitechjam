@@ -23,6 +23,8 @@ interface DeskProps {
   accent: number;
   busy: boolean;
   dimmed: boolean;
+  /** An empty workstation still furnishes the room: desk, chair, dark screen. */
+  occupied?: boolean;
 }
 
 /**
@@ -30,7 +32,7 @@ interface DeskProps {
  * animates, and it swaps between four pre-built textures rather than
  * rebuilding geometry, so a busy room costs no per-frame draw calls.
  */
-export function Desk({ seat, accent, busy, dimmed }: DeskProps) {
+export function Desk({ seat, accent, busy, dimmed, occupied = true }: DeskProps) {
   const screenRef = useRef<Sprite>(null);
   const elapsed = useRef(0);
   const reducedMotion = useReducedMotion();
@@ -50,9 +52,16 @@ export function Desk({ seat, accent, busy, dimmed }: DeskProps) {
         .fill(SCENE.desk)
         .rect(x - half, top + 5, DESK.width, 1)
         .fill(SCENE.deskShadow)
-        // Name-plate stripe: the Agent's colour, repeated at its own desk.
-        .rect(x - half + 2, y + 2, 10, 3)
-        .fill(accent)
+        // Side edges, so a row of desks reads as separate workstations rather
+        // than one long counter.
+        .rect(x - half, top, 1, DESK.height)
+        .fill(SCENE.deskShadow)
+        .rect(x + half - 1, top, 1, DESK.height)
+        .fill(SCENE.deskShadow);
+      // Name-plate stripe: the Agent's colour, repeated at its own desk. An
+      // empty desk carries no name, so the stripe is simply absent.
+      if (occupied) graphics.rect(x - half + 2, y + 2, 10, 3).fill(accent);
+      graphics
         // Keyboard, lying on the work surface in front of the Agent.
         .rect(x - 24, y - 9, 20, 4)
         .fill(SCENE.wallPanel)
@@ -68,7 +77,7 @@ export function Desk({ seat, accent, busy, dimmed }: DeskProps) {
         .rect(x + 6, y - 25, 20, 11)
         .fill(busy ? SCENE.screenActive : SCENE.screenIdle);
     },
-    [accent, busy, seat.desk],
+    [accent, busy, occupied, seat.desk],
   );
 
   useTick({
@@ -84,7 +93,7 @@ export function Desk({ seat, accent, busy, dimmed }: DeskProps) {
   });
 
   return (
-    <pixiContainer alpha={dimmed ? 0.62 : 1}>
+    <pixiContainer alpha={dimmed ? 0.62 : occupied ? 1 : 0.88}>
       <pixiGraphics draw={draw} />
       <pixiSprite
         ref={screenRef}
@@ -94,4 +103,45 @@ export function Desk({ seat, accent, busy, dimmed }: DeskProps) {
       />
     </pixiContainer>
   );
+}
+
+/**
+ * The chair that belongs to a workstation.
+ *
+ * Drawn as its own layer because it sits *behind* whoever is using it, while
+ * the desk sits in front — the two cannot share one depth.
+ */
+export function DeskChair({ seat }: { seat: WorkspaceSeat }) {
+  const draw = useCallback(
+    (graphics: Graphics) => {
+      const x = seat.anchor.x;
+      const y = seat.anchor.y;
+      graphics.clear();
+      graphics
+        // Floor shadow, matching the one the desk and the Agents cast.
+        .ellipse(x, y + 1, 8, 3)
+        .fill({ color: SCENE.shadow, alpha: 0.13 })
+        // Backrest, standing above the seat pad.
+        .rect(x - 6, y - 15, 12, 6)
+        .fill(SCENE.chairBack)
+        .rect(x - 6, y - 15, 12, 1)
+        .fill(SCENE.chairHighlight)
+        // Post between backrest and pad.
+        .rect(x - 1, y - 10, 2, 3)
+        .fill(SCENE.chairFrame)
+        // Seat pad.
+        .rect(x - 7, y - 8, 14, 4)
+        .fill(SCENE.chair)
+        .rect(x - 7, y - 8, 14, 1)
+        .fill(SCENE.chairHighlight)
+        // Pedestal and castors.
+        .rect(x - 1, y - 4, 2, 3)
+        .fill(SCENE.chairFrame)
+        .rect(x - 6, y - 1, 12, 2)
+        .fill(SCENE.chairFrame);
+    },
+    [seat.anchor],
+  );
+
+  return <pixiGraphics draw={draw} />;
 }

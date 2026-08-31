@@ -5,6 +5,7 @@ import type {
   ModelScope,
   ProviderDescriptor,
 } from "./types.js";
+import type { ModelCatalogReader } from "./catalog.js";
 
 export const ARK_WORKER_PROVIDER_ID = "volcengine_ark" as const;
 export const ARK_WORKER_PROVIDER_LABEL = "BytePlus ModelArk";
@@ -15,6 +16,8 @@ export interface ArkModelProviderOptions {
   apiKey: string;
   baseUrl: string;
   curatedModelIds: readonly string[];
+  /** Optional live metadata source; it contains no API key values. */
+  catalog?: ModelCatalogReader;
   timeoutMs?: number;
   maxResponseBytes?: number;
   fetchImpl?: typeof fetch;
@@ -175,6 +178,7 @@ export class ArkModelProvider implements ModelProviderAdapter {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly curatedModelIds: readonly string[];
+  private readonly catalog: ModelCatalogReader | undefined;
   private readonly timeoutMs: number;
   private readonly maxResponseBytes: number;
   private readonly fetchImpl: typeof fetch;
@@ -187,6 +191,7 @@ export class ArkModelProvider implements ModelProviderAdapter {
         (value): value is string => value !== null,
       )),
     );
+    this.catalog = options.catalog;
     this.timeoutMs = safeLimit(options.timeoutMs, DEFAULT_MODEL_LIST_TIMEOUT_MS);
     this.maxResponseBytes = safeLimit(
       options.maxResponseBytes,
@@ -215,14 +220,28 @@ export class ArkModelProvider implements ModelProviderAdapter {
   }
 
   async listModels(input: { scope: ModelScope }): Promise<ModelDescriptor[]> {
-    const curated = this.curatedModelIds.map((id) => descriptor(id, input.scope));
+    const catalog = this.catalog?.get();
+    const curatedModelIds = catalog?.models ?? this.curatedModelIds;
+    const curated = Array.from(
+      new Set(
+        curatedModelIds
+          .map((value) => safeModelId(value))
+          .filter((value): value is string => value !== null),
+      ),
+    ).map((id) => descriptor(id, input.scope));
+    const apiKey = catalog === undefined
+      ? this.apiKey
+      : process.env[catalog.apiKeyEnv] ?? this.apiKey;
     // Without credentials, the safe server-owned catalog is still useful for
     // rendering/configuring an Agent; no provider request is attempted.
-    if (!this.apiKey) return curated;
+    if (!apiKey) return curated;
 
     let discovered: string[];
     try {
-      discovered = await this.discoverModelIds();
+      discovered = await this.discoverModelIds(
+        catalog?.baseUrl ?? this.baseUrl,
+        apiKey,
+      );
     } catch (error) {
       // A configured allowlist is an intentional safe fallback. The registry
       // may additionally serve a stale cached dynamic list.
@@ -230,16 +249,16 @@ export class ArkModelProvider implements ModelProviderAdapter {
       throw error;
     }
 
-    const allowed = new Set(this.curatedModelIds);
+    const allowed = new Set(curated.map((model) => model.id));
     // The configured default/allowlist is the runtime proof. Provider output
     // is intersected with it, and curated entries remain visible if discovery
     // omits an endpoint that is known to be configured and executable.
     const filtered = discovered.filter((id) => allowed.has(id));
-    const ids = new Set([...filtered, ...this.curatedModelIds]);
+    const ids = new Set([...filtered, ...curated.map((model) => model.id)]);
     return [...ids].map((id) => descriptor(id, input.scope));
   }
 
-  private async discoverModelIds(): Promise<string[]> {
+  private async discoverModelIds(baseUrl: string, apiKey: string): Promise<string[]> {
     const controller = new AbortController();
     let timedOut = false;
     const timeout = setTimeout(() => {
@@ -249,11 +268,11 @@ export class ArkModelProvider implements ModelProviderAdapter {
     timeout.unref?.();
 
     try {
-      const response = await this.fetchImpl(this.baseUrl + "/models", {
+      const response = await this.fetchImpl(baseUrl + "/models", {
         method: "GET",
         headers: {
           Accept: "application/json",
-          Authorization: "Bearer " + this.apiKey,
+          Authorization: "Bearer " + apiKey,
         },
         signal: controller.signal,
       });
