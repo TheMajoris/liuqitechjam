@@ -278,14 +278,19 @@ export class ContainerCodexRunner implements AgentRunner {
       if (result.timedOut) {
         throw new Error("Runtime timed out after " + this.config.codexTimeoutMs + " ms");
       }
-      if (result.outputExceeded) {
-        throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
-      }
       if (result.exitCode !== 0) {
         throw new Error("Container runtime exited with code " + result.exitCode);
       }
       const output = parsed.messages.at(-1)?.trim();
-      if (!output) throw new Error("Codex completed without an agent message");
+      if (!output) {
+        // Truncation is only worth reporting when it plausibly cost us the
+        // answer; a completed turn is returned regardless of dropped lines.
+        throw new Error(
+          result.outputTruncated
+            ? "Codex completed without an agent message after an oversized event was dropped; raise CODEX_MAX_OUTPUT_BYTES"
+            : "Codex completed without an agent message",
+        );
+      }
       return { output, threadId: parsed.threadId, usage: parsed.usage };
     } finally {
       this.active.delete(request.agentId);

@@ -123,6 +123,19 @@ export class PackageJsonPreviewCommandResolver implements PreviewCommandResolver
         };
       }
 
+      // A production build may intentionally expose only Vite's preview
+      // script (for example, a generated app with no supported development
+      // server). Prefer recognized development servers above, then keep this
+      // command fixed while forcing it onto the container interface.
+      const preview = readScript(packageJson, "preview");
+      if (preview && (dependencyPresent(packageJson, "vite") || scriptContainsBinary(preview, "vite"))) {
+        return {
+          command: ["npm", "run", "preview", "--", "--host", "0.0.0.0"],
+          containerPort: 4173,
+          kind: "vite",
+        };
+      }
+
       const start = readScript(packageJson, "start");
       if (start && dependencyPresent(packageJson, "express") && /^node(?:\s|$)/.test(start)) {
         return {

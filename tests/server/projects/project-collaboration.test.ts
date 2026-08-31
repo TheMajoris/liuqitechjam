@@ -121,6 +121,13 @@ describe("Shared Project collaboration", () => {
     expect(second.output).toContain('read:"written-by-fe\\n"');
 
     const scope = projectService.projectRunScope(project.id, fe.id);
+    const instructions = await readFile(
+      path.join(scope.workspacePath, "AGENTS.md"),
+      "utf8",
+    );
+    expect(instructions).toContain(
+      "Respond in English by default. Use another language only when the user explicitly requests it.",
+    );
     const shared = await readFile(path.join(scope.workspacePath, "app.txt"), "utf8");
     expect(shared).toBe("written-by-fe\nwritten-by-builder\n");
 

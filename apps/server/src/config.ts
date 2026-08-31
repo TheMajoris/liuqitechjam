@@ -39,6 +39,9 @@ const envSchema = z.object({
     .min(1_000)
     .max(MAX_MCP_TOKEN_TTL_MS - MCP_TOKEN_GRACE_MS)
     .default(DEFAULT_CODEX_TIMEOUT_MS),
+  // Bounds the largest single stdout line held in memory, not a turn's total
+  // output. Codex echoes every command's full output through the JSON event
+  // stream, so a total-volume budget would fail long but healthy turns.
   CODEX_MAX_OUTPUT_BYTES: z.coerce.number().int().min(65_536).default(2_097_152),
   RUNTIME_PROVIDER: z.enum(["local-process", "container"]).default("local-process"),
   CONTAINER_ENGINE: z.string().min(1).default("docker"),

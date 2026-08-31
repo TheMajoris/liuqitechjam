@@ -45,6 +45,9 @@ describe("buildHandoffPrompt", () => {
     expect(result.prompt).not.toContain("<route");
     expect(result.prompt).not.toContain("shared-secret");
     expect(result.prompt).toContain("must not choose an Agent");
+    expect(result.prompt).toContain(
+      "Respond in English by default. Use another language only when the user explicitly requests it.",
+    );
   });
 
 });

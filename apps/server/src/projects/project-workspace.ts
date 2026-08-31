@@ -3,6 +3,7 @@ import path from "node:path";
 import type { SkillRuntimeContext } from "../skills/skill-types.js";
 import type { Agent } from "../types.js";
 import type { Project } from "./project-types.js";
+import { AGENT_RESPONSE_LANGUAGE_POLICY } from "../response-language-policy.js";
 
 /**
  * Owns the physical layout of shared Project workspaces.
@@ -68,6 +69,10 @@ export class ProjectWorkspaceManager {
       agent.instructions ||
         "Help the user complete coding tasks in this workspace. Explain material results concisely.",
       ...skillInstructionLines(skillContext),
+      "",
+      "## Response language",
+      "",
+      AGENT_RESPONSE_LANGUAGE_POLICY,
       "",
       "## Shared Project workspace",
       "",

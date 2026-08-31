@@ -10,6 +10,12 @@ boundaries, and human control. This repository is a local-first hackathon
 proof of concept. It is not production-ready. Permit demonstrates an external
 policy and approval integration path, not a production-certified deployment.
 
+## Submission demo
+
+[![Tiktok TechJam Demo](https://i.ytimg.com/vi/V5h4tDfNwXs/hqdefault.jpg)](https://www.youtube.com/watch?v=V5h4tDfNwXs)
+
+Watch the recorded walkthrough: [Tiktok TechJam Demo](https://www.youtube.com/watch?v=V5h4tDfNwXs) by [doorren](https://www.youtube.com/@doorren1443).
+
 ## Problem
 
 Starting several model calls is not enough to make multi-Agent work reliable.

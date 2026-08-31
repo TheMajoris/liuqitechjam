@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -147,6 +147,19 @@ describe("Agent lifecycle", () => {
     expect((await service.startAgent(agent.id)).status).toBe("ready");
     await service.deleteAgent(agent.id);
     expect(service.listAgents()).toHaveLength(0);
+  });
+
+  it("writes the default response language policy to the Agent workspace", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "English default" });
+    const instructions = await readFile(
+      path.join(agent.workspacePath, "AGENTS.md"),
+      "utf8",
+    );
+
+    expect(instructions).toContain(
+      "Respond in English by default. Use another language only when the user explicitly requests it.",
+    );
   });
 
   it("deletes an Agent when its workspace was removed externally", async () => {

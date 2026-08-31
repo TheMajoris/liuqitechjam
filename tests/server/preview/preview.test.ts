@@ -12,6 +12,7 @@ import type {
   PreviewRuntimeStatus,
   PreviewStartInput,
 } from "../../../apps/server/src/preview/preview-types.js";
+import { composeRuntimeContextPrompt } from "../../../apps/server/src/preview/preview-context-provider.js";
 
 const roots: string[] = [];
 
@@ -93,6 +94,47 @@ async function makePreview(options: { runtime?: FakePreviewRuntime } = {}) {
   return { root, workspacePath, store, agent, runtime, service };
 }
 
+async function makeProductionVitePreview(context: Awaited<ReturnType<typeof makePreview>>): Promise<void> {
+  await writeFile(
+    path.join(context.workspacePath, "package.json"),
+    JSON.stringify({
+      scripts: { build: "tsc -b && vite build", preview: "vite preview" },
+      devDependencies: { vite: "^7.0.0" },
+    }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(context.workspacePath, "index.html"),
+    '<div id="root"></div><script type="module" src="/src/main.tsx"></script>',
+    "utf8",
+  );
+}
+
+describe("PackageJsonPreviewCommandResolver", () => {
+  it("resolves a Vite production preview script with the container host and port", async () => {
+    const context = await makePreview();
+    await makeProductionVitePreview(context);
+
+    await expect(
+      new PackageJsonPreviewCommandResolver().resolve({ workspacePath: context.workspacePath }),
+    ).resolves.toEqual({
+      command: ["npm", "run", "preview", "--", "--host", "0.0.0.0"],
+      containerPort: 4173,
+      kind: "vite",
+    });
+  });
+});
+
+describe("composeRuntimeContextPrompt", () => {
+  it("includes the default response language policy in trusted runtime context", () => {
+    expect(
+      composeRuntimeContextPrompt("report the result", { status: "not_started" }),
+    ).toContain(
+      "Respond in English by default. Use another language only when the user explicitly requests it.",
+    );
+  });
+});
+
 describe("PreviewService", () => {
   it("starts one preview, rejects a second active preview, and stops it", async () => {
     const { service, agent, runtime } = await makePreview();
@@ -119,6 +161,21 @@ describe("PreviewService", () => {
       workspaceReadOnly: true,
       command: ["node", "/opt/launchpad/preview-static-server.mjs", "/workspace", "4173"],
       containerPort: 4173,
+    });
+  });
+
+  it("uses Vite's production preview script instead of serving raw TSX statically", async () => {
+    const context = await makePreview();
+    await makeProductionVitePreview(context);
+
+    await expect(context.service.start({ kind: "agent", agentId: context.agent.id })).resolves.toMatchObject({
+      status: "running",
+      url: "http://127.0.0.1:41231",
+    });
+    expect(context.runtime.starts[0]).toMatchObject({
+      command: ["npm", "run", "preview", "--", "--host", "0.0.0.0"],
+      containerPort: 4173,
+      workspaceReadOnly: false,
     });
   });
 

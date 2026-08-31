@@ -1,5 +1,6 @@
 import type { JsonStore } from "../store.js";
 import type { PreviewStatus } from "./preview-types.js";
+import { AGENT_RESPONSE_LANGUAGE_POLICY } from "../response-language-policy.js";
 
 /**
  * Status vocabulary the Agent runtime is allowed to observe. It extends the
@@ -77,6 +78,7 @@ export function composeRuntimeContextPrompt(
     `preview.status = "${context.status}"`,
     ...extraLines,
     "",
+    AGENT_RESPONSE_LANGUAGE_POLICY,
     "You cannot start, stop, or restart preview servers yourself.",
     "The user controls them from the Preview panel in the workspace UI.",
     "</platform_runtime_context>",
