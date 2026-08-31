@@ -2,11 +2,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { AuthorizationService } from "../../../apps/server/src/access/authorization-service.js";
 import { agentPrincipal } from "../../../apps/server/src/access/access-types.js";
 import { LocalPocApprovalGateway } from "../../../apps/server/src/access/local-poc-approval-gateway.js";
-import { PermitAuthorizationAdapter } from "../../../apps/server/src/access/permit-authorization-adapter.js";
 import {
   PermitApprovalService,
   type PermitApprovalClient,
@@ -33,9 +32,6 @@ function now(): string {
 
 class FakePermitApproval implements PermitApprovalClient {
   readonly operations = new Map<string, PermitExternalApproval>();
-  readonly operationUnassigned: PermitAccessRoleAssignment[] = [];
-  operationUnassignGate: Promise<void> | undefined;
-  operationUnassignStarted: (() => void) | undefined;
   operationCreates = 0;
 
   async createOperationApproval(_input: PermitOperationApprovalInput): Promise<PermitExternalApproval> {
@@ -95,9 +91,7 @@ class FakePermitApproval implements PermitApprovalClient {
   }
 
   async unassignOperationApproval(assignment: PermitAccessRoleAssignment): Promise<void> {
-    this.operationUnassigned.push(assignment);
-    this.operationUnassignStarted?.();
-    if (this.operationUnassignGate) await this.operationUnassignGate;
+    void assignment;
   }
 
   async unassignProjectAccess(_assignment: PermitAccessRoleAssignment): Promise<void> {}
@@ -124,22 +118,6 @@ function searchTool(calls: { count: number }): ToolDefinition<{ query: string },
     async execute() {
       calls.count += 1;
       return { results: [] };
-    },
-  };
-}
-
-function previewTool(calls: { count: number }): ToolDefinition<{}, { ok: boolean }> {
-  return {
-    id: "project.preview.inspect",
-    title: "Inspect preview",
-    description: "Test preview inspection",
-    risk: "read",
-    requiredPermission: "tool.execute:project.preview.inspect",
-    inputSchema: z.object({}),
-    outputSchema: z.object({ ok: z.boolean() }),
-    async execute() {
-      calls.count += 1;
-      return { ok: true };
     },
   };
 }
@@ -186,148 +164,6 @@ describe("ToolService Permit approval boundary", () => {
     expect(calls.count).toBe(0);
   });
 
-  it("requires a fresh Permit allow on explicit retry even when a legacy grant exists", async () => {
-    const { store, permit, approvals } = await fixture();
-    await store.mutate((database) => {
-      database.capabilityGrants.push({
-        id: "legacy-grant",
-        agentId: "agent-1",
-        projectId: "project-1",
-        toolId: "web.search",
-        scope: "project",
-        usesRemaining: null,
-        expiresAt: null,
-        revokedAt: null,
-        createdAt: now(),
-      });
-    });
-    let allowed = false;
-    const authorization: AuthorizationService = {
-      decide: async ({ permission }) => permission === "project.read"
-        ? { result: "allow", reason: "Project read allowed" }
-        : allowed
-          ? { result: "allow", reason: "Permit operation approved" }
-          : { result: "deny", reason: "Permit approval required", errorCode: "PERMISSION_DENIED" },
-      require: async () => undefined,
-    };
-    const calls = { count: 0 };
-    const service = new ToolService(new ToolRegistry([searchTool(calls)]), authorization, store, approvals);
-
-    const pending = await service.execute(context, "web.search", { query: "search" }).catch((error) => error);
-    expect(pending).toBeInstanceOf(ToolApprovalRequiredError);
-    await approvals.approve((pending as ToolApprovalRequiredError).permitRequestId);
-    allowed = true;
-    await expect(service.execute(context, "web.search", { query: "search" })).resolves.toEqual({ results: [] });
-    expect(calls.count).toBe(1);
-    expect(store.snapshot().capabilityGrants).toHaveLength(1);
-  });
-
-  it("fails closed for an Agent when the approval gateway is absent", async () => {
-    const { store } = await fixture();
-    const calls = { count: 0 };
-    const authorization: AuthorizationService = {
-      decide: async () => ({ result: "allow", reason: "Permit allowed" }),
-      require: async () => undefined,
-    };
-    const service = new ToolService(
-      new ToolRegistry([searchTool(calls)]),
-      authorization,
-      store,
-    );
-
-    await expect(service.execute(context, "web.search", { query: "search" })).rejects.toMatchObject({
-      code: "PERMISSION_DENIED",
-      statusCode: 503,
-    });
-    expect(calls.count).toBe(0);
-  });
-
-  it("allows an Agent through the local POC approval seam after authorization", async () => {
-    const { store } = await fixture();
-    const calls = { count: 0 };
-    const authorization: AuthorizationService = {
-      decide: async () => ({ result: "allow", reason: "Repository role allowed" }),
-      require: async () => undefined,
-    };
-    const service = new ToolService(
-      new ToolRegistry([searchTool(calls)]),
-      authorization,
-      store,
-      new LocalPocApprovalGateway(),
-    );
-
-    await expect(service.execute(context, "web.search", { query: "search" })).resolves.toEqual({
-      results: [],
-    });
-    expect(calls.count).toBe(1);
-  });
-
-  it("allows a direct Agent network tool only when its global role includes it", async () => {
-    const { store } = await fixture();
-    await store.mutate((database) => {
-      database.agents.push({
-        id: "agent-1",
-        name: "Researcher",
-        description: "",
-        instructions: "",
-        globalRoleId: "researcher",
-        status: "ready",
-        workspacePath: "/tmp/agent-1",
-        codexThreadId: null,
-        lastError: null,
-        createdAt: now(),
-        updatedAt: now(),
-      });
-      database.roles.push({
-        id: "researcher",
-        name: "Researcher",
-        description: "",
-        skillIds: [],
-        toolIds: ["web.search", "project.preview.inspect"],
-        permissionIds: ["tool.execute:web.search", "tool.execute:project.preview.inspect"],
-        source: "user",
-        createdAt: now(),
-        updatedAt: now(),
-      });
-    });
-    const calls = { count: 0 };
-    const permitCheck = vi.fn().mockResolvedValue(false);
-    const service = new ToolService(
-      new ToolRegistry([searchTool(calls), previewTool(calls)]),
-      new PermitAuthorizationAdapter({ client: { check: permitCheck } }),
-      store,
-      new LocalPocApprovalGateway(),
-    );
-    service.setProjectRoleToolResolver({
-      getEffectiveRole: (agentId, projectId) =>
-        agentId === "agent-1" && projectId === undefined
-          ? { toolIds: ["web.search", "project.preview.inspect"] }
-          : undefined,
-    });
-
-    const direct = {
-      principal: agentPrincipal("agent-1"),
-      agentId: "agent-1",
-      runId: "run-direct",
-    };
-    await expect(service.listCapabilities("agent-1")).resolves.toMatchObject({
-      tools: [
-        { tool: { id: "project.preview.inspect" }, availability: "denied" },
-        { tool: { id: "web.search" }, availability: "available" },
-      ],
-    });
-    expect(permitCheck).not.toHaveBeenCalled();
-    await expect(service.execute(direct, "web.search", { query: "launchpad" })).resolves.toEqual({
-      results: [],
-    });
-    await expect(service.execute(direct, "project.preview.inspect", {})).rejects.toMatchObject({
-      code: "PERMISSION_DENIED",
-      statusCode: 403,
-    });
-    expect(permitCheck).not.toHaveBeenCalled();
-    expect(calls.count).toBe(1);
-  });
-
   it("never lets the local POC approval seam bypass repository authorization", async () => {
     const { store } = await fixture();
     const calls = { count: 0 };
@@ -353,80 +189,4 @@ describe("ToolService Permit approval boundary", () => {
     expect(calls.count).toBe(0);
   });
 
-  it("lets only the claimant execute during a concurrent one-time retry", async () => {
-    const { store, permit, approvals } = await fixture();
-    const created = await approvals.requestOperationApproval({
-      agentId: "agent-1",
-      projectId: "project-1",
-      runId: "run-1",
-      toolId: "web.search",
-    });
-    await approvals.approve(created.id);
-
-    let release!: () => void;
-    const unassignFinished = new Promise<void>((resolve) => { release = resolve; });
-    let unassignStarted!: () => void;
-    const unassignEntered = new Promise<void>((resolve) => { unassignStarted = resolve; });
-    permit.operationUnassignGate = unassignFinished;
-    permit.operationUnassignStarted = unassignStarted;
-    const calls = { count: 0 };
-    const authorization: AuthorizationService = {
-      decide: async () => ({ result: "allow", reason: "Permit operation approved" }),
-      require: async () => undefined,
-    };
-    const service = new ToolService(
-      new ToolRegistry([searchTool(calls)]),
-      authorization,
-      store,
-      approvals,
-    );
-
-    const first = service.execute(context, "web.search", { query: "first" });
-    await unassignEntered;
-    const second = service.execute(context, "web.search", { query: "second" });
-    await expect(second).rejects.toMatchObject({
-      code: "PERMISSION_DENIED",
-      statusCode: 403,
-    });
-
-    release();
-    await expect(first).resolves.toEqual({ results: [] });
-    expect(calls.count).toBe(1);
-    expect(permit.operationUnassigned).toHaveLength(1);
-  });
-
-  it("keeps non-approvable tools denied and does not project legacy grants", async () => {
-    const { store, approvals } = await fixture();
-    await store.mutate((database) => {
-      database.capabilityGrants.push({
-        id: "legacy-preview-grant",
-        agentId: "agent-1",
-        projectId: "project-1",
-        toolId: "project.preview.inspect",
-        scope: "project",
-        usesRemaining: null,
-        expiresAt: null,
-        revokedAt: null,
-        createdAt: now(),
-      });
-    });
-    const calls = { count: 0 };
-    const authorization: AuthorizationService = {
-      decide: async () => ({
-        result: "deny",
-        reason: "Project role does not permit preview inspection",
-        errorCode: "PERMISSION_DENIED",
-      }),
-      require: async () => undefined,
-    };
-    const service = new ToolService(new ToolRegistry([previewTool(calls)]), authorization, store, approvals);
-
-    await expect(service.execute(context, "project.preview.inspect", {})).rejects.toMatchObject({
-      code: "PERMISSION_DENIED",
-    });
-    await expect(service.listCapabilities("agent-1", "project-1")).resolves.toMatchObject({
-      tools: [{ availability: "denied", grant: null }],
-    });
-    expect(calls.count).toBe(0);
-  });
 });

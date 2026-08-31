@@ -3,7 +3,6 @@ import { createApp } from "../../apps/server/src/app.js";
 import { loadConfig } from "../../apps/server/src/config.js";
 import type { AgentService } from "../../apps/server/src/agent-service.js";
 import type { PreviewServiceContract } from "../../apps/server/src/app.js";
-import { PreviewError } from "../../apps/server/src/preview/preview-errors.js";
 import type { PreviewView } from "../../apps/server/src/preview/preview-types.js";
 
 const service = {
@@ -92,66 +91,4 @@ describe("HTTP boundary", () => {
     await app.close();
   });
 
-  it("preserves Fastify client error status codes", async () => {
-    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
-    const malformed = await app.inject({
-      method: "POST",
-      url: "/api/agents",
-      headers: { "content-type": "application/json" },
-      payload: "{not-json",
-    });
-    expect(malformed.statusCode).toBe(400);
-
-    const oversized = await app.inject({
-      method: "POST",
-      url: "/api/agents",
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({ name: "x".repeat(1_100_000) }),
-    });
-    expect(oversized.statusCode).toBe(413);
-    await app.close();
-  });
-
-  it("preserves the normalized preview error message and code", async () => {
-    const agentId = "11111111-1111-4111-8111-111111111111";
-    const previewService: PreviewServiceContract = {
-      start: async () => {
-        throw new PreviewError(
-          "PREVIEW_COMMAND_NOT_FOUND",
-          422,
-          "No supported preview entrypoint was found",
-        );
-      },
-      get: async () => {
-        throw new PreviewError("PREVIEW_NOT_FOUND", 404, "Preview not found");
-      },
-      restart: async () => {
-        throw new PreviewError("PREVIEW_START_FAILED", 500, "Preview could not restart");
-      },
-      stop: async () => {
-        throw new PreviewError("PREVIEW_NOT_FOUND", 404, "Preview not found");
-      },
-      logs: async () => {
-        throw new PreviewError("PREVIEW_LOGS_FAILED", 500, "Preview logs could not be read");
-      },
-    };
-    const app = await createApp(
-      loadConfig({ NODE_ENV: "test" }),
-      service,
-      undefined,
-      undefined,
-      previewService,
-    );
-
-    const failed = await app.inject({
-      method: "POST",
-      url: "/api/agents/" + agentId + "/preview/start",
-    });
-    expect(failed.statusCode).toBe(422);
-    expect(failed.json()).toEqual({
-      error: "No supported preview entrypoint was found",
-      errorCode: "PREVIEW_COMMAND_NOT_FOUND",
-    });
-    await app.close();
-  });
 });

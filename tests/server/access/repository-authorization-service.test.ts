@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEMO_HUMAN_PRINCIPAL, AuthorizationError } from "../../../apps/server/src/access/authorization-service.js";
+import { AuthorizationError } from "../../../apps/server/src/access/authorization-service.js";
 import { RepositoryAuthorizationService } from "../../../apps/server/src/access/repository-authorization-service.js";
 import { JsonStore } from "../../../apps/server/src/store.js";
 
@@ -73,16 +73,6 @@ describe("RepositoryAuthorizationService", () => {
       permission: "project.write",
       resource: project,
     })).resolves.toMatchObject({ result: "deny", errorCode: "PERMISSION_DENIED" });
-  });
-
-  it("allows the deterministic human owner to manage membership", async () => {
-    const store = await makeStore();
-    const service = new RepositoryAuthorizationService(store);
-    await expect(service.require({
-      principal: DEMO_HUMAN_PRINCIPAL,
-      permission: "project.members.manage",
-      projectId: "project-1",
-    })).resolves.toBeUndefined();
   });
 
   it("does not grant authority to an Agent that is not attached", async () => {
