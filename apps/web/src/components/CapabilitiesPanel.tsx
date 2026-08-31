@@ -64,11 +64,11 @@ export function CapabilitiesPanel({ agent }: { agent: Agent }) {
         {loading && <span className="capabilities-loading">Refreshing…</span>}
       </div>
       <label className="capabilities-project-field">
-        Project scope (optional)
+        Workspace scope (optional)
         <input
           value={projectId}
           onChange={(event) => setProjectId(event.target.value)}
-          placeholder="Paste a Project ID to inspect delegated tools"
+          placeholder="Paste a Workspace ID to inspect delegated tools"
           aria-describedby="capabilities-note"
         />
       </label>
@@ -92,7 +92,7 @@ export function CapabilitiesPanel({ agent }: { agent: Agent }) {
               </span>
               {tool.grant && (
                 <small>
-                  {tool.grant.scope === "once" ? "One-time grant" : "Project grant"}
+                  {tool.grant.scope === "once" ? "One-time grant" : "Workspace grant"}
                 </small>
               )}
               {tool.availability === "available" && projectId.trim() && (

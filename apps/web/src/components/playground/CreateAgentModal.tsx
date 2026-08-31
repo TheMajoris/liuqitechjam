@@ -1,4 +1,4 @@
-import type { SkillMetadata } from "../../types";
+import type { AgentRole, SkillMetadata } from "../../types";
 import type { AgentForm } from "../../playground/agent-form";
 import type { ModelCatalogController } from "../../playground/use-model-catalog";
 import { AgentFormFields } from "./AgentFormFields";
@@ -12,6 +12,7 @@ interface CreateAgentModalProps {
   skillError: string | null;
   disabled: boolean;
   invalidModel: boolean;
+  roles?: AgentRole[];
   onChange: (changes: Partial<AgentForm>) => void;
   onSubmit: (event: React.FormEvent) => void;
   onClose: () => void;
@@ -25,6 +26,7 @@ export function CreateAgentModal({
   skillError,
   disabled,
   invalidModel,
+  roles = [],
   onChange,
   onSubmit,
   onClose,
@@ -38,7 +40,7 @@ export function CreateAgentModal({
       >
         <div className="modal-heading">
           <div>
-            <span className="eyebrow">New workspace</span>
+            <span className="eyebrow">New Agent</span>
             <h2>Create an Agent</h2>
             <p>Each Agent gets a persistent folder and a resumable Codex session.</p>
           </div>
@@ -54,6 +56,7 @@ export function CreateAgentModal({
             assignedSkills={null}
             disabled={disabled}
             isNew
+            roles={roles}
             onChange={onChange}
           />
         </div>

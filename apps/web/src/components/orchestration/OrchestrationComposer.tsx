@@ -143,7 +143,14 @@ export function OrchestrationComposer({
       return;
     }
 
-    const nextErrors = validateDraft(draft, agents);
+    // A conversation composer is always scoped to the selected Workspace.
+    // Keep that scope on the request even when the user leaves both task and
+    // participants blank so the server can persist an idle draft without
+    // weakening the text-only orchestration contract.
+    const conversationDraft = workspace?.id
+      ? { ...draft, projectId: workspace.id }
+      : draft;
+    const nextErrors = validateDraft(conversationDraft, agents);
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) {
       focusFirstError(event, nextErrors);
@@ -153,7 +160,7 @@ export function OrchestrationComposer({
 
     setSubmitting(true);
     try {
-      await onCreate(withDerivedLabels(draft, agents));
+      await onCreate(withDerivedLabels(conversationDraft, agents));
       setDraft(initialDraft);
     } catch (reason) {
       setSubmitError(reason instanceof Error ? reason.message : String(reason));
@@ -293,6 +300,11 @@ export function OrchestrationComposer({
     );
   }
 
+  const canStartImmediately =
+    Boolean(draft.originalPrompt.trim()) &&
+    draft.participants.length > 0 &&
+    draft.participants.every((participant) => participant.agentId.trim());
+
   return (
     <form className="orch-composer" onSubmit={submit}>
       {submitError && (
@@ -320,14 +332,16 @@ export function OrchestrationComposer({
       />
 
       <div className="orch-field">
-        <label htmlFor="orch-prompt">Task</label>
+        <label htmlFor="orch-prompt">
+          Task <span className="orch-optional">Optional</span>
+        </label>
         <textarea
           id="orch-prompt"
           value={draft.originalPrompt}
           disabled={busy}
           maxLength={50_000}
           rows={4}
-          placeholder="Ask these Agents to…"
+          placeholder="Describe the first task, or leave blank to create a draft…"
           aria-invalid={Boolean(errors.originalPrompt)}
           aria-describedby={errors.originalPrompt ? "orch-prompt-error" : "orch-prompt-help"}
           onChange={(event) => {
@@ -374,7 +388,11 @@ export function OrchestrationComposer({
             </button>
           )}
           <button className="orch-button orch-button-primary" type="submit" disabled={busy}>
-            {submitting ? "Creating…" : "Start conversation"}
+            {submitting
+              ? "Creating…"
+              : canStartImmediately
+                ? "Start conversation"
+                : "Create conversation"}
             {!submitting && <span aria-hidden="true">→</span>}
           </button>
         </div>

@@ -199,6 +199,7 @@ export const api = {
     instructions: string;
     modelRef?: ModelRef;
     skillIds?: string[];
+    globalRoleId?: string | null;
   }) =>
     request<{ agent: Agent }>("/api/agents", {
       method: "POST",
@@ -207,11 +208,12 @@ export const api = {
   updateAgent: (
     id: string,
     body: {
-      name: string;
-      description: string;
-      instructions: string;
+      name?: string;
+      description?: string;
+      instructions?: string;
       modelRef?: ModelRef;
       skillIds?: string[];
+      globalRoleId?: string | null;
     },
   ) =>
     request<{ agent: Agent }>("/api/agents/" + id, {
@@ -292,9 +294,15 @@ export const api = {
   listProjects: () => request<{ projects: Project[] }>("/api/projects"),
   /** Archive preserves the Project workspace; it never deletes the files. */
   archiveProject: (id: string) =>
-    request<{ archivedWorkspace: string }>("/api/projects/" + id, {
+    request<{ archivedWorkspace: string | null }>("/api/projects/" + id, {
       method: "DELETE",
     }),
+  /** Permanently removes the Project record and child database records. */
+  deleteProject: (id: string) =>
+    request<{ deleted: boolean }>(
+      "/api/projects/" + encodeURIComponent(id) + "/permanent",
+      { method: "DELETE" },
+    ),
   attachProjectAgent: (projectId: string, agentId: string) =>
     request<{ project: Project }>(
       "/api/projects/" + encodeURIComponent(projectId) + "/agents/" + encodeURIComponent(agentId),

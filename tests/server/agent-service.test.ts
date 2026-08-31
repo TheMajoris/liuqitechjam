@@ -139,6 +139,33 @@ async function makeService(
 }
 
 describe("Agent lifecycle", () => {
+  it("accepts an optional global role and allows it to be cleared", async () => {
+    const service = await makeService();
+    const store = serviceStores.get(service)!;
+    await store.mutate((database) => {
+      database.roles.push({
+        id: "global-role",
+        name: "Global role",
+        description: "",
+        skillIds: [],
+        toolIds: [],
+        permissionIds: [],
+        source: "user",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    });
+
+    const agent = await service.createAgent({ name: "Roleful", globalRoleId: "global-role" });
+    expect(agent.globalRoleId).toBe("global-role");
+    await expect(
+      service.createAgent({ name: "Unknown role", globalRoleId: "missing-role" }),
+    ).rejects.toMatchObject({ code: "ROLE_NOT_FOUND" });
+
+    const cleared = await service.updateAgent(agent.id, { globalRoleId: null });
+    expect(cleared).not.toHaveProperty("globalRoleId");
+  });
+
   it("assigns the configured default model to a new Agent", async () => {
     const service = await makeService();
     const agent = await service.createAgent({ name: "Defaulted" });

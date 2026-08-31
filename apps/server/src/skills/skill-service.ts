@@ -72,7 +72,12 @@ export interface SkillServiceOptions {
 }
 
 export interface ProjectRoleSkillResolver {
-  assignedSkillIds(projectId: string, agentId: string): string[];
+  /** Resolve Project override, then Agent-global role skills. */
+  assignedSkillIds(
+    projectId: string | undefined,
+    agentId: string,
+    agent?: Pick<Agent, "id" | "globalRoleId">,
+  ): string[];
 }
 
 export interface CreateSkillInput {
@@ -486,9 +491,7 @@ export class SkillService {
   }
 
   async forAgent(agent: Agent, projectId?: string): Promise<AgentSkillsView> {
-    const roleSkillIds = projectId
-      ? this.roleSkills?.assignedSkillIds(projectId, agent.id) ?? []
-      : [];
+    const roleSkillIds = this.roleSkills?.assignedSkillIds(projectId, agent.id, agent) ?? [];
     const skillIds = this.normalizeLegacySkillIds([
       ...(agent.skillIds ?? []),
       ...roleSkillIds,

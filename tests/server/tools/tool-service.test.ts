@@ -2,10 +2,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AuthorizationService } from "../../../apps/server/src/access/authorization-service.js";
 import { agentPrincipal } from "../../../apps/server/src/access/access-types.js";
 import { LocalPocApprovalGateway } from "../../../apps/server/src/access/local-poc-approval-gateway.js";
+import { PermitAuthorizationAdapter } from "../../../apps/server/src/access/permit-authorization-adapter.js";
 import {
   PermitApprovalService,
   type PermitApprovalClient,
@@ -258,6 +259,72 @@ describe("ToolService Permit approval boundary", () => {
     await expect(service.execute(context, "web.search", { query: "search" })).resolves.toEqual({
       results: [],
     });
+    expect(calls.count).toBe(1);
+  });
+
+  it("allows a direct Agent network tool only when its global role includes it", async () => {
+    const { store } = await fixture();
+    await store.mutate((database) => {
+      database.agents.push({
+        id: "agent-1",
+        name: "Researcher",
+        description: "",
+        instructions: "",
+        globalRoleId: "researcher",
+        status: "ready",
+        workspacePath: "/tmp/agent-1",
+        codexThreadId: null,
+        lastError: null,
+        createdAt: now(),
+        updatedAt: now(),
+      });
+      database.roles.push({
+        id: "researcher",
+        name: "Researcher",
+        description: "",
+        skillIds: [],
+        toolIds: ["web.search", "project.preview.inspect"],
+        permissionIds: ["tool.execute:web.search", "tool.execute:project.preview.inspect"],
+        source: "user",
+        createdAt: now(),
+        updatedAt: now(),
+      });
+    });
+    const calls = { count: 0 };
+    const permitCheck = vi.fn().mockResolvedValue(false);
+    const service = new ToolService(
+      new ToolRegistry([searchTool(calls), previewTool(calls)]),
+      new PermitAuthorizationAdapter({ client: { check: permitCheck } }),
+      store,
+      new LocalPocApprovalGateway(),
+    );
+    service.setProjectRoleToolResolver({
+      getEffectiveRole: (agentId, projectId) =>
+        agentId === "agent-1" && projectId === undefined
+          ? { toolIds: ["web.search", "project.preview.inspect"] }
+          : undefined,
+    });
+
+    const direct = {
+      principal: agentPrincipal("agent-1"),
+      agentId: "agent-1",
+      runId: "run-direct",
+    };
+    await expect(service.listCapabilities("agent-1")).resolves.toMatchObject({
+      tools: [
+        { tool: { id: "project.preview.inspect" }, availability: "denied" },
+        { tool: { id: "web.search" }, availability: "available" },
+      ],
+    });
+    expect(permitCheck).not.toHaveBeenCalled();
+    await expect(service.execute(direct, "web.search", { query: "launchpad" })).resolves.toEqual({
+      results: [],
+    });
+    await expect(service.execute(direct, "project.preview.inspect", {})).rejects.toMatchObject({
+      code: "PERMISSION_DENIED",
+      statusCode: 403,
+    });
+    expect(permitCheck).not.toHaveBeenCalled();
     expect(calls.count).toBe(1);
   });
 

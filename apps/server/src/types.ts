@@ -79,6 +79,8 @@ export interface Agent {
   instructions: string;
   /** Omitted on legacy records; normalized stores expose an empty list. */
   skillIds?: string[];
+  /** Optional role preset used outside a Workspace and as the Workspace fallback. */
+  globalRoleId?: string;
   /** Omitted until someone customizes this Agent's character. */
   appearance?: AgentAppearance;
   status: AgentStatus;
@@ -189,6 +191,8 @@ export interface CreateAgentInput {
   modelRef?: ModelRef | undefined;
   /** Agent-global declarative skills; skills never grant tools. */
   skillIds?: string[] | undefined;
+  /** Optional Agent-global role; null explicitly means no role. */
+  globalRoleId?: string | null | undefined;
   appearance?: AgentAppearance | undefined;
 }
 
@@ -199,6 +203,8 @@ export interface UpdateAgentInput {
   modelRef?: ModelRef | undefined;
   /** Replaces Agent-global skill assignment when supplied. */
   skillIds?: string[] | undefined;
+  /** Replaces the Agent-global role when supplied; null clears it. */
+  globalRoleId?: string | null | undefined;
 }
 
 export interface RunnerResult {

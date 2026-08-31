@@ -134,16 +134,21 @@ export function validateDraft(
   agents: Agent[],
 ): DraftErrors {
   const errors: DraftErrors = {};
+  // A Conversation created inside a Workspace may start life as an empty
+  // draft. It is still a real persisted Conversation, but it cannot run until
+  // both a task and at least one valid Agent have been supplied. Text-only
+  // orchestrations keep the stricter legacy contract.
+  const workspaceScoped = Boolean(draft.projectId?.trim());
   // Legacy callers that opt into a Workspace must actually name it.
   if (draft.projectName !== undefined && !draft.projectName.trim()) {
     errors.projectName = "Name the shared Workspace, or turn it off.";
   }
-  if (!draft.originalPrompt.trim()) {
+  if (!draft.originalPrompt.trim() && !workspaceScoped) {
     errors.originalPrompt = "Describe the task these Agents should work on.";
   }
-  if (draft.participants.length === 0) {
+  if (draft.participants.length === 0 && !workspaceScoped) {
     errors.participants = "Add at least one Agent to the conversation.";
-  } else {
+  } else if (draft.participants.length > 0) {
     const available = new Set(agents.map((agent) => agent.id));
     if (draft.participants.some((participant) => !participant.agentId)) {
       errors.participants = "Every turn needs an Agent.";

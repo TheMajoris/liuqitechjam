@@ -13,6 +13,7 @@ import type {
 import { MastraOrchestrator } from "../../../apps/server/src/orchestration/mastra/mastra-orchestrator.js";
 import {
   DEFAULT_ORCHESTRATION_LIST_LIMIT,
+  EMPTY_ORCHESTRATION_START_MESSAGE,
   OrchestrationService,
   type OrchestrationAgentAccess,
 } from "../../../apps/server/src/orchestration/orchestration-service.js";
@@ -229,6 +230,66 @@ describe("OrchestrationService", () => {
       status: "draft",
     });
     expect(store.snapshot().agents).toEqual([]);
+  });
+
+  it("persists an empty Workspace draft but rejects starting it", async () => {
+    const store = await makeStore();
+    const projectId = randomUUID();
+    const timestamp = new Date().toISOString();
+    await store.mutate((database) => {
+      database.projects.push({
+        id: projectId,
+        name: "Workspace",
+        description: "",
+        workspacePath: "/tmp/workspace-" + projectId,
+        teamId: null,
+        ownerPrincipalId: "demo-owner",
+        status: "active",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+    });
+    const boundAgentRosters: string[][] = [];
+    const service = new OrchestrationService({
+      store,
+      agents: makeAgentsAccess([]),
+      invoker: new ImmediateInvoker(),
+      projectBinding: {
+        async bindConversation(_projectId, _conversationId, agentIds) {
+          boundAgentRosters.push(agentIds);
+        },
+      },
+    });
+
+    const created = await service.createSession({
+      name: "Untitled conversation",
+      originalPrompt: "",
+      participants: [],
+      projectId,
+      maxSteps: 1,
+      perAgentTimeoutMs: 1_000,
+    });
+
+    expect(created.status).toBe("draft");
+    expect(created.name).toBe("Untitled conversation");
+    expect(created.originalPrompt).toBe("");
+    expect(created.participants).toEqual([]);
+    expect(boundAgentRosters).toEqual([[]]);
+    await expect(service.startSession(created.id)).rejects.toMatchObject({
+      statusCode: 422,
+      message: EMPTY_ORCHESTRATION_START_MESSAGE,
+    });
+    expect((await service.getSession(created.id)).session.status).toBe("draft");
+
+    await expect(
+      service.createSession({
+        name: "Text-only draft",
+        originalPrompt: "",
+        participants: [],
+        maxSteps: 1,
+        perAgentTimeoutMs: 1_000,
+      }),
+    ).rejects.toMatchObject({ statusCode: 422 });
   });
 
   it("preserves opaque occurrence IDs used for routing", async () => {

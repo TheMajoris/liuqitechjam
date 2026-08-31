@@ -199,7 +199,9 @@ export function OrchestrationWorkspace({
     }
   }, [detail, previewController.act, previewController.preview?.url]);
 
-  /** Create a Conversation inside the selected Workspace and then start it. */
+  /** Create a Conversation inside the selected Workspace, starting only when
+   * the composer supplied the complete runnable input. Blank/partial drafts
+   * stay persisted as drafts; the server remains the final lifecycle guard. */
   const handleCreateConversation = useCallback(
     async (input: OrchestrationDraft) => {
       if (!selectedWorkspaceId) {
@@ -207,7 +209,9 @@ export function OrchestrationWorkspace({
       }
       const session = await orchestration.createConversation(selectedWorkspaceId, input);
       onComposerOpenChange(false);
-      await orchestration.startSession(session.id).catch(() => undefined);
+      if (input.originalPrompt.trim() && input.participants.length > 0) {
+        await orchestration.startSession(session.id).catch(() => undefined);
+      }
       return session;
     },
     [onComposerOpenChange, orchestration, selectedWorkspaceId],

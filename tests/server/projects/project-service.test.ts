@@ -96,7 +96,8 @@ describe("Project lifecycle", () => {
 
     const { archivedWorkspace } = await service.archive(project.id);
 
-    expect((await stat(archivedWorkspace)).isDirectory()).toBe(true);
+    expect(archivedWorkspace).not.toBeNull();
+    expect((await stat(archivedWorkspace!)).isDirectory()).toBe(true);
     await expect(stat(workspaces.workspacePath(project.id))).rejects.toThrow();
     const archived = await service.get(project.id);
     expect(archived.status).toBe("archived");
@@ -134,6 +135,20 @@ describe("Project lifecycle", () => {
       runId: "run-1",
     });
     await expect(stat(workspaces.workspacePath(project.id))).resolves.toBeDefined();
+  });
+
+  it("archives a database Project when its shared workspace is already missing", async () => {
+    const { service, store, workspaces } = await makeService();
+    const project = await service.create({ name: "Missing checkout" });
+
+    await rm(workspaces.workspacePath(project.id), { recursive: true, force: true });
+
+    const result = await service.archive(project.id);
+
+    expect(result.archivedWorkspace).toBeNull();
+    expect(store.snapshot().projects.find((item) => item.id === project.id)).toMatchObject({
+      status: "archived",
+    });
   });
 });
 

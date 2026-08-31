@@ -703,6 +703,40 @@ button {
   margin-top: 13px;
 }
 
+.agent-form-role-field {
+  display: grid;
+  gap: 6px;
+}
+
+.agent-form-role-field em,
+.assignment-global-role-field em {
+  margin-left: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 500;
+}
+
+.agent-form-role-field select {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 11px;
+  border: 1px solid #d9d7cf;
+  border-radius: 9px;
+  background: white;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.agent-form-role-field small,
+.assignment-global-role-field small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
 /* The create modal keeps its original single-column label rhythm while the
    settings panel uses the two-column identity grid above. */
 .agent-form-modal-fields {
@@ -4953,10 +4987,48 @@ textarea:focus {
   flex-wrap: wrap;
 }
 
-.ws-station-action {
-  min-height: 0;
-  align-self: stretch;
-  font-size: 12px;
+.ws-preview-control {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+  border-radius: 9px;
+  box-shadow: var(--elevation-1);
+}
+
+.ws-preview-control .ws-preview-status {
+  border-radius: 9px 0 0 9px;
+  box-shadow: none;
+}
+
+.ws-preview-action {
+  min-width: 54px;
+  border: 1px solid var(--orch-line);
+  border-left: 0;
+  border-radius: 0 9px 9px 0;
+  padding: 5px 9px;
+  color: var(--orch-ink);
+  background: var(--orch-surface-solid);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ws-preview-action:hover:not(:disabled) {
+  border-color: #c3bfb2;
+  background: #f6f4ee;
+}
+
+.ws-preview-action:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid var(--purple);
+  outline-offset: 2px;
+}
+
+.ws-preview-action:disabled {
+  cursor: wait;
+  opacity: .65;
 }
 
 .ws-station[data-state="running"] .ws-station-state {
@@ -6222,6 +6294,10 @@ button.assignment-archive:hover:not(:disabled) {
 .assignment-agent-heading { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .assignment-agent-heading .assignment-card-title { display: block; }
 .assignment-agent-status { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+.assignment-card-controls { display: flex; align-items: flex-start; justify-content: flex-end; gap: 10px; margin-top: 12px; }
+.assignment-global-role-field { display: grid; gap: 4px; width: min(220px, 42%); flex-shrink: 0; color: var(--ink); font-size: 11px; font-weight: 700; }
+.assignment-global-role-field select { width: 100%; min-height: 36px; padding: 7px 10px; border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--paper); color: var(--ink); font: inherit; font-size: 12px; outline: none; }
+.assignment-global-role-field select:focus { border-color: var(--purple); box-shadow: 0 0 0 3px var(--purple-soft); }
 .assignment-add-field { width: min(220px, 42%); flex-shrink: 0; }
 .assignment-add-field select,
 .assignment-workspace-row select {
@@ -6255,13 +6331,16 @@ button.assignment-archive:hover:not(:disabled) {
 .assignment-workspace-row:last-child { border-bottom: 0; }
 .assignment-workspace-copy { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; min-width: 0; }
 .assignment-workspace-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.assignment-workspace-row .assignment-role-field { width: auto; }
+.assignment-workspace-row .assignment-role-field { display: grid; gap: 4px; width: auto; }
+.assignment-field-label { color: var(--muted); font-size: 10px; font-weight: 600; }
 .assignment-remove { min-height: 34px; padding: 6px 9px; color: var(--muted); font-size: 11px; }
 .assignment-remove:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
 .assignment-empty { margin: 0; padding: 6px 0 0; color: var(--muted); font-size: 12px; }
 
 @media (max-width: 580px) {
-  .assignment-add-field { width: 100%; margin-top: 12px; }
+.assignment-card-controls { align-items: stretch; flex-direction: column; }
+.assignment-global-role-field { width: 100%; }
+.assignment-add-field { width: 100%; margin-top: 12px; }
   .assignment-workspace-row { grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
   .assignment-workspace-row .assignment-role-field { grid-column: 1 / -1; width: 100%; }
   .assignment-workspace-row .assignment-remove { grid-column: 2; grid-row: 1; }
@@ -6275,6 +6354,7 @@ button.assignment-archive:hover:not(:disabled) {
 }
 
 .workspace-nav-row {
+  position: relative;
   display: flex;
   align-items: stretch;
   gap: 3px;
@@ -6303,7 +6383,8 @@ button.assignment-archive:hover:not(:disabled) {
   box-shadow: inset 3px 0 #826ff0;
 }
 .workspace-nav-card:focus-visible,
-.workspace-nav-add:focus-visible,
+.workspace-nav-overflow-button:focus-visible,
+.workspace-nav-menu-item:focus-visible,
 .workspace-conversation-new:focus-visible {
   outline: 2px solid #a699ff;
   outline-offset: 1px;
@@ -6312,16 +6393,78 @@ button.assignment-archive:hover:not(:disabled) {
 .workspace-nav-card .thread-card-copy strong { font-size: 12px; }
 .workspace-nav-card .thread-card-meta { margin-top: 2px; }
 
-.workspace-nav-add {
-  width: 28px;
+.workspace-nav-overflow {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.workspace-nav-overflow-button {
+  width: 30px;
   border: 1px solid transparent;
   border-radius: 8px;
   color: #aaa9a1;
   background: transparent;
   cursor: pointer;
-  font-size: 15px;
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  line-height: 1;
 }
-.workspace-nav-add:hover { color: #fff; background: #353430; }
+.workspace-nav-overflow-button:hover,
+.workspace-nav-overflow-button[aria-expanded="true"] {
+  color: #fff;
+  background: #353430;
+}
+
+.workspace-nav-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  right: 0;
+  display: grid;
+  min-width: 180px;
+  gap: 2px;
+  padding: 5px;
+  border: 1px solid #4a4944;
+  border-radius: 10px;
+  background: #2b2b28;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.3);
+}
+
+.workspace-nav-menu-item {
+  width: 100%;
+  border: 0;
+  border-radius: 7px;
+  padding: 8px 10px;
+  color: #edebe4;
+  background: transparent;
+  font-size: 11px;
+  line-height: 1.25;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-nav-menu-item:hover,
+.workspace-nav-menu-item:focus-visible {
+  color: #fff;
+  background: #3a3935;
+}
+
+.workspace-nav-menu-item.is-danger {
+  color: #ffb5ad;
+}
+
+.workspace-nav-menu-item.is-danger:hover,
+.workspace-nav-menu-item.is-danger:focus-visible {
+  color: #ffd1cb;
+  background: #513534;
+}
+
+/* Keep the overflow control in the row's fixed gutter so long workspace
+   names retain all available space for their ellipsis. */
+.workspace-nav-overflow-button,
+.workspace-nav-menu-item {
+  appearance: none;
+}
 
 .workspace-conversation-list {
   display: grid;

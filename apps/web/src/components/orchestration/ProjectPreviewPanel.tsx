@@ -82,7 +82,7 @@ export function ProjectPreviewPanel({
             <span className="spinner" aria-hidden="true" />
             <p>
               {status === "starting"
-                ? "Booting the shared Project app…"
+                ? "Booting the shared Workspace app…"
                 : "Shutting the server down…"}
             </p>
           </div>

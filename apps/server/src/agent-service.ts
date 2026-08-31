@@ -47,6 +47,8 @@ import type { PermitDirectoryReconciliationSink } from "./access/permit-director
 import { buildUsageReport } from "./usage/usage-aggregator.js";
 import type { UsageReport, UsageReportOptions } from "./usage/usage-types.js";
 import { normalizeAppearance } from "./agent-appearance.js";
+import { AgentRoleSchema } from "./roles/role-types.js";
+import { RoleError } from "./roles/role-service.js";
 
 const now = () => new Date().toISOString();
 
@@ -228,6 +230,7 @@ export class AgentService {
   async createAgent(input: CreateAgentInput): Promise<Agent> {
     const timestamp = now();
     const id = randomUUID();
+    const globalRoleId = this.validateGlobalRoleId(input.globalRoleId);
     if (input.skillIds !== undefined) {
       await this.skillService?.authorizeAssignment([], input.skillIds, id);
     }
@@ -240,6 +243,7 @@ export class AgentService {
       description: input.description?.trim() ?? "",
       instructions: input.instructions?.trim() ?? "",
       skillIds,
+      ...(globalRoleId === undefined ? {} : { globalRoleId }),
       ...(appearance === undefined ? {} : { appearance }),
       status: "ready",
       ...(modelRef === undefined ? {} : { modelRef }),
@@ -286,6 +290,10 @@ export class AgentService {
         id,
       );
     }
+    const nextGlobalRoleId =
+      input.globalRoleId === undefined
+        ? current.globalRoleId
+        : this.validateGlobalRoleId(input.globalRoleId);
     const nextModelRef =
       input.modelRef === undefined
         ? current.modelRef
@@ -321,6 +329,13 @@ export class AgentService {
       if (input.instructions !== undefined) agent.instructions = input.instructions.trim();
       if (input.skillIds !== undefined || this.skillService) {
         agent.skillIds = nextSkillIds ?? [];
+      }
+      if (input.globalRoleId !== undefined) {
+        if (nextGlobalRoleId === undefined) {
+          delete agent.globalRoleId;
+        } else {
+          agent.globalRoleId = nextGlobalRoleId;
+        }
       }
       if (input.modelRef !== undefined) {
         if (nextModelRef === undefined) {
@@ -717,6 +732,16 @@ export class AgentService {
       throw new TypeError("skillIds must contain strings");
     }
     return [...new Set(skillIds)];
+  }
+
+  /** Validate a role reference before changing the Agent identity record. */
+  private validateGlobalRoleId(globalRoleId: string | null | undefined): string | undefined {
+    if (globalRoleId === undefined || globalRoleId === null) return undefined;
+    const role = this.store.snapshot().roles.find((item) => item.id === globalRoleId);
+    if (!role || !AgentRoleSchema.safeParse(role).success) {
+      throw new RoleError("ROLE_NOT_FOUND", "Role not found");
+    }
+    return globalRoleId;
   }
 
   private async runtimeSkillContext(

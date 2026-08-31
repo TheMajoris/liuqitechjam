@@ -316,7 +316,7 @@ function orchestrationSummary(source: WorkspaceSource, activeName: string | null
   const session = source.detail?.session;
   if (!session) {
     return source.project
-      ? "No Team is running in this Project right now."
+      ? "No Team is running in this Workspace right now."
       : "Open a Team conversation to watch the Agents work.";
   }
   switch (session.status) {

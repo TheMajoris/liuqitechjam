@@ -70,7 +70,8 @@ export interface ProjectServiceContract {
   list(): Promise<ProjectView[]>;
   get(projectId: string): Promise<ProjectView>;
   update(projectId: string, input: UpdateProjectInput): Promise<ProjectView>;
-  archive(projectId: string): Promise<{ archivedWorkspace: string }>;
+  archive(projectId: string): Promise<{ archivedWorkspace: string | null }>;
+  deletePermanently(projectId: string): Promise<{ deleted: boolean }>;
   attachAgent(projectId: string, agentId: string): Promise<ProjectView>;
   updateAgentRole(
     projectId: string,
@@ -105,6 +106,8 @@ const createAgentBody = z.object({
   instructions: z.string().max(10_000).optional(),
   modelRef: ModelRefSchema.optional(),
   skillIds: z.array(z.string().min(1)).max(32).optional(),
+  /** Optional global role; null is an explicit "No role" selection. */
+  globalRoleId: z.string().min(1).max(128).nullable().optional(),
   appearance: appearanceBody.optional(),
 });
 const updateAgentBody = createAgentBody.partial().refine(
@@ -515,6 +518,14 @@ export async function createApp(
   app.delete("/api/projects/:id", async (request) => {
     const { id } = projectIdParams.parse(request.params);
     return requireProjectService(projectService).archive(id);
+  });
+
+  // Permanent deletion is deliberately a separate route from archive. The
+  // service still moves active files through its recoverable archive path,
+  // while this operation removes the Workspace's database records.
+  app.delete("/api/projects/:id/permanent", async (request) => {
+    const { id } = projectIdParams.parse(request.params);
+    return requireProjectService(projectService).deletePermanently(id);
   });
 
   app.post("/api/projects/:id/agents/:agentId", async (request) => {

@@ -109,6 +109,8 @@ export interface Agent {
   codexThreadId: string | null;
   lastError: string | null;
   skillIds?: string[];
+  /** Optional Agent-wide role; Workspace memberships may override it. */
+  globalRoleId?: string | null;
   /** Omitted on legacy persisted Agents, which use the runtime default. */
   modelRef?: ModelRef;
   createdAt: string;

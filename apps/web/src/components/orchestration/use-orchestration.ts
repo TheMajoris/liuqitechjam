@@ -27,7 +27,7 @@ export interface UseOrchestrationResult {
   error: string | null;
   clearError: () => void;
   refreshSessions: () => Promise<void>;
-  selectWorkspace: (workspaceId: string) => void;
+  selectWorkspace: (workspaceId: string | null) => void;
   selectSession: (sessionId: string) => void;
   createSession: (input: OrchestrationDraft) => Promise<OrchestrationSession>;
   createConversation: (
@@ -200,13 +200,14 @@ export function useOrchestration(): UseOrchestrationResult {
 
   const clearError = useCallback(() => setError(null), []);
 
-  const selectWorkspace = useCallback((workspaceId: string) => {
+  const selectWorkspace = useCallback((workspaceId: string | null) => {
     publishWorkspaceSelection(workspaceId);
-    setSelectedSessionId((current) =>
-      sessions.find((session) => session.id === current && session.projectId === workspaceId)?.id ??
-      sessions.find((session) => session.projectId === workspaceId)?.id ??
-      null,
-    );
+    setSelectedSessionId((current) => {
+      if (workspaceId === null) return null;
+      return sessions.find((session) => session.id === current && session.projectId === workspaceId)?.id ??
+        sessions.find((session) => session.projectId === workspaceId)?.id ??
+        null;
+    });
     setError(null);
   }, [publishWorkspaceSelection, sessions]);
 

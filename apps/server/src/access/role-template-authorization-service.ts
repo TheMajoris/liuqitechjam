@@ -35,13 +35,20 @@ export class RoleTemplateAuthorizationService implements AuthorizationService {
   } | null {
     const principal = input.principal;
     const projectId = input.context?.projectId ?? input.projectId;
-    if (principal?.kind !== "agent" || !projectId) return null;
+    if (principal?.kind !== "agent") return null;
     const snapshot = this.store.snapshot();
-    const attachment = snapshot.projectAgents.find(
-      (item) => item.projectId === projectId && item.agentId === principal.id,
-    );
-    if (!attachment?.roleId) return null;
-    const role = snapshot.roles.find((item) => item.id === attachment.roleId);
+    const attachment = projectId === undefined
+      ? undefined
+      : snapshot.projectAgents.find(
+        (item) => item.projectId === projectId && item.agentId === principal.id,
+      );
+    // A Project roleId is an explicit override. If it is absent, use the
+    // Agent-global role; the repository authorization service still performs
+    // the independent membership/access check below this ceiling.
+    const roleId = attachment?.roleId ??
+      (snapshot.agents ?? []).find((item) => item.id === principal.id)?.globalRoleId;
+    if (!roleId) return null;
+    const role = snapshot.roles.find((item) => item.id === roleId);
     if (!role) return null;
     if (role.permissionIds.includes(input.permission as PermissionId)) return null;
     return {

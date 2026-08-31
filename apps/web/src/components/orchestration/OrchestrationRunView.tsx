@@ -82,6 +82,7 @@ export function OrchestrationRunView({
     : null;
   const currentAgent = current ? agentName(agents, current.agentId) : null;
   const active = isOrchestrationActive(session.status);
+  const canStart = Boolean(session.originalPrompt.trim()) && session.participants.length > 0;
   const failed = session.status === "failed";
   const showTechnicalErrorCode =
     session.errorCode !== null && !session.errorCode.startsWith("SUPERVISOR_");
@@ -108,10 +109,11 @@ export function OrchestrationRunView({
             <button
               type="button"
               className="orch-button orch-button-primary"
-              disabled={action !== null}
+              disabled={action !== null || !canStart}
+              title={canStart ? "Start conversation" : "Add a task and at least one Agent before starting"}
               onClick={() => onStart(session.id)}
             >
-              {action === "start" ? "Starting…" : "Start"}
+              {action === "start" ? "Starting…" : canStart ? "Start" : "Add task and Agent"}
             </button>
           )}
           {active && (

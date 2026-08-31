@@ -43,4 +43,51 @@ describe("RoleService", () => {
     await expect(roles.update(created.id, { name: "Researcher" })).rejects.toMatchObject({ code: "ROLE_IN_USE" });
     await expect(roles.update(created.id, { name: "Researcher", confirmPropagation: true })).resolves.toMatchObject({ name: "Researcher" });
   });
+
+  it("uses an Agent-global role outside a Project and only overrides it when roleId is explicit", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "role-service-global-"));
+    directories.push(root);
+    const store = new JsonStore(path.join(root, "db.json"));
+    await store.initialize();
+    const roles = new RoleService(
+      store,
+      { listMetadata: () => [] },
+      { has: (id) => id === "global-skill" || id === "project-skill" },
+    );
+    await roles.initialize();
+    const global = await roles.create({ name: "Global", skillIds: ["global-skill"] });
+    const project = await roles.create({ name: "Project", skillIds: ["project-skill"] });
+    await store.mutate((database) => {
+      database.agents.push({
+        id: "agent-1",
+        name: "Agent",
+        description: "",
+        instructions: "",
+        globalRoleId: global.id,
+        status: "ready",
+        workspacePath: root,
+        codexThreadId: null,
+        lastError: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      database.projectAgents.push({
+        projectId: "workspace-1",
+        agentId: "agent-1",
+        codexThreadId: null,
+        attachedAt: new Date().toISOString(),
+      });
+    });
+
+    expect(roles.getEffectiveRole("agent-1")?.id).toBe(global.id);
+    expect(roles.getEffectiveRole("agent-1", "workspace-1")?.id).toBe(global.id);
+    expect(roles.assignedSkillIds(undefined, "agent-1")).toEqual(["global-skill"]);
+    expect(roles.assignedSkillIds("workspace-1", "agent-1")).toEqual(["global-skill"]);
+
+    await store.mutate((database) => {
+      database.projectAgents[0]!.roleId = project.id;
+    });
+    expect(roles.getEffectiveRole("agent-1", "workspace-1")?.id).toBe(project.id);
+    expect(roles.getEffectiveRole("agent-1")?.id).toBe(global.id);
+  });
 });

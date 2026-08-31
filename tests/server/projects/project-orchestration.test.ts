@@ -149,7 +149,7 @@ describe("Team attached to a shared Project", () => {
     ).rejects.toMatchObject({ code: "PROJECT_NOT_FOUND" });
   });
 
-  it("keeps sibling conversations when one is deleted and archives all on Workspace deletion", async () => {
+  it("keeps archived history and permanently deletes the Workspace on request", async () => {
     const { orchestration, projectService, store } = await makeStack();
     const project = await projectService.create({ name: "Shared Workspace" });
 
@@ -178,9 +178,23 @@ describe("Team attached to a shared Project", () => {
 
     const archived = await projectService.archive(project.id);
     expect(await orchestration.listSessions()).toEqual([]);
-    expect(store.snapshot().orchestrations).toEqual([]);
+    expect(store.snapshot().orchestrations.map((session) => session.id)).toEqual([
+      sibling.id,
+    ]);
     expect((await projectService.list()).some((item) => item.id === project.id)).toBe(false);
-    expect((await stat(archived.archivedWorkspace)).isDirectory()).toBe(true);
+    expect(archived.archivedWorkspace).not.toBeNull();
+    expect((await stat(archived.archivedWorkspace!)).isDirectory()).toBe(true);
+
+    await projectService.deletePermanently(project.id);
+    const deleted = store.snapshot();
+    expect(deleted.projects).toEqual([]);
+    expect(deleted.projectAgents).toEqual([]);
+    expect(deleted.projectLeases).toEqual([]);
+    expect(deleted.orchestrations).toEqual([]);
+    expect(deleted.orchestrationTurns).toEqual([]);
+    expect(deleted.orchestrationEvents).toEqual([]);
+    expect(deleted.orchestrationContinuationPrompts).toEqual([]);
+    expect(deleted.previews).toEqual([]);
   });
 });
 

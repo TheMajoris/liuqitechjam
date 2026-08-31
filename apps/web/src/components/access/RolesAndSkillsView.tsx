@@ -24,6 +24,7 @@ interface Props {
   agents: Agent[];
   projects: Project[];
   onProjectsChanged: () => Promise<void>;
+  onAgentsChanged?: () => Promise<void>;
 }
 
 type AccessTab = "roles" | "assignments" | "skills";
@@ -125,7 +126,7 @@ function domainFor(url: string): string {
   }
 }
 
-export function RolesAndSkillsView({ agents, projects, onProjectsChanged }: Props) {
+export function RolesAndSkillsView({ agents, projects, onProjectsChanged, onAgentsChanged }: Props) {
   const [tab, setTab] = useState<AccessTab>("roles");
   const [roles, setRoles] = useState<AgentRole[]>([]);
   const [tools, setTools] = useState<ToolMetadata[]>([]);
@@ -388,6 +389,21 @@ export function RolesAndSkillsView({ agents, projects, onProjectsChanged }: Prop
       await api.assignProjectRole(projectId, agentId, roleId);
       await Promise.all([refreshRoleAndCatalog(), onProjectsChanged()]);
       setNotice("Assignment updated.");
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const changeGlobalRole = async (agentId: string, globalRoleId: string | null) => {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await api.updateAgent(agentId, { globalRoleId });
+      await Promise.all([refreshRoleAndCatalog(), onAgentsChanged?.()]);
+      setNotice(globalRoleId ? "Global Agent role updated." : "Global Agent role cleared.");
     } catch (reason) {
       setError(errorMessage(reason));
     } finally {
@@ -750,25 +766,40 @@ export function RolesAndSkillsView({ agents, projects, onProjectsChanged }: Prop
                           </span>
                         </div>
                       </div>
-                      <label className="assignment-add-field">
-                        <span className="sr-only">Add {agent.name} to workspace</span>
-                        <select
-                          aria-label={`Add ${agent.name} to workspace`}
-                          value=""
-                          disabled={busy || addableWorkspaces.length === 0}
-                          onChange={(event) => {
-                            const projectId = event.target.value;
-                            if (projectId) void attachAgent(projectId, agent.id);
-                          }}
-                        >
-                          <option value="">{addableWorkspaces.length === 0 ? "All workspaces assigned" : "Add to workspace…"}</option>
-                          {addableWorkspaces.map(({ project, duplicateName }) => (
-                            <option value={project.id} key={project.id}>
-                              {project.name}{duplicateName ? ` · ${project.id.slice(0, 8)}` : ""}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                      <div className="assignment-card-controls">
+                        <label className="assignment-global-role-field">
+                          <span>Global Agent role <em>Optional</em></span>
+                          <select
+                            aria-label={`Global Agent role for ${agent.name}`}
+                            value={agent.globalRoleId ?? ""}
+                            disabled={busy}
+                            onChange={(event) => void changeGlobalRole(agent.id, event.target.value || null)}
+                          >
+                            <option value="">No role</option>
+                            {roles.map((role) => <option value={role.id} key={role.id}>{role.name}</option>)}
+                          </select>
+                          <small>Fallback outside Workspace overrides</small>
+                        </label>
+                        <label className="assignment-add-field">
+                          <span className="sr-only">Add {agent.name} to workspace</span>
+                          <select
+                            aria-label={`Add ${agent.name} to workspace`}
+                            value=""
+                            disabled={busy || addableWorkspaces.length === 0}
+                            onChange={(event) => {
+                              const projectId = event.target.value;
+                              if (projectId) void attachAgent(projectId, agent.id);
+                            }}
+                          >
+                            <option value="">{addableWorkspaces.length === 0 ? "All workspaces assigned" : "Add to workspace…"}</option>
+                            {addableWorkspaces.map(({ project, duplicateName }) => (
+                              <option value={project.id} key={project.id}>
+                                {project.name}{duplicateName ? ` · ${project.id.slice(0, 8)}` : ""}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
                     </header>
                     <div className="assignment-workspace-list">
                       {memberships.length === 0 ? (
@@ -782,8 +813,8 @@ export function RolesAndSkillsView({ agents, projects, onProjectsChanged }: Prop
                               {duplicateName && <code className="assignment-discriminator" title={project.id}>{project.id.slice(0, 8)}</code>}
                             </div>
                             <label className="assignment-role-field">
-                              <span className="sr-only">Role for {agent.name} in {project.name}</span>
-                              <select disabled={busy || roles.length === 0} value={roleId} onChange={(event) => void changeAssignment(project.id, agent.id, event.target.value)}>
+                              <span className="assignment-field-label">Workspace override</span>
+                              <select aria-label={`Workspace override role for ${agent.name} in ${project.name}`} disabled={busy || roles.length === 0} value={roleId} onChange={(event) => void changeAssignment(project.id, agent.id, event.target.value)}>
                                 {roles.map((role) => <option value={role.id} key={role.id}>{role.name}</option>)}
                               </select>
                             </label>

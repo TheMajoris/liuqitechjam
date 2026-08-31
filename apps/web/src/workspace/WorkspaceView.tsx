@@ -65,14 +65,18 @@ export function WorkspaceView({
   const previewRunning = viewModel.previewStatus === "running";
   const previewTransitioning =
     viewModel.previewStatus === "starting" || viewModel.previewStatus === "stopping";
+  const showExternalAccess =
+    viewModel.doorState === "waiting" ||
+    viewModel.doorState === "open" ||
+    viewModel.doorState === "denied";
 
   /** The door hands you the decision it is standing in front of. */
   const openApprovals = useCallback(() => {
     const first = pending[0];
     if (first) {
       onSelectAgent(first.agentId);
-      setInspectorOpen(true);
     }
+    setInspectorOpen(true);
     approvalsRef.current?.focus();
   }, [onSelectAgent, pending]);
 
@@ -101,73 +105,71 @@ export function WorkspaceView({
           {viewModel.orchestrationSummary}
         </p>
 
-        {/* The room's stations, as controls. Each one is also clickable in the
-            scene; these are the keyboard and screen-reader equivalents, and
-            they state every station's status in words. */}
+        {/* The room's actionable stations, as controls. The scene remains
+            clickable too; these are the keyboard and screen-reader equivalents. */}
         <div className="ws-toolbar">
-        <div className="ws-stations" role="group" aria-label="Workspace stations">
-          <button type="button" className="ws-station" onClick={onOpenConversation}>
-            <span className="ws-station-name">Shared board</span>
-            <span className="ws-station-state">
-              {replies} {replies === 1 ? "reply" : "replies"}
-            </span>
-          </button>
+          <div className="ws-stations" role="group" aria-label="Workspace stations">
+            {viewModel.projectId && (
+              <div className="ws-preview-control" role="group" aria-label="Shared preview">
+                <button
+                  type="button"
+                  className="ws-station ws-preview-status"
+                  data-state={viewModel.previewStatus}
+                  onClick={onOpenPreview}
+                >
+                  <span className="ws-station-name">Preview</span>
+                  <span className="ws-station-state">
+                    {PREVIEW_ACTIVITY_LABEL[viewModel.previewStatus]}
+                  </span>
+                </button>
+                {previewRunning ? (
+                  <button
+                    type="button"
+                    className="ws-preview-action"
+                    disabled={previewBusy !== null}
+                    onClick={() => onPreviewAction("stop")}
+                    aria-label="Stop shared preview"
+                  >
+                    {previewBusy === "stop" ? "Stopping…" : "Stop"}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="ws-preview-action"
+                    disabled={previewBusy !== null || previewTransitioning}
+                    onClick={() => onPreviewAction("start")}
+                    aria-label="Start shared preview"
+                  >
+                    {previewBusy === "start" ? "Starting…" : "Start"}
+                  </button>
+                )}
+              </div>
+            )}
 
-          <button
-            type="button"
-            className="ws-station"
-            data-state={viewModel.previewStatus}
-            onClick={onOpenPreview}
-          >
-            <span className="ws-station-name">Preview</span>
-            <span className="ws-station-state">
-              {PREVIEW_ACTIVITY_LABEL[viewModel.previewStatus]}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            className="ws-station"
-            data-state={viewModel.doorState}
-            onClick={openApprovals}
-          >
-            <span className="ws-station-name">External access</span>
-            <span className="ws-station-state">
-              {DOOR_STATE_LABEL[viewModel.doorState]}
-            </span>
-          </button>
-
-          {viewModel.projectId &&
-            (previewRunning ? (
+            {showExternalAccess && (
               <button
                 type="button"
-                className="button button-ghost ws-station-action"
-                disabled={previewBusy !== null}
-                onClick={() => onPreviewAction("stop")}
+                className="ws-station"
+                data-state={viewModel.doorState}
+                onClick={openApprovals}
               >
-                {previewBusy === "stop" ? "Stopping…" : "Stop preview"}
+                <span className="ws-station-name">External access</span>
+                <span className="ws-station-state">
+                  {DOOR_STATE_LABEL[viewModel.doorState]}
+                </span>
               </button>
-            ) : (
-              <button
-                type="button"
-                className="button button-ghost ws-station-action"
-                disabled={previewBusy !== null || previewTransitioning}
-                onClick={() => onPreviewAction("start")}
-              >
-                {previewBusy === "start" ? "Starting…" : "Start preview"}
-              </button>
-            ))}
-        </div>
-        <button
-          type="button"
-          className="ws-inspector-toggle"
-          aria-expanded={inspectorOpen}
-          aria-controls="workspace-agent-inspector"
-          onClick={() => setInspectorOpen((value) => !value)}
-        >
-          <span aria-hidden="true">◍</span>
-          {inspectorOpen ? "Hide Agent details" : "Agent details"}
-        </button>
+            )}
+          </div>
+          <button
+            type="button"
+            className="ws-inspector-toggle"
+            aria-expanded={inspectorOpen}
+            aria-controls="workspace-agent-inspector"
+            onClick={() => setInspectorOpen((value) => !value)}
+          >
+            <span aria-hidden="true">◍</span>
+            {inspectorOpen ? "Hide Agent details" : "Agent details"}
+          </button>
         </div>
       </div>
 

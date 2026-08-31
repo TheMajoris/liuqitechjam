@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import type {
   Agent,
   Project,
@@ -29,6 +30,8 @@ interface AppSidebarProps {
   onSelectAccess: () => void;
   onSelectSession: (sessionId: string) => void;
   onSelectWorkspace: (workspaceId: string) => void;
+  onArchiveWorkspace: (workspaceId: string) => void;
+  onDeleteWorkspace: (workspaceId: string) => void;
   onDeleteSession: (sessionId: string) => void;
   onSelectAgent: (agentId: string) => void;
   onCreateConversation: () => void;
@@ -63,13 +66,53 @@ export function AppSidebar({
   onSelectAccess,
   onSelectSession,
   onSelectWorkspace,
+  onArchiveWorkspace,
+  onDeleteWorkspace,
   onDeleteSession,
   onSelectAgent,
   onCreateConversation,
 }: AppSidebarProps) {
   const activeProjects = projects.filter((project) => project.status === "active");
+  const [openWorkspaceMenuId, setOpenWorkspaceMenuId] = useState<string | null>(null);
+  const workspaceMenuButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const workspaceMenuRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const runtimeLabel =
     system?.runtimeProvider === "container" ? "Local container" : "Local process";
+
+  useEffect(() => {
+    if (openWorkspaceMenuId === null) return;
+    const menu = workspaceMenuRefs.current[openWorkspaceMenuId];
+    const trigger = workspaceMenuButtonRefs.current[openWorkspaceMenuId];
+    const firstItem = menu?.querySelector<HTMLButtonElement>('[role="menuitem"]');
+    firstItem?.focus();
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        (menu?.contains(target) || trigger?.contains(target))
+      ) return;
+      setOpenWorkspaceMenuId(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      workspaceMenuButtonRefs.current[openWorkspaceMenuId]?.focus();
+      setOpenWorkspaceMenuId(null);
+    };
+
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [openWorkspaceMenuId]);
+
+  const closeWorkspaceMenu = (workspaceId: string) => {
+    workspaceMenuButtonRefs.current[workspaceId]?.focus();
+    setOpenWorkspaceMenuId(null);
+  };
 
   if (collapsed) {
     return (
@@ -235,18 +278,74 @@ export function AppSidebar({
                       </span>
                     </span>
                   </button>
-                  <button
-                    type="button"
-                    className="workspace-nav-add"
-                    aria-label={`New conversation in ${project.name}`}
-                    title="New conversation"
-                    onClick={() => {
-                      onSelectWorkspace(project.id);
-                      onCreateConversation();
-                    }}
-                  >
-                    ＋
-                  </button>
+                  <div className="workspace-nav-overflow">
+                    <button
+                      type="button"
+                      ref={(element) => {
+                        workspaceMenuButtonRefs.current[project.id] = element;
+                      }}
+                      className="workspace-nav-overflow-button"
+                      aria-label={`Workspace actions for ${project.name}`}
+                      aria-haspopup="menu"
+                      aria-expanded={openWorkspaceMenuId === project.id}
+                      aria-controls={`workspace-menu-${project.id}`}
+                      title="Workspace actions"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setOpenWorkspaceMenuId((current) =>
+                          current === project.id ? null : project.id,
+                        );
+                      }}
+                    >
+                      <span aria-hidden="true">•••</span>
+                    </button>
+                    {openWorkspaceMenuId === project.id && (
+                      <div
+                        ref={(element) => {
+                          workspaceMenuRefs.current[project.id] = element;
+                        }}
+                        id={`workspace-menu-${project.id}`}
+                        className="workspace-nav-menu"
+                        role="menu"
+                        aria-label={`Actions for ${project.name}`}
+                      >
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="workspace-nav-menu-item"
+                          onClick={() => {
+                            closeWorkspaceMenu(project.id);
+                            onSelectWorkspace(project.id);
+                            onCreateConversation();
+                          }}
+                        >
+                          New conversation
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="workspace-nav-menu-item"
+                          onClick={() => {
+                            closeWorkspaceMenu(project.id);
+                            onArchiveWorkspace(project.id);
+                          }}
+                        >
+                          Archive Workspace
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="workspace-nav-menu-item is-danger"
+                          onClick={() => {
+                            closeWorkspaceMenu(project.id);
+                            onDeleteWorkspace(project.id);
+                          }}
+                        >
+                          Delete Workspace
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
                 {selected && (
                   <div className="workspace-conversation-list" aria-label={`Conversations in ${project.name}`}>

@@ -227,6 +227,9 @@ const orchestrationService = new OrchestrationService({
   supervisorTimeoutMs: config.supervisorTimeoutMs,
 });
 projectService.setConversationLifecycle({
+  async stopForProject(projectId) {
+    await orchestrationService.stopSessionsForProject(projectId);
+  },
   async removeForProject(projectId) {
     await orchestrationService.removeSessionsForProject(projectId);
   },
