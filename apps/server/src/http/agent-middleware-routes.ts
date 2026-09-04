@@ -2,7 +2,9 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { AuditReader } from "../audit/audit-types.js";
 import type { AgentService } from "../agent-service.js";
+import { humanPrincipal } from "../access/access-types.js";
 import { HttpError } from "../errors.js";
+import { recordHumanAction } from "./human-action-audit.js";
 import type { McpRouteDependencies } from "../mcp-server.js";
 import { agentIdParams, auditQuery } from "./route-schemas.js";
 import { RoleError, type RoleService } from "../roles/role-service.js";
@@ -457,21 +459,59 @@ export function registerAgentMiddlewareRoutes(
   app.post("/api/approvals/:id/approve", async (request) => {
     const { id } = approvalIdParams.parse(request.params);
     const body = approvalDecisionBody.parse(request.body ?? {});
-    return {
-      approval: await requireApprovalService(mcp).approve(id, body.scope ?? "once"),
-    };
+    const approval = await requireApprovalService(mcp).approve(id, body.scope ?? "once");
+    await recordHumanAction(mcp?.auditService, {
+      type: "approval_decided",
+      status: "success",
+      summary: "Approval request approved",
+      principal: humanPrincipal(),
+      actorType: "human",
+      approvalRequestId: id,
+      permitRequestId: id,
+      agentId: approval.agentId,
+      ...(approval.projectId ? { projectId: approval.projectId } : {}),
+      resource: { kind: "tool", id: approval.toolId },
+      metadata: { decision: "approved", toolId: approval.toolId },
+    }, request.log);
+    return { approval };
   });
 
   app.post("/api/approvals/:id/grant", async (request) => {
     const { id } = approvalIdParams.parse(request.params);
-    return {
-      approval: await requireApprovalService(mcp).approve(id, "project"),
-    };
+    const approval = await requireApprovalService(mcp).approve(id, "project");
+    await recordHumanAction(mcp?.auditService, {
+      type: "approval_decided",
+      status: "success",
+      summary: "Approval request granted",
+      principal: humanPrincipal(),
+      actorType: "human",
+      approvalRequestId: id,
+      permitRequestId: id,
+      agentId: approval.agentId,
+      ...(approval.projectId ? { projectId: approval.projectId } : {}),
+      resource: { kind: "tool", id: approval.toolId },
+      metadata: { decision: "approved", toolId: approval.toolId },
+    }, request.log);
+    return { approval };
   });
 
   app.post("/api/approvals/:id/deny", async (request) => {
     const { id } = approvalIdParams.parse(request.params);
-    return { approval: await requireApprovalService(mcp).deny(id) };
+    const approval = await requireApprovalService(mcp).deny(id);
+    await recordHumanAction(mcp?.auditService, {
+      type: "approval_decided",
+      status: "success",
+      summary: "Approval request denied",
+      principal: humanPrincipal(),
+      actorType: "human",
+      approvalRequestId: id,
+      permitRequestId: id,
+      agentId: approval.agentId,
+      ...(approval.projectId ? { projectId: approval.projectId } : {}),
+      resource: { kind: "tool", id: approval.toolId },
+      metadata: { decision: "denied", toolId: approval.toolId },
+    }, request.log);
+    return { approval };
   });
 
   app.post("/api/approvals/:id/revoke", async (request) => {

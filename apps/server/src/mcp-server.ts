@@ -9,7 +9,7 @@ import { ToolService } from "./tools/tool-service.js";
 import type { SkillService } from "./skills/skill-service.js";
 import type { RoleService } from "./roles/role-service.js";
 import type { PermitApprovalService } from "./access/permit-approval-service.js";
-import type { AuditReader } from "./audit/audit-types.js";
+import type { AuditReader, AuditRecorder } from "./audit/audit-types.js";
 import { correlationAttributes, type RuntimeTelemetry, type TelemetryCarrier } from "./telemetry/telemetry-types.js";
 import type { SearchProvider } from "./tools/search-provider.js";
 import type { WebFetchAdapter } from "./tools/web-fetch-adapter.js";
@@ -23,8 +23,12 @@ export interface McpRouteDependencies {
   roleService?: RoleService;
   /** Optional in isolated tests; production wires the Permit-backed service. */
   approvalService?: PermitApprovalService;
-  /** Read-only server-owned activity projection; clients cannot append events. */
-  auditService?: AuditReader;
+  /**
+   * Server-owned activity projection. Reads are the primary contract;
+   * `record` is optional and used only by the HTTP route layer to append
+   * human-intent control-action events (start/stop/approve/etc).
+   */
+  auditService?: AuditReader & Partial<AuditRecorder>;
   /** The selected provider is exposed only through safe health metadata. */
   searchProvider?: SearchProvider;
   /** Safe public-only fetcher reused for explicit skill Markdown imports. */

@@ -4,14 +4,17 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import type { AuditReader } from "./audit/audit-types.js";
+import type { AuditEventInput, AuditReader, AuditSpan } from "./audit/audit-types.js";
+import { newSpanId } from "./audit/audit-span.js";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import {
   isAuthorizationError,
 } from "./access/authorization-service.js";
+import { humanPrincipal } from "./access/access-types.js";
 import type { AgentService } from "./agent-service.js";
 import { registerAgentMiddlewareRoutes } from "./http/agent-middleware-routes.js";
+import { recordHumanAction } from "./http/human-action-audit.js";
 import { agentIdParams, auditQuery, runIdParams } from "./http/route-schemas.js";
 import { registerMcpRoute, type McpRouteDependencies } from "./mcp-server.js";
 import { ToolApprovalRequiredError, ToolError } from "./tools/tool-errors.js";
@@ -65,6 +68,8 @@ export interface OrchestrationServiceContract {
   stopSession(id: string): Promise<OrchestrationSession>;
   continueSession(id: string, prompt: string): Promise<OrchestrationSession>;
   deleteSession(id: string): Promise<{ deleted: boolean }>;
+  /** Root trace span for this orchestration; optional so route tests can omit it. */
+  orchestrationSpan?(id: string): AuditSpan;
 }
 
 /** Narrow HTTP-facing seam for the Project control plane. */
@@ -229,6 +234,34 @@ function parseContinuationInput(value: unknown): { prompt: string } {
     );
   }
   return parsed.data;
+}
+
+/** A fresh child span under the orchestration's root trace, if one exists. */
+function childSpan(root: AuditSpan | undefined): Partial<AuditSpan> | undefined {
+  if (!root) return undefined;
+  return { traceId: root.traceId, spanId: newSpanId(), parentSpanId: root.spanId };
+}
+
+/** Builds the human-intent audit event recorded alongside an orchestration route. */
+function orchestrationHumanEvent(
+  type: "orchestration_started" | "orchestration_stopped" | "orchestration_continued",
+  summary: string,
+  id: string,
+  session: OrchestrationSession,
+  orchestration: OrchestrationServiceContract,
+): AuditEventInput {
+  const span = childSpan(orchestration.orchestrationSpan?.(id));
+  return {
+    type,
+    status: "success",
+    summary,
+    principal: humanPrincipal(),
+    actorType: "human",
+    orchestrationId: id,
+    ...(session.projectId ? { projectId: session.projectId } : {}),
+    ...(span === undefined ? {} : { span }),
+    metadata: { participantCount: session.participants.length, trigger: "http" },
+  };
 }
 
 function parseStartInput(value: unknown): { prompt?: string | undefined } {
@@ -405,23 +438,36 @@ export async function createApp(
       prompt === undefined
         ? await orchestration.startSession(id)
         : await orchestration.startSession(id, prompt);
+    await recordHumanAction(
+      mcp?.auditService,
+      orchestrationHumanEvent("orchestration_started", "Orchestration started", id, session, orchestration),
+      request.log,
+    );
     return reply.code(202).send({ session });
   });
 
   app.post("/api/orchestrations/:id/stop", async (request, reply) => {
     const { id } = parseOrchestrationParams(request.params);
-    const session = await requireOrchestrationService(
-      orchestrationService,
-    ).stopSession(id);
+    const orchestration = requireOrchestrationService(orchestrationService);
+    const session = await orchestration.stopSession(id);
+    await recordHumanAction(
+      mcp?.auditService,
+      orchestrationHumanEvent("orchestration_stopped", "Orchestration stopped", id, session, orchestration),
+      request.log,
+    );
     return reply.code(202).send({ session });
   });
 
   app.post("/api/orchestrations/:id/continue", async (request, reply) => {
     const { id } = parseOrchestrationParams(request.params);
     const { prompt } = parseContinuationInput(request.body);
-    const session = await requireOrchestrationService(
-      orchestrationService,
-    ).continueSession(id, prompt);
+    const orchestration = requireOrchestrationService(orchestrationService);
+    const session = await orchestration.continueSession(id, prompt);
+    await recordHumanAction(
+      mcp?.auditService,
+      orchestrationHumanEvent("orchestration_continued", "Orchestration continued", id, session, orchestration),
+      request.log,
+    );
     return reply.code(202).send({ session });
   });
 
@@ -485,12 +531,32 @@ export async function createApp(
 
   app.post("/api/agents/:id/start", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return { agent: await service.startAgent(id) };
+    const agent = await service.startAgent(id);
+    await recordHumanAction(mcp?.auditService, {
+      type: "agent_started",
+      status: "success",
+      summary: "Agent started",
+      principal: humanPrincipal(),
+      actorType: "human",
+      agentId: id,
+      metadata: { trigger: "http" },
+    }, request.log);
+    return { agent };
   });
 
   app.post("/api/agents/:id/stop", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return { agent: await service.stopAgent(id) };
+    const agent = await service.stopAgent(id);
+    await recordHumanAction(mcp?.auditService, {
+      type: "agent_stopped",
+      status: "success",
+      summary: "Agent stopped",
+      principal: humanPrincipal(),
+      actorType: "human",
+      agentId: id,
+      metadata: { trigger: "http" },
+    }, request.log);
+    return { agent };
   });
 
   app.post("/api/agents/:id/preview/start", async (request, reply) => {
@@ -621,13 +687,24 @@ export async function createApp(
   app.patch("/api/projects/:id/agents/:agentId", async (request) => {
     const { id, agentId } = projectAgentParams.parse(request.params);
     const { role } = updateProjectAgentRoleBody.parse(request.body);
-    return {
-      project: await requireProjectService(projectService).updateAgentRole(
-        id,
-        agentId,
-        role,
-      ),
-    };
+    const projects = requireProjectService(projectService);
+    const before = await projects.get(id);
+    const fromRole = before.memberships.find((m) => m.agentId === agentId)?.role;
+    const project = await projects.updateAgentRole(id, agentId, role);
+    await recordHumanAction(mcp?.auditService, {
+      type: "project_role_changed",
+      status: "success",
+      summary: "Project Agent role changed",
+      principal: humanPrincipal(),
+      actorType: "human",
+      projectId: id,
+      agentId,
+      metadata: {
+        ...(fromRole === undefined ? {} : { fromRole }),
+        toRole: role,
+      },
+    }, request.log);
+    return { project };
   });
 
   app.post("/api/projects/:id/team/:teamId", async (request) => {
