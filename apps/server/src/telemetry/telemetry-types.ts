@@ -36,7 +36,7 @@ export interface RuntimeTelemetry {
 }
 
 export interface CorrelationIds {
-  principalKind?: "human" | "agent" | undefined;
+  principalKind?: "human" | "agent" | "system" | undefined;
   principalId?: string | undefined;
   agentId?: string | undefined;
   projectId?: string | undefined;

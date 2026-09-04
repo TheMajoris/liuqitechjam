@@ -17,7 +17,10 @@ export function queryAuditEvents(
       (filter.agentId === undefined || event.agentId === filter.agentId) &&
       (filter.projectId === undefined || event.projectId === filter.projectId) &&
       (filter.runId === undefined || event.runId === filter.runId) &&
-      (filter.type === undefined || event.type === filter.type),
+      (filter.type === undefined || event.type === filter.type) &&
+      (filter.traceId === undefined || event.traceId === filter.traceId) &&
+      (filter.category === undefined || event.category === filter.category) &&
+      (filter.actorType === undefined || event.actorType === filter.actorType),
     )
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     .slice(0, queryLimit(filter.limit))

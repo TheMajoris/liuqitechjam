@@ -103,6 +103,17 @@ export class RepositoryAuthorizationService implements AuthorizationService {
         };
       }
 
+      // Only a Human or an Agent may hold delegated Project authority. A
+      // System principal must never fall through into the Agent membership
+      // checks below and inherit access it was never granted.
+      if (principal.kind !== "agent") {
+        return {
+          result: "deny",
+          reason: denyReason(input.permission),
+          errorCode: "PERMISSION_DENIED",
+        };
+      }
+
       // Agent identity and membership are resolved from the repository. The
       // request cannot select a different role or project than this record.
       if (agentId !== undefined && agentId !== principal.id) {
