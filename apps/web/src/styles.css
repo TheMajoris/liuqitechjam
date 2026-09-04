@@ -5030,6 +5030,19 @@ textarea:focus {
   text-overflow: ellipsis;
 }
 
+.ws-inspector-sparklines {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.ws-inspector-muted {
+  margin: 8px 0 0;
+  color: var(--orch-muted);
+  font-size: 11px;
+}
+
 /* The room's station controls sit above the stage, where they never collide
    with a desk and never have to be hunted for. */
 .ws-stations {
