@@ -508,16 +508,21 @@ authorization is rejected on a non-loopback host.
 It uses the default local-process Codex runner, which requires a `codex`
 executable on the host (`npm install -g @openai/codex`). If you'd rather not
 install Codex on the host — or you're on a platform where the local sandbox
-isn't well supported — set `RUNTIME_PROVIDER=container` and
-`CONTAINER_ENGINE=docker` (or `podman`) in `.env` instead, and build the same
-runtime image `npm run poc` uses:
+isn't well supported — set `RUNTIME_PROVIDER=container`,
+`CONTAINER_ENGINE=docker` (or `podman`), and `MCP_CONTAINER_URL` in `.env`
+instead, and build the same runtime image `npm run poc` uses:
 
 ```bash
 docker build -f Dockerfile.runtime -t volc-agent-runtime:local .
 ```
 
-This runs Agents through `ContainerCodexRunner` instead, matching the sandbox
-`npm run poc` exercises, with no `codex` install needed on the host.
+Unlike `npm run poc`, `npm run dev` does not auto-derive
+`MCP_CONTAINER_URL` (the host-reachable MCP endpoint containerized Agents call
+back to), so set it explicitly — `http://host.docker.internal:3000/mcp` for
+Docker, `http://host.containers.internal:3000/mcp` for Podman (adjust the
+port if `PORT` isn't 3000). This runs Agents through `ContainerCodexRunner`
+instead, matching the sandbox `npm run poc` exercises, with no `codex`
+install needed on the host.
 
 ### Permit integration POC: `npm run build` then `npm run start`
 
