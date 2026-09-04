@@ -47,6 +47,18 @@ export interface WorkspaceToolActivity {
   startedAt: string;
 }
 
+/**
+ * What the sandbox is doing, as reported by the audit journal.
+ *
+ * A coarser signal than `WorkspaceToolActivity`: it never names a platform
+ * tool, only the shape of in-container work (a command, or a batch of file
+ * writes) so the room has something to show while the Agent's own turn is
+ * still "working" and no tool is open.
+ */
+export type WorkspaceSandboxActivity =
+  | { kind: "command"; program: string; exitCode: number | null }
+  | { kind: "files"; fileCount: number };
+
 export interface WorkspaceAgentViewModel {
   agentId: string;
   /** Roster occurrence that seated this Agent, when a Team is open. */
@@ -73,6 +85,10 @@ export interface WorkspaceAgentViewModel {
   station: WorkspaceStation;
   /** Live tool, when the audit journal shows one still running. */
   activeTool: WorkspaceToolActivity | null;
+  /** In-container work, when no platform tool is open. `activeTool` wins when both are present. */
+  sandboxActivity: WorkspaceSandboxActivity | null;
+  /** True while the sandbox is mid file-write, so a desk sprite can play its working animation. */
+  typing: boolean;
   /** Cosmetic character choices; absent means the ID-derived look. */
   appearance: AgentAppearance | null;
 }

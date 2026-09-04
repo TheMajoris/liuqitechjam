@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
   Agent,
   ApprovalRecord,
+  AuditEventRecord,
   OrchestrationSession,
   OrchestrationSessionDetail,
   OrchestrationStatus,
@@ -92,6 +93,7 @@ function build(
     agents?: Agent[];
     approvals?: ApprovalRecord[] | null;
     project?: Project | null;
+    activity?: AuditEventRecord[];
   } = {},
 ) {
   return buildWorkspaceViewModel({
@@ -101,11 +103,40 @@ function build(
     preview: null,
     approvals: overrides.approvals === undefined ? null : overrides.approvals,
     selectedAgentId: null,
+    activity: overrides.activity,
   });
 }
 
 function activityOf(model: ReturnType<typeof build>, agentId: string) {
   return model.agents.find((item) => item.agentId === agentId)?.activity;
+}
+
+function viewOf(model: ReturnType<typeof build>, agentId: string) {
+  return model.agents.find((item) => item.agentId === agentId) ?? null;
+}
+
+function soloProject(): Project {
+  return {
+    id: "project-1",
+    name: "Todo App",
+    description: "",
+    teamId: null,
+    agentIds: ["a1"],
+    memberships: [{ agentId: "a1", role: "owner" }],
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+}
+
+function auditEvent(overrides: Partial<AuditEventRecord> & Pick<AuditEventRecord, "type">): AuditEventRecord {
+  return {
+    id: "evt-" + overrides.type + "-" + (overrides.agentId ?? "none"),
+    status: "success",
+    summary: "",
+    createdAt: NOW,
+    ...overrides,
+  };
 }
 
 describe("workspace adapter", () => {
@@ -170,5 +201,86 @@ describe("workspace adapter", () => {
     expect(model.agents.find((item) => item.agentId === "a1")?.projectRole).toBe("owner");
     expect(model.kind).toBe("project");
     expect(model.name).toBe("Todo App");
+  });
+
+  it("shows a busy Agent's latest sandbox command at the server station", () => {
+    const model = build(null, {
+      project: soloProject(),
+      agents: [agent("a1", "Alice", "busy")],
+      activity: [
+        auditEvent({
+          type: "sandbox_command",
+          agentId: "a1",
+          metadata: { program: "npm", argCount: 1, exitCode: 0 },
+        }),
+      ],
+    });
+
+    const view = viewOf(model, "a1");
+    expect(view?.sandboxActivity).toEqual({ kind: "command", program: "npm", exitCode: 0 });
+    expect(view?.station).toBe("server");
+    expect(view?.typing).toBe(false);
+  });
+
+  it("shows a busy Agent's latest file-change aggregate at the desk, typing", () => {
+    const model = build(null, {
+      project: soloProject(),
+      agents: [agent("a1", "Alice", "busy")],
+      activity: [
+        auditEvent({
+          type: "workspace_file_change",
+          agentId: "a1",
+          metadata: { fileCount: 3, added: 1, modified: 2, deleted: 0 },
+        }),
+      ],
+    });
+
+    const view = viewOf(model, "a1");
+    expect(view?.sandboxActivity).toEqual({ kind: "files", fileCount: 3 });
+    expect(view?.station).toBe("desk");
+    expect(view?.typing).toBe(true);
+  });
+
+  it("prefers a live platform tool over sandbox activity", () => {
+    const model = build(null, {
+      project: soloProject(),
+      agents: [agent("a1", "Alice", "busy")],
+      activity: [
+        auditEvent({
+          type: "sandbox_command",
+          agentId: "a1",
+          metadata: { program: "npm", argCount: 1, exitCode: 0 },
+        }),
+        auditEvent({
+          type: "tool_started",
+          agentId: "a1",
+          runId: "run-a1",
+          resource: { kind: "tool", id: "web.search" },
+        }),
+      ],
+    });
+
+    const view = viewOf(model, "a1");
+    expect(view?.activeTool?.toolId).toBe("web.search");
+    expect(view?.station).toBe("library");
+    expect(view?.typing).toBe(false);
+  });
+
+  it("leaves sandboxActivity null for an Agent that is not busy", () => {
+    const model = build(null, {
+      project: soloProject(),
+      agents: [agent("a1", "Alice", "ready")],
+      activity: [
+        auditEvent({
+          type: "sandbox_command",
+          agentId: "a1",
+          metadata: { program: "npm", argCount: 1, exitCode: 0 },
+        }),
+      ],
+    });
+
+    const view = viewOf(model, "a1");
+    expect(view?.sandboxActivity).toBeNull();
+    expect(view?.typing).toBe(false);
   });
 });

@@ -611,4 +611,13 @@ export interface AuditEventRecord {
   orchestrationId?: string;
   permission?: string;
   resource?: { kind: string; id: string };
+  /** Redacted, allow-listed evidence for the event (e.g. sandbox_command, workspace_file_change). */
+  metadata?: Record<string, string | number | boolean | null>;
+  category?: string;
+  traceId?: string;
+  spanId?: string;
+  parentSpanId?: string;
+  actorType?: string;
+  durationMs?: number;
+  sequence?: number;
 }

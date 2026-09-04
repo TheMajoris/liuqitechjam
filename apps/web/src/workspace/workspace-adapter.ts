@@ -22,6 +22,7 @@ import type {
   WorkspaceDoorState,
   WorkspaceHandoffViewModel,
   WorkspacePreviewActivity,
+  WorkspaceSandboxActivity,
   WorkspaceStation,
   WorkspaceToolActivity,
   WorkspaceViewModel,
@@ -201,22 +202,41 @@ export function stationForTool(toolId: string): WorkspaceStation | null {
 }
 
 /**
+ * Which zone the sandbox itself sends the Agent to, absent a platform tool.
+ *
+ * There is no dedicated "testing" zone in the office yet, so a running
+ * in-container command is shown at the `server` station — the same zone a
+ * live preview uses — as the closest stand-in for "something is executing".
+ * A batch of file writes stays at the `desk`, since that is where an Agent
+ * edits the shared workspace.
+ */
+function stationForSandbox(sandbox: WorkspaceSandboxActivity): WorkspaceStation {
+  return sandbox.kind === "command" ? "server" : "desk";
+}
+
+/**
  * Where the visual state machine parks this Agent. Never a security fact.
  *
  * A live tool wins over the activity, because it is the more specific truth:
  * an Agent that is "working" *and* running `web.search` is at the shelves, not
  * at its desk. Approval and turn selection still outrank it — being stopped at
- * the boundary is the thing a viewer most needs to see.
+ * the boundary is the thing a viewer most needs to see. Sandbox activity is
+ * the next-most-specific truth, but a platform tool still wins when both are
+ * open: the tool call is what the Agent decided to do, the sandbox echo is
+ * just how it is doing it.
  */
 export function resolveStation(
   activity: WorkspaceAgentActivity,
   activeTool: WorkspaceToolActivity | null = null,
+  sandboxActivity: WorkspaceSandboxActivity | null = null,
 ): WorkspaceStation {
   if (activity === "blocked") return "door";
   if (activity === "thinking") return "board";
   if (activeTool !== null) {
     const station = stationForTool(activeTool.toolId);
     if (station !== null) return station;
+  } else if (sandboxActivity !== null) {
+    return stationForSandbox(sandboxActivity);
   }
   return "desk";
 }
@@ -253,6 +273,82 @@ export function resolveActiveTools(
     }
   }
   return active;
+}
+
+/** How far behind the newest event for an Agent a sandbox event may still be shown. */
+const SANDBOX_ACTIVITY_WINDOW_MS = 15_000;
+
+function toEpochMs(createdAt: string): number {
+  const parsed = Date.parse(createdAt);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function readMetadataString(
+  metadata: AuditEventRecord["metadata"],
+  key: string,
+): string | null {
+  const value = metadata?.[key];
+  return typeof value === "string" ? value : null;
+}
+
+function readMetadataNumber(
+  metadata: AuditEventRecord["metadata"],
+  key: string,
+): number | null {
+  const value = metadata?.[key];
+  return typeof value === "number" ? value : null;
+}
+
+/**
+ * What the sandbox last did for each Agent, as a small echo of in-container
+ * work the office can show while a turn is "working" but no platform tool is
+ * open.
+ *
+ * Only the most recent `sandbox_command`/`workspace_file_change` event is
+ * considered, and only when it falls within {@link SANDBOX_ACTIVITY_WINDOW_MS}
+ * of the newest event the audit journal has for that Agent — an event older
+ * than that is stale evidence of something that already finished, not a
+ * signal to keep showing.
+ */
+export function resolveSandboxActivity(
+  events: readonly AuditEventRecord[],
+): Map<string, WorkspaceSandboxActivity> {
+  const byAgent = new Map<string, AuditEventRecord[]>();
+  for (const event of events) {
+    if (event.agentId === undefined) continue;
+    const list = byAgent.get(event.agentId);
+    if (list) list.push(event);
+    else byAgent.set(event.agentId, [event]);
+  }
+
+  const result = new Map<string, WorkspaceSandboxActivity>();
+  for (const [agentId, agentEvents] of byAgent) {
+    const ordered = [...agentEvents].sort(
+      (left, right) => toEpochMs(right.createdAt) - toEpochMs(left.createdAt),
+    );
+    const newest = ordered[0];
+    if (!newest) continue;
+    const cutoff = toEpochMs(newest.createdAt) - SANDBOX_ACTIVITY_WINDOW_MS;
+    const relevant = ordered.find(
+      (event) =>
+        (event.type === "sandbox_command" || event.type === "workspace_file_change") &&
+        toEpochMs(event.createdAt) >= cutoff,
+    );
+    if (!relevant) continue;
+    if (relevant.type === "sandbox_command") {
+      result.set(agentId, {
+        kind: "command",
+        program: readMetadataString(relevant.metadata, "program") ?? "command",
+        exitCode: readMetadataNumber(relevant.metadata, "exitCode"),
+      });
+      continue;
+    }
+    // Aggregate file-change events carry `fileCount`; per-file events don't,
+    // so a single-file change without the aggregate still shows as one file.
+    const fileCount = readMetadataNumber(relevant.metadata, "fileCount") ?? 1;
+    result.set(agentId, { kind: "files", fileCount });
+  }
+  return result;
 }
 
 function latestEventOfType(
@@ -374,6 +470,7 @@ export function buildWorkspaceViewModel(source: WorkspaceSource): WorkspaceViewM
     : null;
 
   const activeTools = resolveActiveTools(source.activity ?? []);
+  const sandboxActivities = resolveSandboxActivity(source.activity ?? []);
 
   const agents: WorkspaceAgentViewModel[] = rosterAgentIds(source).map(
     ({ agentId, participant }, index) => {
@@ -382,6 +479,11 @@ export function buildWorkspaceViewModel(source: WorkspaceSource): WorkspaceViewM
       // strand a finished Agent in the library.
       const activeTool = agent?.status === "busy"
         ? activeTools.get(agentId) ?? null
+        : null;
+      // Same guard as `activeTool`: a stopped Agent's last sandbox echo must
+      // not strand it mid-command in a room it has already left.
+      const sandboxActivity = agent?.status === "busy"
+        ? sandboxActivities.get(agentId) ?? null
         : null;
       const activity = resolveActivity({
         agent,
@@ -413,8 +515,10 @@ export function buildWorkspaceViewModel(source: WorkspaceSource): WorkspaceViewM
         available: agent !== undefined,
         lifecycle: agent?.status ?? "unknown",
         seatIndex: index,
-        station: resolveStation(activity, activeTool),
+        station: resolveStation(activity, activeTool, sandboxActivity),
         activeTool,
+        sandboxActivity,
+        typing: activeTool === null && sandboxActivity?.kind === "files",
         appearance: agent?.appearance ?? null,
       };
     },

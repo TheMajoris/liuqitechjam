@@ -5,7 +5,14 @@ import { MarkdownMessage } from "../components/MarkdownMessage";
 import {
   WORKSPACE_ACTIVITY,
   type WorkspaceAgentViewModel,
+  type WorkspaceSandboxActivity,
 } from "./workspace-view-model";
+
+/** Short label for the sandbox echo shown when no platform tool is open. */
+function sandboxActivityLabel(sandbox: WorkspaceSandboxActivity): string {
+  if (sandbox.kind === "command") return "$ " + sandbox.program;
+  return "editing " + sandbox.fileCount + " " + (sandbox.fileCount === 1 ? "file" : "files");
+}
 
 export type AgentLifecycleAction = "start" | "stop";
 
@@ -96,6 +103,15 @@ export function AgentInspector({
           <h4>Running now</h4>
           <p className="ws-inspector-tool">
             <code>{agent.activeTool.toolId}</code>
+          </p>
+        </section>
+      )}
+
+      {!agent.activeTool && agent.sandboxActivity && (
+        <section className="ws-inspector-block">
+          <h4>Running now</h4>
+          <p className="ws-inspector-tool">
+            <code>{sandboxActivityLabel(agent.sandboxActivity)}</code>
           </p>
         </section>
       )}
