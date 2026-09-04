@@ -651,3 +651,41 @@ export interface AuditEventRecord {
   durationMs?: number;
   sequence?: number;
 }
+
+export type AuditCategory =
+  | "orchestration"
+  | "model_call"
+  | "tool_call"
+  | "sandbox_execution"
+  | "workspace"
+  | "policy_decision"
+  | "human_approval"
+  | "session"
+  | "system"
+  | "cloud_operation";
+
+export interface AuditTraceNode {
+  event: AuditEventRecord;
+  events: AuditEventRecord[];
+  children: AuditTraceNode[];
+}
+
+export interface AuditTrace {
+  traceId: string;
+  root: AuditTraceNode | null;
+  orphans: AuditTraceNode[];
+  status: "success" | "failure";
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  eventCount: number;
+  countsByCategory: Record<AuditCategory, number>;
+  failingStep: { spanId: string; eventId: string; type: string } | null;
+  agentIds: string[];
+  runIds: string[];
+}
+
+export type AuditTraceSummary = Omit<AuditTrace, "root" | "orphans"> & {
+  rootType: string | null;
+  rootSummary: string;
+};
