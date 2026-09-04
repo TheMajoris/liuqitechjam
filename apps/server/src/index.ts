@@ -238,6 +238,7 @@ const supervisorSelector = supervisorCredentialsConfigured
 const orchestrationService = new OrchestrationService({
   store,
   agentService: service,
+  audit,
   // Attaching here keeps Project membership rules inside ProjectService while
   // letting each Conversation declare its shared Workspace at creation time.
   projectBinding: {

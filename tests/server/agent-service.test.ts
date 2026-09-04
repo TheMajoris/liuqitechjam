@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "../../apps/server/src/agent-service.js";
 import { loadConfig } from "../../apps/server/src/config.js";
-import { RunCancelledError } from "../../apps/server/src/errors.js";
+import { RetryableModelError, RunCancelledError } from "../../apps/server/src/errors.js";
+import type {
+  AuditEvent,
+  AuditEventInput,
+  AuditRecorder,
+} from "../../apps/server/src/audit/audit-types.js";
 import { JsonStore } from "../../apps/server/src/store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "../../apps/server/src/types.js";
 import { WorkspaceManager } from "../../apps/server/src/workspace.js";
@@ -77,6 +82,20 @@ class DeferredRunner implements AgentRunner {
   }
 }
 
+/** Records audit inputs verbatim so span/metadata shape can be asserted. */
+class RecordingAudit implements AuditRecorder {
+  readonly inputs: AuditEventInput[] = [];
+
+  async record(input: AuditEventInput): Promise<AuditEvent> {
+    this.inputs.push(input);
+    return {} as AuditEvent;
+  }
+
+  ofType(type: AuditEventInput["type"]): AuditEventInput[] {
+    return this.inputs.filter((input) => input.type === type);
+  }
+}
+
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
@@ -90,7 +109,11 @@ afterEach(async () => {
 
 async function makeService(
   runner: AgentRunner = new FakeRunner(),
-  options: { curatedModels?: string; arkModel?: string } = {},
+  options: {
+    curatedModels?: string;
+    arkModel?: string;
+    audit?: AuditRecorder;
+  } = {},
 ): Promise<AgentService> {
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
   temporaryDirectories.push(root);
@@ -110,6 +133,7 @@ async function makeService(
     new WorkspaceManager(path.join(root, "workspaces")),
     runner,
   );
+  if (options.audit) service.setAuditRecorder(options.audit);
   await service.initialize();
   return service;
 }
@@ -230,5 +254,81 @@ describe("Agent lifecycle", () => {
     const repeated = await service.cancelRun(run.id);
     expect(repeated).toMatchObject({ id: run.id, status: "cancelled" });
     expect(runner.cancelCalls).toBe(1);
+  });
+});
+
+describe("Run audit spans", () => {
+  it("records a direct run as one span rooted at the Run id", async () => {
+    const audit = new RecordingAudit();
+    const service = await makeService(new FakeRunner(), { audit });
+    const agent = await service.createAgent({ name: "Traced" });
+    const { run } = await service.sendMessage(agent.id, "trace this");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    await expect.poll(() => audit.ofType("run_completed").length).toBe(1);
+
+    const started = audit.ofType("run_started")[0];
+    const completed = audit.ofType("run_completed")[0];
+    expect(started?.span?.traceId).toBe(run.id);
+    expect(started?.span?.parentSpanId).toBeUndefined();
+    expect(started?.principal).toEqual({ kind: "agent", id: agent.id });
+    expect(completed?.span?.spanId).toBe(started?.span?.spanId);
+    expect(completed?.span?.traceId).toBe(run.id);
+    expect(typeof completed?.durationMs).toBe("number");
+    expect(completed?.metadata).toMatchObject({ exitReason: "completed" });
+  });
+
+  it("records a failing run without exposing the error text", async () => {
+    const audit = new RecordingAudit();
+    const runner: AgentRunner = {
+      run: async () => {
+        throw new Error("worker crashed reading /secret/workspace/path");
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner, { audit });
+    const agent = await service.createAgent({ name: "Failing" });
+    const { run } = await service.sendMessage(agent.id, "fail this");
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+    await expect.poll(() => audit.ofType("run_failed").length).toBe(1);
+
+    const failed = audit.ofType("run_failed")[0];
+    expect(failed?.status).toBe("failure");
+    expect(failed?.metadata).toEqual({ exitReason: "error", errorClass: "Error" });
+    expect(JSON.stringify(failed)).not.toContain("worker crashed");
+  });
+
+  it("records a model fallback attempt as a retry of the same run span", async () => {
+    const audit = new RecordingAudit();
+    let attempts = 0;
+    const runner: AgentRunner = {
+      run: async (request) => {
+        attempts += 1;
+        if (attempts === 1) throw new RetryableModelError();
+        return { output: "ok", threadId: request.threadId ?? "thread", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner, {
+      audit,
+      curatedModels: "ep-fallback",
+    });
+    const agent = await service.createAgent({
+      name: "Fallback",
+      fallbackModelRefs: [{ providerId: "volcengine_ark", modelId: "ep-fallback" }],
+    });
+    const { run } = await service.sendMessage(agent.id, "retry this");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    await expect.poll(() => audit.ofType("run_retried").length).toBe(1);
+
+    const retried = audit.ofType("run_retried")[0];
+    expect(retried?.span?.spanId).toBe(audit.ofType("run_started")[0]?.span?.spanId);
+    expect(retried?.metadata).toMatchObject({
+      fromModel: "ep-test",
+      toModel: "ep-fallback",
+      attemptIndex: 1,
+      retryOfRunId: run.id,
+    });
   });
 });

@@ -1,5 +1,6 @@
 import type { Agent, AgentRun, Message } from "../types.js";
 import type { ModelRef } from "../models/types.js";
+import type { AuditRecorder, AuditSpan } from "../audit/audit-types.js";
 import { JsonStore } from "../store.js";
 import {
   LangGraphOrchestrator,
@@ -82,6 +83,8 @@ export interface OrchestrationServiceDependencies {
   orchestrator?: Orchestrator;
   orchestratorFactory?: () => Orchestrator;
   graphRunner?: OrchestrationGraphRunner;
+  /** Server-owned audit sink for orchestration lifecycle spans. */
+  audit?: AuditRecorder;
 }
 
 /** Runtime state for one queued or running orchestration cycle. */
@@ -103,6 +106,8 @@ export interface ActiveOrchestrationSession {
   currentRunId: string | null;
   cancellationRequestedRunId: string | null;
   execution: Promise<void> | null;
+  /** Audit span of the participant currently being dispatched. */
+  participantSpan?: AuditSpan | null;
 }
 
 interface PlatformAgentServiceBridge extends OrchestrationAgentAccess {
@@ -126,6 +131,7 @@ export interface NormalizedOrchestrationDependencies {
   supervisorTimeoutMs: number | undefined;
   orchestratorFactory: () => Orchestrator;
   projectBinding: OrchestrationProjectBinding | undefined;
+  audit: AuditRecorder | undefined;
 }
 
 /**
@@ -171,6 +177,7 @@ export function normalizeOrchestrationDependencies(
       supervisorTimeoutMs: configured.supervisorTimeoutMs,
       orchestratorFactory,
       projectBinding: configured.projectBinding,
+      audit: configured.audit,
     };
   }
 
@@ -194,6 +201,7 @@ export function normalizeOrchestrationDependencies(
       ? () => new LangGraphOrchestrator(graphRunner)
       : () => new MastraOrchestrator(),
     projectBinding: undefined,
+    audit: undefined,
   };
 }
 

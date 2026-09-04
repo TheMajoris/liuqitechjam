@@ -25,7 +25,13 @@ import type {
 } from "./types.js";
 import { JsonStore } from "./store.js";
 import { safeRuntimeError } from "./safe-runtime-error.js";
-import type { AuditRecorder } from "./audit/audit-types.js";
+import type {
+  AuditEventInput,
+  AuditRecorder,
+  AuditSpan,
+} from "./audit/audit-types.js";
+import { newSpanId } from "./audit/audit-span.js";
+import { agentPrincipal } from "./access/access-types.js";
 
 const RUN_POLL_INTERVAL_MS = 50;
 const now = () => new Date().toISOString();
@@ -80,11 +86,28 @@ export class AgentRunCoordinator {
   private readonly cancellationRequests = new Set<string>();
   private readonly runCancellations = new Map<string, Promise<AgentRun>>();
   private readonly agentCancellationLocks = new Set<string>();
+  /** Audit span of each in-flight Run, so runtime events can parent under it. */
+  private readonly runSpans = new Map<string, AuditSpan>();
 
   constructor(private readonly dependencies: AgentRunCoordinatorDependencies) {}
 
   isCancelling(agentId: string): boolean {
     return this.agentCancellationLocks.has(agentId);
+  }
+
+  /** The audit span of a currently executing Run, if one is in flight. */
+  runSpan(runId: string): AuditSpan | undefined {
+    const span = this.runSpans.get(runId);
+    return span === undefined ? undefined : { ...span };
+  }
+
+  /** An audit sink failure must never change the outcome of a Run. */
+  private async recordAudit(input: AuditEventInput): Promise<void> {
+    const audit = this.dependencies.getAudit?.();
+    if (!audit) return;
+    await audit.record(input).catch((error) => {
+      console.warn("audit write failed", error);
+    });
   }
 
   /** Starts and registers a Run after the facade has persisted its queue record. */
@@ -98,6 +121,7 @@ export class AgentRunCoordinator {
     orchestrationId?: string,
     fallbackModels: readonly WorkerRuntimeModelConfig[] = [],
     modelSnapshot?: AgentModelSnapshot,
+    parentSpan?: { traceId: string; spanId: string },
   ): void {
     const execution = this.executeRun(
       agentAtStart,
@@ -109,6 +133,7 @@ export class AgentRunCoordinator {
       orchestrationId,
       fallbackModels,
       modelSnapshot,
+      parentSpan,
     );
     this.activeExecutions.set(agentAtStart.id, { runId: run.id, execution });
     void execution
@@ -231,6 +256,7 @@ export class AgentRunCoordinator {
     orchestrationId?: string,
     fallbackModels: readonly WorkerRuntimeModelConfig[] = [],
     modelSnapshot?: AgentModelSnapshot,
+    parentSpan?: { traceId: string; spanId: string },
   ): Promise<void> {
     const telemetry = this.dependencies.getTelemetry();
     const attributes = correlationAttributes({
@@ -261,6 +287,7 @@ export class AgentRunCoordinator {
           fallbackModels,
           modelSnapshot,
           span,
+          parentSpan,
         ),
       );
       return;
@@ -275,6 +302,8 @@ export class AgentRunCoordinator {
       orchestrationId,
       fallbackModels,
       modelSnapshot,
+      undefined,
+      parentSpan,
     );
   }
 
@@ -289,13 +318,48 @@ export class AgentRunCoordinator {
     fallbackModels: readonly WorkerRuntimeModelConfig[] = [],
     modelSnapshot?: AgentModelSnapshot,
     runSpan?: TelemetrySpan,
+    parentSpan?: { traceId: string; spanId: string },
   ): Promise<void> {
+    const startedAt = now();
     await this.dependencies.store.mutate((database) => {
       const storedRun = database.runs.find((item) => item.id === run.id);
       if (storedRun) {
         storedRun.status = "running";
-        storedRun.startedAt = now();
+        storedRun.startedAt = startedAt;
       }
+    });
+    // One span identity for the whole Run: every lifecycle event of this turn
+    // shares it, and runtime events can parent under it via runSpan().
+    const auditSpan: AuditSpan = {
+      traceId:
+        parentSpan?.traceId ??
+        (orchestrationId !== undefined ? orchestrationId : run.id),
+      spanId: newSpanId(),
+      ...(parentSpan?.spanId === undefined
+        ? {}
+        : { parentSpanId: parentSpan.spanId }),
+    };
+    this.runSpans.set(run.id, auditSpan);
+    const correlation = {
+      agentId: agentAtStart.id,
+      ...(projectId === undefined ? {} : { projectId }),
+      runId: run.id,
+      ...(orchestrationId === undefined ? {} : { orchestrationId }),
+      principal: agentPrincipal(agentAtStart.id),
+      span: auditSpan,
+    } as const;
+    await this.recordAudit({
+      ...correlation,
+      type: "run_started",
+      status: "success",
+      summary: "Run started",
+      metadata: {
+        model: runtimeModel.modelId,
+        providerId: runtimeModel.providerId,
+        fallbackCount: fallbackModels.length,
+        origin,
+        hasProject: projectId !== undefined,
+      },
     });
     // Held for the whole turn when the run is Project-scoped. The lease and
     // the shared-scope thread are settled in the finally below.
@@ -401,6 +465,21 @@ export class AgentRunCoordinator {
           if (!(error instanceof RetryableModelError)) throw error;
           lastModelError = error;
           if (modelIndex === modelAttempts.length - 1) throw error;
+          const nextAttempt = modelAttempts[modelIndex + 1];
+          if (nextAttempt !== undefined) {
+            await this.recordAudit({
+              ...correlation,
+              type: "run_retried",
+              status: "success",
+              summary: "Retrying the Run on the next worker model",
+              metadata: {
+                fromModel: attempt.modelId,
+                toModel: nextAttempt.modelId,
+                attemptIndex: modelIndex + 1,
+                retryOfRunId: run.id,
+              },
+            });
+          }
         }
       }
       if (result === undefined) {
@@ -422,12 +501,14 @@ export class AgentRunCoordinator {
       runSpan?.setStatus("ok");
       const completedAt = now();
       let persistedCompletion = false;
+      let cancelledWhileCompleting = false;
       await this.dependencies.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
         if (!storedRun || !agent) return;
         if (isTerminalRun(storedRun)) return;
         if (this.cancellationRequests.has(run.id)) {
+          cancelledWhileCompleting = true;
           storedRun.status = "cancelled";
           storedRun.error = "Run cancelled";
           storedRun.completedAt = completedAt;
@@ -476,21 +557,55 @@ export class AgentRunCoordinator {
         agent.updatedAt = completedAt;
       });
       if (selectedModelIndex > 0 && persistedCompletion) {
-        await this.dependencies.getAudit?.()?.record({
+        await this.recordAudit({
+          ...correlation,
           type: "model_fallback",
           status: "success",
-          agentId: agentAtStart.id,
-          runId: run.id,
-          ...(projectId === undefined ? {} : { projectId }),
-          ...(orchestrationId === undefined ? {} : { orchestrationId }),
-          principal: { kind: "agent", id: agentAtStart.id },
           summary: "Worker model fallback used",
           metadata: {
             fallbackIndex: selectedModelIndex,
             primaryModel: runtimeModel.modelId,
             selectedModel: (modelAttempts[selectedModelIndex] ?? runtimeModel).modelId,
           },
-        }).catch(() => undefined);
+        });
+      }
+      const durationMs = Math.max(
+        0,
+        Date.parse(completedAt) - Date.parse(startedAt),
+      );
+      if (cancelledWhileCompleting) {
+        await this.recordAudit({
+          ...correlation,
+          type: "run_cancelled",
+          status: "success",
+          summary: "Run cancelled",
+          durationMs,
+          metadata: { exitReason: "cancelled" },
+        });
+      } else if (persistedCompletion) {
+        await this.recordAudit({
+          ...correlation,
+          type: "run_completed",
+          status: "success",
+          summary: "Run completed",
+          durationMs,
+          metadata: {
+            ...(result.usage?.inputTokens === undefined
+              ? {}
+              : { inputTokens: result.usage.inputTokens }),
+            ...(result.usage?.cachedInputTokens === undefined
+              ? {}
+              : { cachedInputTokens: result.usage.cachedInputTokens }),
+            ...(result.usage?.outputTokens === undefined
+              ? {}
+              : { outputTokens: result.usage.outputTokens }),
+            modelUsed: selectedModelRef.modelId,
+            ...(selectedModelIndex > 0
+              ? { fallbackIndex: selectedModelIndex }
+              : {}),
+            exitReason: "completed",
+          },
+        });
       }
       if (binding !== null) outcome = { codexThreadId: result.threadId };
     } catch (error) {
@@ -522,7 +637,38 @@ export class AgentRunCoordinator {
           agent.updatedAt = completedAt;
         }
       });
+      const durationMs = Math.max(
+        0,
+        Date.parse(completedAt) - Date.parse(startedAt),
+      );
+      // The error message can carry a path or prompt fragment; only its class
+      // is safe evidence.
+      await this.recordAudit(
+        cancelled
+          ? {
+              ...correlation,
+              type: "run_cancelled",
+              status: "success",
+              summary: "Run cancelled",
+              durationMs,
+              metadata: { exitReason: "cancelled" },
+            }
+          : {
+              ...correlation,
+              type: "run_failed",
+              status: "failure",
+              summary: "Run failed",
+              durationMs,
+              metadata: {
+                exitReason: "error",
+                errorClass:
+                  (error as { constructor?: { name?: string } } | null)
+                    ?.constructor?.name ?? "Error",
+              },
+            },
+      );
     } finally {
+      this.runSpans.delete(run.id);
       // The write lease must never outlive its turn, on any path: success,
       // failure, cancellation, or a runner that threw before producing output.
       if (binding !== null) {

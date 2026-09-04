@@ -19,6 +19,8 @@ export const MAX_AUDIT_METADATA_VALUE_LENGTH = 160;
 
 const unsafeText = /\b(?:prompt|raw\s+output|provider\s+body|response\s+body|headers?|environment|env|workspace\s+path|cwd|working\s+directory|command)\b/i;
 const unsafeKey = /(?:prompt|output|body|header|secret|token|password|credential|authorization|environment|env|path|cwd|command)/i;
+/** Numeric usage counters are safe evidence even though their names match the deny-list. */
+const allowedMetadataKeys = new Set(["inputTokens", "cachedInputTokens", "outputTokens", "stdoutBytes", "stderrBytes", "commandHash"]);
 
 function asText(value: unknown): string {
   return typeof value === "string" ? value : String(value ?? "");
@@ -66,7 +68,8 @@ export function safeAuditMetadata(
   if (!metadata) return {};
   const entries: [string, AuditMetadataValue][] = [];
   for (const [key, value] of Object.entries(metadata)) {
-    if (entries.length >= MAX_AUDIT_METADATA_KEYS || unsafeKey.test(key)) continue;
+    if (entries.length >= MAX_AUDIT_METADATA_KEYS) continue;
+    if (unsafeKey.test(key) && !allowedMetadataKeys.has(key)) continue;
     const safeKey = key.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 64);
     if (!safeKey) continue;
     const safeValue = safeMetadataValue(value);

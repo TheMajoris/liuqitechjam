@@ -195,3 +195,17 @@ describe("AuditService.query", () => {
     expect(byCategory[0]?.summary).toBe("b");
   });
 });
+
+describe("safeAuditMetadata allow-list", () => {
+  it("keeps numeric usage counters whose names match the deny-list", async () => {
+    const { safeAuditMetadata } = await import("../../../apps/server/src/audit/audit-redaction.js");
+    const result = safeAuditMetadata({
+      inputTokens: 12,
+      cachedInputTokens: 3,
+      outputTokens: 7,
+      bearerToken: "abc",
+      rawOutput: "x",
+    });
+    expect(result).toEqual({ inputTokens: 12, cachedInputTokens: 3, outputTokens: 7 });
+  });
+});
