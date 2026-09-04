@@ -11,7 +11,8 @@ import { safeAuditInput } from "./audit-redaction.js";
 import { queryAuditEvents } from "./audit-query.js";
 import { normalizeAuditEvent } from "./audit-normalize.js";
 import { newSpanId, newTraceId } from "./audit-span.js";
-import type { AuditStoreAdapter } from "./audit-store.js";
+import type { AuditEventDraft, AuditStoreAdapter } from "./audit-store.js";
+import { verifyAuditChain, type AuditChainVerification } from "./audit-hash.js";
 import {
   queryAuditTimeline,
   type AuditRunReader,
@@ -29,21 +30,28 @@ export class AuditService implements AuditRecorder, AuditReader {
   async record(input: AuditEventInput): Promise<AuditEvent> {
     const safe = safeAuditInput(input);
     const { span, ...rest } = safe;
-    const existing = this.store.read();
-    const lastSequence = existing.length === 0 ? 0 : (existing[existing.length - 1]?.sequence ?? existing.length);
-    const event: AuditEvent = {
+    const draft: AuditEventDraft = {
       id: randomUUID(),
       ...rest,
       spanId: span?.spanId ?? newSpanId(),
       traceId: span?.traceId ?? input.orchestrationId ?? input.runId ?? newTraceId(),
       ...(span?.parentSpanId === undefined ? {} : { parentSpanId: span.parentSpanId }),
-      sequence: lastSequence + 1,
       actorType: safe.actorType ?? safe.principal.kind,
       category: safe.category ?? AUDIT_EVENT_CATEGORY[safe.type],
       createdAt: new Date().toISOString(),
     };
-    await this.store.append(event);
-    return structuredClone(event);
+    try {
+      const event = await this.store.append(draft);
+      return structuredClone(event);
+    } catch (error) {
+      // Evidence must fail loudly; callers decide whether to swallow.
+      console.error("audit write failed", draft.type);
+      throw error;
+    }
+  }
+
+  verify(): AuditChainVerification {
+    return verifyAuditChain(this.store.read(), this.store.anchor()?.hash);
   }
 
   query(filter: AuditQuery = {}): AuditEvent[] {
@@ -68,6 +76,7 @@ export type {
   AuditEventStatus,
   AuditEventType,
   AuditMetadata,
+  HashedAuditEvent,
   AuditMetadataValue,
   AuditQuery,
   AuditReader,
@@ -104,5 +113,15 @@ export {
 export {
   JsonAuditStoreAdapter,
   MAX_PERSISTED_AUDIT_EVENTS,
+  type AuditEventDraft,
   type AuditStoreAdapter,
 } from "./audit-store.js";
+export {
+  canonicalAuditEvent,
+  GENESIS_HASH,
+  hashAuditEvent,
+  verifyAuditChain,
+  type AuditChainAnchor,
+  type AuditChainBreakReason,
+  type AuditChainVerification,
+} from "./audit-hash.js";

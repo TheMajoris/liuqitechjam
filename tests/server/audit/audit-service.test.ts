@@ -1,18 +1,41 @@
 import { describe, expect, it } from "vitest";
 import { AuditService } from "../../../apps/server/src/audit/audit-service.js";
-import type { AuditEvent } from "../../../apps/server/src/audit/audit-types.js";
-import type { AuditStoreAdapter } from "../../../apps/server/src/audit/audit-store.js";
+import type { AuditEvent, HashedAuditEvent } from "../../../apps/server/src/audit/audit-types.js";
+import {
+  GENESIS_HASH,
+  hashAuditEvent,
+  type AuditChainAnchor,
+} from "../../../apps/server/src/audit/audit-hash.js";
+import type {
+  AuditEventDraft,
+  AuditStoreAdapter,
+} from "../../../apps/server/src/audit/audit-store.js";
 import { agentPrincipal, humanPrincipal, systemPrincipal } from "../../../apps/server/src/access/principal.js";
 
 class InMemoryAuditStoreAdapter implements AuditStoreAdapter {
   events: AuditEvent[] = [];
+  anchorState: AuditChainAnchor | null = null;
 
   read(): readonly AuditEvent[] {
     return this.events;
   }
 
-  async append(event: AuditEvent): Promise<void> {
-    this.events.push(event);
+  anchor(): AuditChainAnchor | null {
+    return this.anchorState;
+  }
+
+  async append(event: AuditEventDraft): Promise<HashedAuditEvent> {
+    const last = this.events[this.events.length - 1];
+    const prevHash = last?.hash ?? this.anchorState?.hash ?? GENESIS_HASH;
+    const sequence = (last?.sequence ?? this.anchorState?.sequence ?? 0) + 1;
+    const chained: HashedAuditEvent = {
+      ...event,
+      sequence,
+      prevHash,
+      hash: hashAuditEvent(prevHash, { ...event, sequence }),
+    };
+    this.events.push(chained);
+    return chained;
   }
 }
 

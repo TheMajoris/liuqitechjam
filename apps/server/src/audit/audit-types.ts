@@ -165,7 +165,16 @@ export interface AuditEvent extends AuditCorrelation {
   category: AuditCategory;
   durationMs?: number;
   agentVersion?: string;
+  /**
+   * Tamper-evident chain, assigned by the store atomically with the append.
+   * Absent only on legacy events written before the chain existed.
+   */
+  prevHash?: string;
+  hash?: string;
 }
+
+/** An event that carries chain fields; every event appended today is one. */
+export type HashedAuditEvent = AuditEvent & { prevHash: string; hash: string };
 
 export interface AuditQuery {
   agentId?: string | undefined;
@@ -187,4 +196,6 @@ export interface AuditReader {
   query(filter?: AuditQuery): AuditEvent[];
   /** Optional normalized runtime projection; event queries remain compatible. */
   queryTimeline?: (filter?: AuditQuery) => import("./audit-timeline.js").AuditTimeline;
+  /** Optional tamper-evidence check over the persisted chain. */
+  verify?: () => import("./audit-hash.js").AuditChainVerification;
 }

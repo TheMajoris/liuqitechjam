@@ -204,6 +204,8 @@ export interface Database {
   approvalRequests: ApprovalRequest[];
   capabilityGrants: CapabilityGrant[];
   auditEvents: AuditEvent[];
+  /** Chain state for audit events dropped by the ring buffer; null before any trim. */
+  auditChainAnchor?: { sequence: number; hash: string } | null;
   /** Permit request IDs and safe local correlation only; never authorization. */
   permitApprovalCorrelations: PermitApprovalCorrelation[];
   /** Additive role-template collection; absent in pre-role stores. */

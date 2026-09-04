@@ -265,4 +265,25 @@ describe("HTTP boundary", () => {
     expect(recorded?.metadata.toRole).toBe("editor");
     await app.close();
   });
+
+  it("exposes the audit chain verification projection", async () => {
+    const audit = {
+      ...fakeAudit(),
+      verify: () => ({ ok: true, checked: 3 }),
+    };
+    const app = await createApp(
+      loadConfig({ NODE_ENV: "test" }),
+      service,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { auditService: audit } as McpRouteDependencies,
+    );
+
+    const verified = await app.inject({ method: "GET", url: "/api/audit/verify" });
+    expect(verified.statusCode).toBe(200);
+    expect(verified.json()).toEqual({ ok: true, checked: 3 });
+    await app.close();
+  });
 });

@@ -580,4 +580,10 @@ export function registerAgentMiddlewareRoutes(
   app.get("/api/audit", async (request) => ({
     events: requireAuditService(mcp).query(auditQuery.parse(request.query)),
   }));
+
+  app.get("/api/audit/verify", async () => {
+    const audit = requireAuditService(mcp);
+    if (!audit.verify) throw new HttpError(503, "Audit chain verification is not configured");
+    return audit.verify();
+  });
 }
