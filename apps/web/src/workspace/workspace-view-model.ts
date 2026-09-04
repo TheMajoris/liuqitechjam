@@ -1,5 +1,6 @@
 import type {
   AgentAppearance,
+  AgentMetrics,
   OrchestrationStatus,
   PreviewStatus,
   ProjectRole,
@@ -91,6 +92,8 @@ export interface WorkspaceAgentViewModel {
   typing: boolean;
   /** Cosmetic character choices; absent means the ID-derived look. */
   appearance: AgentAppearance | null;
+  /** Live runtime telemetry, when the metrics poll has reported one. */
+  metrics: AgentMetrics | null;
 }
 
 export type WorkspacePreviewActivity =

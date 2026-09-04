@@ -598,6 +598,36 @@ export interface UsageReport {
   daily: UsageDailyPoint[];
 }
 
+/** Live runtime/telemetry snapshot for one Agent, polled by the workspace. */
+export interface AgentMetrics {
+  agentId: string;
+  lifecycle: "ready" | "busy" | "stopped" | "error";
+  currentRun: { id: string; elapsedMs: number; model: string | null } | null;
+  tokens: {
+    lastRun: {
+      inputTokens?: number;
+      cachedInputTokens?: number;
+      outputTokens?: number;
+    } | null;
+    session: { inputTokens: number; cachedInputTokens: number; outputTokens: number };
+    tokensPerSecondLastRun: number | null;
+    tokensPerSecondAvg: number | null;
+  };
+  tools: { calls: number; denied: number; sandboxCommands: number; filesChanged: number };
+  container: {
+    cpuPct: number;
+    memBytes: number;
+    memLimitBytes: number | null;
+    pids: number | null;
+    sampledAt: string;
+    oomKilled: boolean | null;
+    uptimeMs: number | null;
+  } | null;
+  lastError: string | null;
+  model: string | null;
+  fallbackUsed: boolean;
+}
+
 /** Safe audit projection the workspace polls to see live tool activity. */
 export interface AuditEventRecord {
   id: string;

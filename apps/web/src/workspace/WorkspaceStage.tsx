@@ -11,6 +11,7 @@ import {
   WORKSPACE_ACTIVITY,
   type WorkspaceViewModel,
 } from "./workspace-view-model";
+import { metricsRows } from "./agent-metrics-format";
 
 /**
  * Pixi is only fetched when a room is actually shown, so opening the product
@@ -177,6 +178,8 @@ export function WorkspaceStage({
             x: seat.anchor.x + PLATE_OFFSET.x,
             y: seat.anchor.y + PLATE_OFFSET.y,
           });
+          const metricsCardId = `ws-metrics-${agent.agentId}`;
+          const showMetrics = hovered === agent.agentId && agent.metrics !== null;
           return (
             <button
               key={agent.agentId}
@@ -197,6 +200,7 @@ export function WorkspaceStage({
                   : undefined
               }
               aria-pressed={agent.isSelected}
+              aria-describedby={showMetrics ? metricsCardId : undefined}
               onClick={() => onSelectAgent(agent.agentId)}
               onMouseEnter={() => setHovered(agent.agentId)}
               onMouseLeave={() => setHovered(null)}
@@ -209,6 +213,16 @@ export function WorkspaceStage({
                 {descriptor.label}
                 {agent.isCurrentParticipant ? " · this turn" : ""}
               </span>
+              {showMetrics && (
+                <div className="ws-metrics-card" role="tooltip" id={metricsCardId}>
+                  {metricsRows(agent.metrics).map((row) => (
+                    <div className="ws-metrics-row" key={row.label}>
+                      <span className="ws-metrics-label">{row.label}</span>
+                      <span className="ws-metrics-value">{row.value}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </button>
           );
         })}

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type {
   Agent,
+  AgentMetrics,
   ApprovalRecord,
   AuditEventRecord,
   OrchestrationSession,
@@ -94,6 +95,7 @@ function build(
     approvals?: ApprovalRecord[] | null;
     project?: Project | null;
     activity?: AuditEventRecord[];
+    metrics?: Map<string, AgentMetrics>;
   } = {},
 ) {
   return buildWorkspaceViewModel({
@@ -104,7 +106,28 @@ function build(
     approvals: overrides.approvals === undefined ? null : overrides.approvals,
     selectedAgentId: null,
     activity: overrides.activity,
+    metrics: overrides.metrics,
   });
+}
+
+function agentMetrics(agentId: string, overrides: Partial<AgentMetrics> = {}): AgentMetrics {
+  return {
+    agentId,
+    lifecycle: "busy",
+    currentRun: { id: "run-1", elapsedMs: 5000, model: "gpt" },
+    tokens: {
+      lastRun: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 20 },
+      session: { inputTokens: 100, cachedInputTokens: 0, outputTokens: 200 },
+      tokensPerSecondLastRun: 5,
+      tokensPerSecondAvg: 4,
+    },
+    tools: { calls: 3, denied: 0, sandboxCommands: 1, filesChanged: 2 },
+    container: null,
+    lastError: null,
+    model: "gpt",
+    fallbackUsed: false,
+    ...overrides,
+  };
 }
 
 function activityOf(model: ReturnType<typeof build>, agentId: string) {
@@ -282,5 +305,23 @@ describe("workspace adapter", () => {
     const view = viewOf(model, "a1");
     expect(view?.sandboxActivity).toBeNull();
     expect(view?.typing).toBe(false);
+  });
+
+  it("attaches metrics to the matching Agent and leaves missing entries null", () => {
+    const model = build(null, {
+      project: soloProject(),
+      agents: [agent("a1", "Alice", "busy")],
+      metrics: new Map([["a1", agentMetrics("a1")]]),
+    });
+
+    expect(viewOf(model, "a1")?.metrics?.agentId).toBe("a1");
+
+    const modelWithoutEntry = build(null, {
+      project: soloProject(),
+      agents: [agent("a1", "Alice", "busy")],
+      metrics: new Map(),
+    });
+
+    expect(viewOf(modelWithoutEntry, "a1")?.metrics).toBeNull();
   });
 });

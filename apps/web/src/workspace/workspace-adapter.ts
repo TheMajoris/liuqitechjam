@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AgentMetrics,
   ApprovalRecord,
   AuditEventRecord,
   ModelDescriptor,
@@ -40,6 +41,8 @@ export interface WorkspaceSource {
   models?: ModelDescriptor[];
   /** Safe audit projection; absent when the activity API is not configured. */
   activity?: AuditEventRecord[];
+  /** Live per-Agent telemetry, keyed by Agent ID; absent Agents get `null`. */
+  metrics?: Map<string, AgentMetrics>;
 }
 
 const SUMMARY_LIMIT = 160;
@@ -520,6 +523,7 @@ export function buildWorkspaceViewModel(source: WorkspaceSource): WorkspaceViewM
         sandboxActivity,
         typing: activeTool === null && sandboxActivity?.kind === "files",
         appearance: agent?.appearance ?? null,
+        metrics: source.metrics?.get(agentId) ?? null,
       };
     },
   );

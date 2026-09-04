@@ -25,6 +25,7 @@ import type {
   SkillCatalogEntry,
   SkillDiscoveryResult,
   AgentRole,
+  AgentMetrics,
 } from "./types";
 
 export class ApiError extends Error {
@@ -115,6 +116,12 @@ export const api = {
       "/api/runs/" + encodeURIComponent(runId) + "/activity?limit=" + limit,
     ),
   listTools: () => request<{ tools: import("./types").ToolMetadata[] }>("/api/tools"),
+  agentMetrics: (agentId: string) =>
+    request<AgentMetrics>("/api/agents/" + encodeURIComponent(agentId) + "/metrics"),
+  projectAgentMetrics: (projectId: string) =>
+    request<{ agents: AgentMetrics[] }>(
+      "/api/projects/" + encodeURIComponent(projectId) + "/agent-metrics",
+    ),
   listSkills: () => request<{ skills: SkillMetadata[] }>("/api/skills"),
   searchSkills: (query = "", installed?: boolean) => {
     const params = new URLSearchParams({ q: query });

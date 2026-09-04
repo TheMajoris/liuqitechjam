@@ -4990,6 +4990,46 @@ textarea:focus {
   color: var(--muted);
 }
 
+.ws-metrics-card {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translate(-50%, -8px);
+  display: grid;
+  gap: 2px;
+  min-width: 168px;
+  border: 1px solid var(--orch-line);
+  border-radius: 9px;
+  padding: 7px 10px;
+  background: rgba(251, 250, 247, 0.97);
+  backdrop-filter: var(--material-blur);
+  box-shadow: var(--elevation-1);
+  text-align: left;
+  cursor: default;
+  z-index: 5;
+}
+
+.ws-metrics-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.ws-metrics-label {
+  color: var(--orch-muted);
+  font-weight: 600;
+}
+
+.ws-metrics-value {
+  color: var(--orch-ink);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* The room's station controls sit above the stage, where they never collide
    with a desk and never have to be hunted for. */
 .ws-stations {

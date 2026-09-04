@@ -25,6 +25,7 @@ import { WorkspaceView } from "../../workspace/WorkspaceView";
 import { useProjectPreview } from "../../workspace/use-project-preview";
 import { useWorkspaceApprovals } from "../../workspace/use-workspace-approvals";
 import { useWorkspaceActivity } from "../../workspace/use-workspace-activity";
+import { useAgentMetrics } from "../../workspace/use-agent-metrics";
 import type { AgentLifecycleAction } from "../../workspace/AgentInspector";
 import { WorkspaceRoster, type WorkspaceRosterMember } from "../../workspace/WorkspaceRoster";
 
@@ -103,6 +104,24 @@ export function OrchestrationWorkspace({
   const approvalsController = useWorkspaceApprovals(projectId, sessionActive);
   const activity = useWorkspaceActivity(projectId, sessionActive);
 
+  const roomAgentIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const participant of detail?.session.participants ?? []) ids.add(participant.agentId);
+    for (const agentId of workspaceProject?.agentIds ?? []) ids.add(agentId);
+    return Array.from(ids);
+  }, [detail?.session.participants, workspaceProject?.agentIds]);
+  const anyAgentBusy = agents.some((agent) => agent.status === "busy");
+  // The hover state that would otherwise gate this lives inside
+  // WorkspaceStage; rather than lift it across a prop, polling stays live
+  // while something is actually running or an Agent is selected for the
+  // inspector, and falls back to a single fetch once the room goes quiet.
+  const metricsActive = anyAgentBusy || selectedAgentId !== null;
+  const metrics = useAgentMetrics({
+    projectId,
+    agentIds: roomAgentIds,
+    active: metricsActive,
+  });
+
   // The Team stores only the Project ID; its name and membership live with the
   // Project itself, so they are fetched rather than duplicated into the session.
   useEffect(() => {
@@ -137,12 +156,14 @@ export function OrchestrationWorkspace({
         selectedAgentId,
         modelProviders,
         activity,
+        metrics,
       }),
     [
       activity,
       agents,
       approvalsController.approvals,
       detail,
+      metrics,
       modelProviders,
       previewController.preview,
       workspaceProject,
