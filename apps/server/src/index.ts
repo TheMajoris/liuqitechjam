@@ -70,7 +70,7 @@ const workspaces = new WorkspaceManager(config.workspaceRoot);
 // later commit exposes it through a metrics route.
 const { runner, healthSampler: containerHealthSampler } = createRunner(config);
 void containerHealthSampler;
-const mcpSessions = new McpSessionService(config.mcpTokenTtlMs);
+const mcpSessions = new McpSessionService(config.mcpTokenTtlMs, { audit });
 const modelCatalog = new ArkModelCatalogService(store);
 // The live catalog must exist before AgentService.initialize() materializes
 // defaults for legacy Agent records.
