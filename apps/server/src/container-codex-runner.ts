@@ -12,6 +12,7 @@ import {
 } from "./codex-runner.js";
 import { RetryableModelError, RunCancelledError } from "./errors.js";
 import type { SandboxAuditSink } from "./audit/sandbox-audit.js";
+import type { ContainerHealthSampler } from "./telemetry/container-health-sampler.js";
 import { MCP_BEARER_TOKEN_ENV } from "./tools/mcp-session-service.js";
 import type {
   AgentRunner,
@@ -191,12 +192,14 @@ export class ContainerCodexRunner implements AgentRunner {
   private readonly active = new Map<string, ActiveContainer>();
   private readonly mcpProbe: (endpoint: string) => Promise<boolean>;
   private readonly execEngine: ContainerEngineExec;
+  private readonly healthSampler: ContainerHealthSampler | undefined;
 
   constructor(
     private readonly config: AppConfig,
     options: {
       mcpProbe?: (endpoint: string) => Promise<boolean>;
       execEngine?: ContainerEngineExec;
+      healthSampler?: ContainerHealthSampler;
     } = {},
   ) {
     this.mcpProbe = options.mcpProbe ?? ((endpoint) => probeMcpEndpoint(endpoint));
@@ -207,6 +210,7 @@ export class ContainerCodexRunner implements AgentRunner {
           timeout: timeoutMs,
           env: this.childEnvironment(),
         }));
+    this.healthSampler = options.healthSampler;
   }
 
   async isAvailable(): Promise<boolean> {
@@ -349,6 +353,11 @@ export class ContainerCodexRunner implements AgentRunner {
       });
     }
     this.active.set(request.agentId, { execution });
+    const runId = request.runId ?? request.agentId;
+    this.healthSampler?.start(activeContainerName, {
+      agentId: request.agentId,
+      runId,
+    });
 
     let result: Awaited<typeof execution.completed> | undefined;
     try {
@@ -380,6 +389,8 @@ export class ContainerCodexRunner implements AgentRunner {
       return { output, threadId: parsed.threadId, usage: parsed.usage };
     } finally {
       this.active.delete(request.agentId);
+      this.healthSampler?.stop(runId);
+      const peak = this.healthSampler?.peak(runId);
       const inspected = inspectedState !== null;
       request.sandboxAudit?.exited({
         exitCode: inspected
@@ -390,6 +401,7 @@ export class ContainerCodexRunner implements AgentRunner {
         inspected,
         cancelled: result?.cancelled ?? false,
         timedOut: result?.timedOut ?? false,
+        ...(peak ? { peakCpuPct: peak.peakCpuPct, peakMemBytes: peak.peakMemBytes } : {}),
       });
     }
   }

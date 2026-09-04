@@ -255,6 +255,8 @@ export interface RunnerMcpConfig {
 
 export interface RunnerRequest {
   agentId: string;
+  /** Omitted for callers that have not been updated to pass it. */
+  runId?: string;
   workspacePath: string;
   /** Set when the run executes against a shared Project workspace. */
   projectId?: string | undefined;

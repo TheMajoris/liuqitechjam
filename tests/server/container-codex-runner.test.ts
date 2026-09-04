@@ -266,4 +266,47 @@ describe("Container Codex runner", () => {
     expect(cleanupFailed?.info.stage).toBe("remove");
     expect(hoisted.executions[0]!.calls).toContain("kill:SIGTERM");
   });
+
+  it("starts the health sampler after spawn and folds its peak into the exit audit", async () => {
+    hoisted.executions.length = 0;
+    const { execEngine } = engineExec({});
+    const sandboxAudit = recordingSandboxAudit();
+    const startCalls: { containerName: string; key: { agentId: string; runId: string } }[] = [];
+    const stopCalls: string[] = [];
+    const healthSampler = {
+      start: (containerName: string, key: { agentId: string; runId: string }) => {
+        startCalls.push({ containerName, key });
+      },
+      stop: (runId: string) => {
+        stopCalls.push(runId);
+      },
+      peak: (_runId: string) => ({ peakCpuPct: 42, peakMemBytes: 123456 }),
+    };
+    const runner = new ContainerCodexRunner(containerConfig(), {
+      execEngine,
+      healthSampler: healthSampler as any,
+    });
+
+    const run = runner.run({ ...baseRequest, runId: "run-7", sandboxAudit });
+    expect(startCalls).toEqual([
+      {
+        containerName: "launchpad-test-instance-agent",
+        key: { agentId: "agent", runId: "run-7" },
+      },
+    ]);
+    expect(stopCalls).toEqual([]);
+
+    hoisted.executions[0]!.finish({
+      exitCode: 0,
+      cancelled: false,
+      timedOut: false,
+      outputTruncated: false,
+    });
+    await run.catch(() => undefined);
+
+    expect(stopCalls).toEqual(["run-7"]);
+    const exited = sandboxAudit.events.find((event) => event.name === "exited");
+    expect(exited?.info.peakCpuPct).toBe(42);
+    expect(exited?.info.peakMemBytes).toBe(123456);
+  });
 });

@@ -458,6 +458,7 @@ export class AgentRunCoordinator {
         try {
           result = await this.dependencies.runner.run({
             agentId: agentAtStart.id,
+            runId: run.id,
             workspacePath: binding?.workspacePath ?? agentAtStart.workspacePath,
             ...(projectId === undefined ? {} : { projectId }),
             prompt: executionPrompt,

@@ -66,7 +66,10 @@ const auditStore = new JsonAuditStoreAdapter(store);
 const audit = new AuditService(auditStore, auditStore);
 const telemetry = createRuntimeTelemetry(config);
 const workspaces = new WorkspaceManager(config.workspaceRoot);
-const runner = createRunner(config);
+// `containerHealthSampler` is only set for the container runtime provider; a
+// later commit exposes it through a metrics route.
+const { runner, healthSampler: containerHealthSampler } = createRunner(config);
+void containerHealthSampler;
 const mcpSessions = new McpSessionService(config.mcpTokenTtlMs);
 const modelCatalog = new ArkModelCatalogService(store);
 // The live catalog must exist before AgentService.initialize() materializes
