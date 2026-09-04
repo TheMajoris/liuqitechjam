@@ -287,6 +287,118 @@ The server owns identity, policy, orchestration routing, lease acquisition,
 tool execution, Preview lifecycle, and audit projections. The browser renders
 the resulting state and sends human control actions back through the API.
 
+## How auditing works
+
+Auditing in LiuQi is **evidence, not control**. The journal describes what the
+platform observed; it never gates what happens next. Policy stays in
+`AuthorizationService` and `ToolService`. The design rests on five rules.
+
+1. **Server-owned, never self-reported.** The Agent and its container are
+   untrusted. Evidence is captured only at seams the host controls.
+2. **A run is a tree, not a log.** Every event has `traceId`, `spanId`, and
+   `parentSpanId`, so a Team run renders as orchestration → participant → run →
+   sandbox and tool spans.
+3. **Redact by construction.** Risky events store *shape* (program basename,
+   counts, exit codes, durations, truncated hashes), never content.
+4. **Append-only and tamper-evident.** Each event carries a monotonic
+   `sequence` and `hash = sha256(prevHash + canonical(event))`.
+5. **Fail-open for telemetry, fail-loud for evidence.** OTel export may drop
+   silently. An audit write failure is logged and surfaced, never swallowed.
+
+### Capture surfaces
+
+```mermaid
+flowchart TB
+    subgraph Control["Control plane (actorType: human / agent / system)"]
+        HR[HTTP routes<br/>start · stop · continue · role change · approval] --> AS
+        TS[ToolService<br/>tool_started · tool_succeeded · tool_failed] --> AS
+        AZ[AuthorizationService<br/>authorization_decision] --> AS
+        OS[OrchestrationService<br/>orchestration_* · participant_dispatched] --> AS
+        RC[AgentRunCoordinator<br/>run_started · run_completed · run_failed · run_retried] --> AS
+    end
+    subgraph Runtime["Runtime tap (host-side, container never reports on itself)"]
+        CX[codex exec --json<br/>JSONL on stdout] -->|onLine| RA[runtime-action-audit.ts]
+        RA -->|sandbox_command · workspace_file_change<br/>mcp_tool_call · model_turn| AS
+    end
+    subgraph Engine["Engine as witness"]
+        CR[ContainerCodexRunner] -->|inspect before rm| SB[sandbox-audit.ts]
+        SB -->|sandbox_started · sandbox_exited<br/>sandbox_cleanup_failed| AS
+        HS[container-health-sampler.ts<br/>docker stats every 4s] -->|peak CPU / mem| SB
+    end
+    subgraph Session["MCP sessions"]
+        MS[McpSessionService] -->|mcp_session_issued · _expired| AS
+        MR[MCP route 401] -->|mcp_session_rejected| AS
+    end
+    AS[AuditService<br/>safeAuditInput → sequence + hash chain] --> ST[(JsonStore<br/>auditEvents + chainAnchor)]
+    ST --> Q[/api/audit · /timeline · /traces<br/>/export · /verify · /runs/:id/trace/]
+    ST --> MX[AgentMetricsService<br/>/api/agents/:id/metrics]
+    Q --> UI[Traces view]
+    MX --> HC[Workspace hover card<br/>and Agent inspector]
+```
+
+### What one Team run looks like
+
+```text
+orchestration_started            traceId = orchestrationId      actor: system
+├── orchestration_started        (human intent, via HTTP)       actor: human
+├── participant_dispatched       Builder                        actor: system
+│   └── run_started / run_completed                             actor: agent
+│       ├── sandbox_started / sandbox_exited                    actor: system
+│       ├── model_turn            reasoning=3 messages=1 tokens
+│       ├── sandbox_command       program=npm exit=0 durationMs
+│       ├── workspace_file_change fileCount=4
+│       ├── mcp_tool_call         toolId=project.preview.start   (container view)
+│       └── tool_started / tool_succeeded                       (host view)
+├── participant_dispatched       Reviewer
+│   └── run_started / run_failed   ◄── failingStep
+│       └── authorization_decision  PERMISSION_DENIED
+└── orchestration_completed
+```
+
+`buildTraceTree` groups events by `spanId`, so a run's start and end share one
+node. `failingStep` points at the first non-policy failure on the critical
+path, and the Traces view can jump straight to it.
+
+### Event taxonomy
+
+| Category | Events |
+| --- | --- |
+| `orchestration` | `orchestration_started`, `_stopped`, `_continued`, `_completed`, `_failed`, `participant_dispatched`, `supervisor_decision`, `handoff_applied`, `agent_started`, `agent_stopped`, `project_role_changed` |
+| `model_call` | `run_started`, `run_completed`, `run_failed`, `run_cancelled`, `run_retried`, `model_fallback`, `model_turn` |
+| `tool_call` | `tool_started`, `tool_succeeded`, `tool_failed`, `tool_approval_required`, `mcp_tool_call`, `skill_invoked` |
+| `sandbox_execution` | `sandbox_started`, `sandbox_exited`, `sandbox_command`, `sandbox_cleanup_failed` |
+| `workspace` | `workspace_file_change`, `project_lease_acquired`, `project_lease_released` |
+| `policy_decision` | `authorization_decision`, `permit_project_access_transition` |
+| `human_approval` | `permit_approval_transition`, `approval_decided` |
+| `session` | `mcp_session_issued`, `mcp_session_rejected`, `mcp_session_expired` |
+| `system` | `audit_write_failed`, `telemetry_export_failed` |
+
+### Safe shape for the risky events
+
+| Event | Stored | Never stored |
+| --- | --- | --- |
+| `sandbox_command` | `program` (argv basename after env assignments and `bash -lc`), `argCount`, `exitCode`, `durationMs`, `stdoutBytes`, `commandHash` (sha256[:16]) | command string, cwd, env, output |
+| `workspace_file_change` | `fileCount`, `added`/`modified`/`deleted`; per file (≤20): `kind`, `pathHash`, `workspaceFile` only when under `/workspace` and not secret-like (`.env`, `*.pem`, `id_rsa`, …) | contents, host paths |
+| `model_turn` | item counters, `inputTokens`, `cachedInputTokens`, `outputTokens`, `durationMs` | prompt, reasoning, message text |
+| `mcp_tool_call` | `toolId`, `server`, `itemStatus`, `argHash`, `durationMs` | arguments, result, error text |
+| `sandbox_exited` | `exitCode`, `oomKilled`, `inspected`, `durationMs`, `peakCpuPct`, `peakMemBytes` | container logs |
+| `mcp_session_rejected` | `reason` (`missing`/`invalid`/`expired`), `loopback` flag | token, IP, headers |
+
+`safeAuditInput` enforces this: metadata keys matching prompt/output/path/env/
+command/token patterns are dropped unless on a short numeric allow-list,
+string values that look like commands or paths are dropped, and summaries are
+capped at 240 characters.
+
+### Tamper evidence
+
+The store adapter assigns `sequence`, `prevHash`, and `hash` inside the same
+`JsonStore.mutate` call that appends the event, so the chain is atomic with
+persistence. When the 10 000-event ring buffer trims, the last dropped event's
+`sequence` and `hash` are saved as `auditChainAnchor`, so verification stays
+valid across truncation. `GET /api/audit/verify` walks the chain and returns
+`{ ok, checked, brokenAtSequence?, reason? }`; legacy events written before
+hashing are skipped, not failed.
+
 ## Actual end-to-end flow
 
 1. The operator starts `npm run poc`. The launcher loads `.env`, requires
@@ -303,7 +415,9 @@ the resulting state and sends human control actions back through the API.
 4. Orchestration selects the next participant, acquires the Project's
    single-writer lease, and invokes Codex through either the local process or
    container runner. The run receives a short-lived MCP session bound to its
-   Agent, Project, and run IDs.
+   Agent, Project, and run IDs. The coordinator opens a run span under the
+   orchestration trace, and the host parses every JSONL line the Codex child
+   writes into sandbox, file-change, MCP, and model-turn audit events.
 5. An MCP call enters `ToolService`, which validates the tool and input, checks
    the effective role and policy authority, consumes the local seam or Permit
    operation approval when applicable, then runs the platform-owned executor.
@@ -315,9 +429,9 @@ the resulting state and sends human control actions back through the API.
 7. The operator starts the Project Preview. `PreviewService` resolves the
    supported command, runs it in a localhost-bound container, and exposes
    status, URL, and bounded logs through the API and UI.
-8. The Activity, audit timeline, usage report, and 2D Workspace all read the
-   persisted and runtime projections. None of those views becomes a second
-   policy authority.
+8. The Activity, audit timeline, Traces view, usage report, metrics hover
+   card, and 2D Workspace all read the persisted and runtime projections. None
+   of those views becomes a second policy authority.
 
 ## Three-minute demo
 
@@ -342,10 +456,12 @@ ready. Use a small task and a prebuilt runtime image when possible.
   and tool. Continue or retry explicitly. The previous denied invocation does
   not resume by itself. Show the fresh decision, the shared Preview status and
   logs, and the Project still containing the same artifact.
-- **2:35 to 3:00:** Open the Activity or audit timeline and usage view. Point
-  out the bounded orchestration events, denial and recovery, run status,
-  latency, and token availability. Finish on the 2D Workspace and its Preview
-  surface.
+- **2:35 to 3:00:** Open **Traces**, filter to Failure, open the Team's trace
+  and press "Jump to failing step" to land on the denied run. Expand the
+  Builder run to show `sandbox_command` and `workspace_file_change` spans with
+  no command text. Hover an Agent in the Workspace for the live metrics card,
+  then call `/api/audit/verify` to show the chain is intact. Finish on the 2D
+  Workspace and its Preview surface.
 
 <!-- TODO: Add the controlled denial and recovery screenshot at docs/images/failure-case.png -->
 
@@ -376,18 +492,32 @@ networking needs an explicit endpoint.
 ### Host development: `npm run dev`
 
 ```bash
-export ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
-export ARK_API_KEY=your-ark-api-key
-export ARK_MODEL=ep-your-endpoint-id
+cp .env.example .env
+# then fill in ARK_BASE_URL, ARK_API_KEY, ARK_MODEL in .env
 npm run dev
 ```
 
-This runs the API on `http://localhost:3000` and Vite on
-`http://localhost:5173`. It uses the default local-process Codex runner and
-requires a `codex` executable on the host. Unlike `npm run poc`, it does not
-force local authorization: set `AUTHORIZATION_MODE=local` with
-`HOST=127.0.0.1` for the repository policy, or configure Permit for the Permit
-path. Local authorization is rejected on a non-loopback host.
+`npm run dev` (`tsx watch --env-file-if-exists=../../.env`) loads the repo
+root `.env` automatically, so exporting the Ark variables by hand is no
+longer required. It runs the API on `http://localhost:3000` and Vite on
+`http://localhost:5173`. Unlike `npm run poc`, it does not force local
+authorization: set `AUTHORIZATION_MODE=local` with `HOST=127.0.0.1` in `.env`
+for the repository policy, or configure Permit for the Permit path. Local
+authorization is rejected on a non-loopback host.
+
+It uses the default local-process Codex runner, which requires a `codex`
+executable on the host (`npm install -g @openai/codex`). If you'd rather not
+install Codex on the host — or you're on a platform where the local sandbox
+isn't well supported — set `RUNTIME_PROVIDER=container` and
+`CONTAINER_ENGINE=docker` (or `podman`) in `.env` instead, and build the same
+runtime image `npm run poc` uses:
+
+```bash
+docker build -f Dockerfile.runtime -t volc-agent-runtime:local .
+```
+
+This runs Agents through `ContainerCodexRunner` instead, matching the sandbox
+`npm run poc` exercises, with no `codex` install needed on the host.
 
 ### Permit integration POC: `npm run build` then `npm run start`
 
@@ -450,9 +580,25 @@ npx vitest run --config vitest.web.config.ts \
   tests/web/workspace/workspace-adapter.test.ts
 ```
 
+Audit and observability checks:
+
+```bash
+npx vitest run --config vitest.server.config.ts \
+  tests/server/audit \
+  tests/server/telemetry/container-health-sampler.test.ts \
+  tests/server/usage/agent-metrics.test.ts \
+  tests/server/tools/mcp-session-service.test.ts
+
+npx vitest run --config vitest.web.config.ts \
+  tests/web/components/trace/trace-tree.test.ts \
+  tests/web/workspace/agent-metrics-format.test.ts
+```
+
 These tests exercise role denial, bounded orchestration and supervisor
-routing, shared Project writes, container argument construction, and the
-backend-to-2D Workspace projection.
+routing, shared Project writes, container argument construction, the
+backend-to-2D Workspace projection, the JSONL runtime tap and its redaction,
+sandbox lifecycle ordering (`inspect` before `rm`), the hash chain, trace-tree
+construction, export parity, and metrics derivation.
 
 ## Security and trust
 
@@ -503,6 +649,13 @@ See [`SECURITY.md`](SECURITY.md) for the repository security policy and
 - Previews are local and loopback-oriented. The resolver supports known
   `package.json` development commands and a static `index.html` fallback; it
   does not install dependencies automatically.
+- Audit evidence is bounded. The JSON store keeps the last 10 000 events with
+  a chain anchor; container CPU and memory samples are in-memory only and are
+  summarised to peaks on `sandbox_exited`. Tokens/s is computed from completed
+  runs, so it shows "—" while a turn is in flight rather than an estimate.
+- The runtime tap parses `codex exec --json` item types as documented today
+  (`command_execution`, `file_change`, `mcp_tool_call`, `reasoning`,
+  `agent_message`). New item types are counted, not interpreted.
 - Remaining screenshot placeholders are intentional. Only captures taken from
   the running application are embedded.
 
