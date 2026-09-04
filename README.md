@@ -125,23 +125,72 @@ grant flags.
 ### Observability
 
 **Problem.** A final Agent message cannot explain a policy denial, a failed
-child run, a tool call, or token and latency cost.
+child run, a shell command that ran inside the sandbox, a tool call, or token
+and latency cost.
 
-**Logic.** `AuditService` records bounded, redacted domain projections.
-`/api/audit/timeline` joins audit events with run snapshots, while the usage
-aggregator reads authoritative `turn.completed.usage` values from Codex when
-available and marks missing or partial counters instead of estimating them.
-OpenTelemetry is optional and spans orchestration, Agent/model execution, MCP,
-ToolService, authorization and approval, tool execution, and Preview lifecycle.
-Trace context can cross MCP and local or container process boundaries.
+**Logic.** `AuditService` records bounded, redacted evidence that the platform
+*observed*, never what the Agent *claimed*. Every event carries a stable
+`traceId`, `spanId`, optional `parentSpanId`, an `actorType` of `human`,
+`agent`, or `system`, and a `category` (orchestration, model_call, tool_call,
+sandbox_execution, workspace, policy_decision, human_approval, session,
+system). A Team run is therefore a tree: orchestration root, one span per
+dispatched participant, one span per Agent run, and child spans for everything
+the runtime did during that run.
 
-**Observable evidence.** Inspect `/api/audit`, `/api/audit/timeline`,
-`/api/projects/:id/activity`, `/api/runs/:id/activity`, and `/api/usage`.
-Set `OTEL_TRACES_EXPORTER=console` for local spans, or use `otlp` with an
-explicit endpoint. Telemetry failures are fail-open and do not block work.
-Raw prompts, model responses, tool payloads and outputs, credentials, headers,
-environment values, and host paths are excluded from audit and telemetry
-projections.
+Evidence is captured at seams the server controls:
+
+- **Control plane.** HTTP routes record human start/stop/continue, role
+  changes, and approval decisions. `AuthorizationService` and `ToolService`
+  record policy decisions and platform tool calls.
+- **Runtime tap.** The host owns the Codex child's stdout. Every
+  `codex exec --json` line is parsed on the host and turned into
+  `sandbox_command`, `workspace_file_change`, `mcp_tool_call`, and
+  `model_turn` events. Nothing runs inside the container to report on itself.
+- **Engine as witness.** The container runner records `sandbox_started` with
+  the image and resource limits, runs `inspect` before `rm` to capture the
+  real exit code and OOM flag, and records `sandbox_exited` with peak CPU and
+  memory from the host-side stats sampler.
+- **Sessions.** Per-run MCP bearer sessions record `mcp_session_issued`,
+  `mcp_session_expired`, and `mcp_session_rejected` (reason only, never the
+  token).
+
+Risky events store shape, not content: a sandbox command keeps the program
+basename, argument count, exit code, duration, output byte count, and a
+truncated SHA-256 of the command; a file change keeps counts, a path hash, and
+the workspace-relative path only when it is under `/workspace` and not a
+secret-like filename. The store is append-only with a monotonic `sequence`
+and a per-event `hash = sha256(prevHash + canonical(event))`; a chain anchor
+survives ring-buffer truncation so `GET /api/audit/verify` can prove the trail
+is intact.
+
+The usage aggregator still reads authoritative `turn.completed.usage` values
+from Codex and marks missing counters instead of estimating them. OpenTelemetry
+remains optional and fail-open; when enabled, the same W3C trace context is
+injected into the container and MCP headers.
+
+**Observable evidence.** Open the **Traces** tab for the run list with status
+filters and the trace detail view (timeline bars on the left, expandable span
+tree on the right, "Jump to failing step"). Hover an Agent in the Workspace
+for the live metrics card: state, elapsed, model, tokens/s, tool calls and
+denials, sandbox commands and files changed, and container CPU, memory, and
+PIDs when running in a container. The same data is in the Agent inspector
+with CPU and memory sparklines.
+
+Machine-readable endpoints:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/audit?agentId=&projectId=&runId=&traceId=&category=&actorType=&since=&until=` | Filtered event query |
+| `GET /api/audit/timeline` | Events joined with run snapshots plus `countsByCategory` |
+| `GET /api/audit/traces` and `GET /api/audit/traces/:traceId` | Trace list and nested span tree with `failingStep` |
+| `GET /api/runs/:id/trace` | Trace that contains a given run |
+| `GET /api/audit/export?format=jsonl\|csv` | Chronological export with the same filters |
+| `GET /api/audit/verify` | Hash-chain verification |
+| `GET /api/agents/:id/metrics` and `GET /api/projects/:id/agent-metrics` | Live per-Agent metrics |
+
+Raw prompts, model responses, tool payloads and outputs, command strings,
+credentials, headers, environment values, and host paths are excluded from
+audit and telemetry projections by construction.
 
 ![Runs, tokens, tool calls, and per-Agent usage](docs/images/observability.png)
 
@@ -212,6 +261,8 @@ flowchart LR
     P --> L
     O --> R[Agent runner]
     R --> C[Codex local process or container]
+    C -->|JSONL stdout tap| RA[Runtime action audit]
+    R -->|inspect before rm| SA[Sandbox lifecycle audit]
     C --> M[MCP session]
     M --> T[ToolService]
     T --> V[Input and output validation]
@@ -222,10 +273,12 @@ flowchart LR
     T --> E[Platform-owned tool executor]
     P --> PV[PreviewService]
     PV --> PC[Preview container]
-    O --> OBS[Audit, usage, and optional OTel]
-    R --> OBS
+    O --> OBS[Hash-chained audit, traces, usage, and optional OTel]
+    RA --> OBS
+    SA --> OBS
     T --> OBS
     PV --> OBS
+    OBS --> TV[Traces view and metrics hover card]
     API --> MR[Model registry]
     MR --> ARK[Ark provider adapter]
 ```
@@ -462,7 +515,7 @@ See [`SECURITY.md`](SECURITY.md) for the repository security policy and
 | Authorization and controlled denial | Repository owner/editor/viewer policy, role templates, `ToolService`, Permit adapter | Change an Agent to viewer or remove a custom role permission, attempt a write tool, and inspect `PERMISSION_DENIED` plus the audit event. |
 | Local and external policy paths | `scripts/start-local-poc.sh`, `RepositoryAuthorizationService`, and `PermitAuthorizationAdapter` | Compare the forced local launcher with a separately configured `AUTHORIZATION_MODE=permit` POC. |
 | Execution boundaries | `CodexRunner`, `ContainerCodexRunner`, `LocalContainerPreviewRuntime` | Inspect `/api/system`, container arguments, resource flags, and the focused runner test. |
-| Observable operations | `AuditService`, timeline queries, usage aggregation, optional OTel | Use `/api/audit/timeline`, `/api/usage`, and `OTEL_TRACES_EXPORTER=console` during a run. |
+| Observable operations | `AuditService` with trace identity and hash chain, `runtime-action-audit.ts` stdout tap, `sandbox-audit.ts`, `container-health-sampler.ts`, Traces view | Run a Team, open Traces, jump to the failing step, hover an Agent for live metrics, then call `/api/audit/verify` and `/api/audit/export?format=csv`. |
 | Human control and recovery | orchestration stop/continue routes, role assignment, approval seams, Preview controls | Stop a Team, change the policy, explicitly continue, then compare old and fresh events. |
 | 2D control surface | `apps/web/src/workspace/`, React HTML controls, Pixi scene, shared Preview panel | Open the Workspace tab, select an Agent, inspect Activity, start Preview, and refresh to verify projection behavior. |
 
@@ -473,6 +526,8 @@ Captured from the running local POC and embedded above:
 - `docs/images/agent-workspace.png`: shared 2D Workspace with two Agents
 - `docs/images/authorization.png`: Project-scoped role assignments
 - `docs/images/observability.png`: runs, tokens, tool calls, and Agent usage
+
+Not yet captured: the Traces view and the Workspace metrics hover card.
 - `docs/images/runtime.png`: container runtime label and Preview failure boundary
 
 Still needs a clean submission capture after the observed orchestration defect
