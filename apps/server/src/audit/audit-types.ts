@@ -198,4 +198,10 @@ export interface AuditReader {
   queryTimeline?: (filter?: AuditQuery) => import("./audit-timeline.js").AuditTimeline;
   /** Optional tamper-evidence check over the persisted chain. */
   verify?: () => import("./audit-hash.js").AuditChainVerification;
+  /** Optional span-tree projections over the same events. */
+  trace?: (traceId: string) => import("./audit-trace.js").AuditTrace | null;
+  traces?: (
+    filter?: import("./audit-trace.js").AuditTraceListQuery,
+  ) => import("./audit-trace.js").AuditTraceSummary[];
+  runTrace?: (runId: string) => import("./audit-trace.js").AuditTrace | null;
 }

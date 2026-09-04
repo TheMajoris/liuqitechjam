@@ -16,3 +16,13 @@ export const auditQuery = z.object({
   category: z.enum(AUDIT_CATEGORIES).optional(),
   actorType: z.enum(AUDIT_ACTOR_TYPES).optional(),
 });
+
+/** Trace listing is a bounded rollup over the same server-owned fields. */
+export const auditTraceListQuery = z.object({
+  agentId: z.string().uuid().optional(),
+  projectId: z.string().uuid().optional(),
+  status: z.enum(["success", "failure"]).optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+});
+
+export const auditTraceIdParams = z.object({ traceId: z.string().min(1).max(64) });

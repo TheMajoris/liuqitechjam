@@ -14,6 +14,13 @@ import { newSpanId, newTraceId } from "./audit-span.js";
 import type { AuditEventDraft, AuditStoreAdapter } from "./audit-store.js";
 import { verifyAuditChain, type AuditChainVerification } from "./audit-hash.js";
 import {
+  buildTraceTree,
+  listTraces,
+  type AuditTrace,
+  type AuditTraceListQuery,
+  type AuditTraceSummary,
+} from "./audit-trace.js";
+import {
   queryAuditTimeline,
   type AuditRunReader,
   type AuditTimeline,
@@ -52,6 +59,25 @@ export class AuditService implements AuditRecorder, AuditReader {
 
   verify(): AuditChainVerification {
     return verifyAuditChain(this.store.read(), this.store.anchor()?.hash);
+  }
+
+  trace(traceId: string): AuditTrace | null {
+    const events = this.readNormalized().filter((event) => event.traceId === traceId);
+    return events.length === 0 ? null : buildTraceTree(events, traceId);
+  }
+
+  traces(filter: AuditTraceListQuery = {}): AuditTraceSummary[] {
+    return listTraces(this.readNormalized(), filter);
+  }
+
+  /** A run belonging to an orchestration resolves to the orchestration trace. */
+  runTrace(runId: string): AuditTrace | null {
+    const traceId = this.readNormalized().find((event) => event.runId === runId)?.traceId;
+    return traceId === undefined ? null : this.trace(traceId);
+  }
+
+  private readNormalized(): AuditEvent[] {
+    return this.store.read().map(normalizeAuditEvent);
   }
 
   query(filter: AuditQuery = {}): AuditEvent[] {
@@ -102,6 +128,17 @@ export {
 export { normalizeAuditEvent } from "./audit-normalize.js";
 export { newSpanId, newTraceId } from "./audit-span.js";
 export { MAX_AUDIT_QUERY_LIMIT, queryAuditEvents } from "./audit-query.js";
+export {
+  buildTraceTree,
+  listTraces,
+  DEFAULT_AUDIT_TRACE_LIST_LIMIT,
+  MAX_AUDIT_TRACE_LIST_LIMIT,
+  type AuditTrace,
+  type AuditTraceFailingStep,
+  type AuditTraceListQuery,
+  type AuditTraceNode,
+  type AuditTraceSummary,
+} from "./audit-trace.js";
 export {
   queryAuditTimeline,
   type AuditRunReader,
