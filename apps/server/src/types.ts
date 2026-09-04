@@ -266,6 +266,8 @@ export interface RunnerRequest {
   modelSnapshot?: AgentModelSnapshot;
   /** Omitted for isolated/test runs where MCP is disabled. */
   mcp?: RunnerMcpConfig;
+  /** Host-side tap over the worker's stdout events; never passed to the child. */
+  observer?: import("./audit/runtime-action-audit.js").RuntimeActionObserver;
 }
 
 export interface AgentRunner {

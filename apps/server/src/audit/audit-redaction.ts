@@ -20,7 +20,58 @@ export const MAX_AUDIT_METADATA_VALUE_LENGTH = 160;
 const unsafeText = /\b(?:prompt|raw\s+output|provider\s+body|response\s+body|headers?|environment|env|workspace\s+path|cwd|working\s+directory|command)\b/i;
 const unsafeKey = /(?:prompt|output|body|header|secret|token|password|credential|authorization|environment|env|path|cwd|command)/i;
 /** Numeric usage counters are safe evidence even though their names match the deny-list. */
-const allowedMetadataKeys = new Set(["inputTokens", "cachedInputTokens", "outputTokens", "stdoutBytes", "stderrBytes", "commandHash"]);
+const allowedMetadataKeys = new Set([
+  "inputTokens",
+  "cachedInputTokens",
+  "outputTokens",
+  "stdoutBytes",
+  "stderrBytes",
+  "commandHash",
+  "workspaceFile",
+  "pathHash",
+  "argHash",
+  "commandItems",
+]);
+
+const shellWrappers = new Set(["bash", "sh", "zsh"]);
+const envAssignment = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const shellCommandFlag = /^-[a-z]*c$/;
+
+function basename(token: string): string {
+  const trimmed = token.replace(/^['"`]+/, "").replace(/['"`]+$/, "");
+  const segment = trimmed.split(/[\\/]/).at(-1) ?? "";
+  return segment.replace(/\.exe$/i, "").slice(0, 64);
+}
+
+/**
+ * The executable name of a sandbox command. The arguments, paths, and any
+ * inline script body are discarded; only the program identity is evidence.
+ */
+export function programBasename(command: unknown): string {
+  if (typeof command !== "string") return "unknown";
+  const tokens = command.trim().split(/\s+/).filter((token) => token.length > 0);
+  let index = 0;
+  while (index < tokens.length && envAssignment.test(tokens[index] ?? "")) index += 1;
+  const head = tokens[index];
+  if (head === undefined) return "unknown";
+  if (
+    shellWrappers.has(basename(head).toLowerCase()) &&
+    shellCommandFlag.test(tokens[index + 1] ?? "")
+  ) {
+    const inner = tokens[index + 2];
+    if (inner === undefined) return "unknown";
+    return basename(inner) || "unknown";
+  }
+  return basename(head) || "unknown";
+}
+
+/** Filenames whose mere name is a credential signal; never retained verbatim. */
+export const SECRET_LIKE_FILENAME =
+  /(^|\/)(\.env(\..*)?|.*\.pem|.*\.key|id_rsa.*|id_ed25519.*|.*\.p12|.*\.pfx|.*secret.*|.*credential.*|\.npmrc|\.netrc)$/i;
+
+export function isSecretLikeFilename(path: string): boolean {
+  return SECRET_LIKE_FILENAME.test(path);
+}
 
 function asText(value: unknown): string {
   return typeof value === "string" ? value : String(value ?? "");

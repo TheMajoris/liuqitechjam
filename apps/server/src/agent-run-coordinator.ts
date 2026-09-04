@@ -31,6 +31,10 @@ import type {
   AuditSpan,
 } from "./audit/audit-types.js";
 import { newSpanId } from "./audit/audit-span.js";
+import {
+  createRuntimeActionObserver,
+  type RuntimeActionObserver,
+} from "./audit/runtime-action-audit.js";
 import { agentPrincipal } from "./access/access-types.js";
 
 const RUN_POLL_INTERVAL_MS = 50;
@@ -416,6 +420,19 @@ export class AgentRunCoordinator {
         modelSnapshot === undefined && run.modelSnapshot === undefined
           ? undefined
           : structuredClone(modelSnapshot ?? run.modelSnapshot);
+      // One tap per Run: worker stdout events are audited as children of the
+      // Run span. Omitted entirely when no audit sink is configured.
+      const auditSink = this.dependencies.getAudit?.();
+      const observer: RuntimeActionObserver | undefined = auditSink
+        ? createRuntimeActionObserver({
+            audit: auditSink,
+            runId: run.id,
+            agentId: agentAtStart.id,
+            ...(projectId === undefined ? {} : { projectId }),
+            ...(orchestrationId === undefined ? {} : { orchestrationId }),
+            parentSpan: auditSpan,
+          })
+        : undefined;
       const modelAttempts = [runtimeModel, ...fallbackModels];
       let result: RunnerResult | undefined;
       let selectedModelIndex = -1;
@@ -435,6 +452,7 @@ export class AgentRunCoordinator {
             // conversation with a different model.
             threadId: modelIndex === 0 ? initialThreadId : null,
             model: attempt,
+            ...(observer === undefined ? {} : { observer }),
             ...(assignmentSnapshot === undefined
               ? {}
               : { modelSnapshot: structuredClone(assignmentSnapshot) }),

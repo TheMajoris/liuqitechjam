@@ -298,6 +298,40 @@ describe("Run audit spans", () => {
     expect(JSON.stringify(failed)).not.toContain("worker crashed");
   });
 
+  it("parents runtime stream events under the same run span", async () => {
+    const audit = new RecordingAudit();
+    const runner: AgentRunner = {
+      run: async (request) => {
+        request.observer?.onEvent({
+          type: "item.completed",
+          item: {
+            id: "item_0",
+            type: "command_execution",
+            command: "bash -lc 'npm test'",
+            aggregated_output: "ok",
+            exit_code: 0,
+            status: "completed",
+          },
+        });
+        return { output: "done", threadId: request.threadId ?? "thread", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner, { audit });
+    const agent = await service.createAgent({ name: "Observed" });
+    const { run } = await service.sendMessage(agent.id, "observe this");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    await expect.poll(() => audit.ofType("sandbox_command").length).toBe(1);
+
+    const started = audit.ofType("run_started")[0];
+    const command = audit.ofType("sandbox_command")[0];
+    expect(command?.span?.parentSpanId).toBe(started?.span?.spanId);
+    expect(command?.span?.traceId).toBe(started?.span?.traceId);
+    expect(command?.runId).toBe(run.id);
+    expect(command?.metadata).toMatchObject({ program: "npm", exitCode: 0 });
+  });
+
   it("records a model fallback attempt as a retry of the same run span", async () => {
     const audit = new RecordingAudit();
     let attempts = 0;

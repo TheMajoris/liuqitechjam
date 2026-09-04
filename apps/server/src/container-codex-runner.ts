@@ -250,7 +250,7 @@ export class ContainerCodexRunner implements AgentRunner {
         timeoutMs: this.config.codexTimeoutMs,
         maxOutputBytes: this.config.codexMaxOutputBytes,
         startErrorMessage: "Container runtime could not start",
-        onLine: (line) => parseCodexEventLine(line, parsed),
+        onLine: (line) => parseCodexEventLine(line, parsed, request.observer),
         stop: (child) => {
           if (!termination) {
             termination = this.removeContainer(activeContainerName, child);
