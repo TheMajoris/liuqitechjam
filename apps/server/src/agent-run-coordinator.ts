@@ -35,6 +35,10 @@ import {
   createRuntimeActionObserver,
   type RuntimeActionObserver,
 } from "./audit/runtime-action-audit.js";
+import {
+  createSandboxAuditSink,
+  type SandboxAuditSink,
+} from "./audit/sandbox-audit.js";
 import { agentPrincipal } from "./access/access-types.js";
 
 const RUN_POLL_INTERVAL_MS = 50;
@@ -433,6 +437,16 @@ export class AgentRunCoordinator {
             parentSpan: auditSpan,
           })
         : undefined;
+      const sandboxAudit: SandboxAuditSink | undefined = auditSink
+        ? createSandboxAuditSink({
+            audit: auditSink,
+            runId: run.id,
+            agentId: agentAtStart.id,
+            ...(projectId === undefined ? {} : { projectId }),
+            ...(orchestrationId === undefined ? {} : { orchestrationId }),
+            parentSpan: auditSpan,
+          })
+        : undefined;
       const modelAttempts = [runtimeModel, ...fallbackModels];
       let result: RunnerResult | undefined;
       let selectedModelIndex = -1;
@@ -453,6 +467,7 @@ export class AgentRunCoordinator {
             threadId: modelIndex === 0 ? initialThreadId : null,
             model: attempt,
             ...(observer === undefined ? {} : { observer }),
+            ...(sandboxAudit === undefined ? {} : { sandboxAudit }),
             ...(assignmentSnapshot === undefined
               ? {}
               : { modelSnapshot: structuredClone(assignmentSnapshot) }),

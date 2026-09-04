@@ -11,6 +11,7 @@ import {
   type ParsedEvents,
 } from "./codex-runner.js";
 import { RetryableModelError, RunCancelledError } from "./errors.js";
+import type { SandboxAuditSink } from "./audit/sandbox-audit.js";
 import { MCP_BEARER_TOKEN_ENV } from "./tools/mcp-session-service.js";
 import type {
   AgentRunner,
@@ -91,6 +92,37 @@ interface ActiveContainer {
   execution: ChildProcessExecution;
 }
 
+/** The engine `inspect` seam; only the fields we treat as evidence are named. */
+interface ContainerState {
+  ExitCode?: number;
+  OOMKilled?: boolean;
+  StartedAt?: string;
+  FinishedAt?: string;
+}
+
+const INSPECT_TIMEOUT_MS = 4_000;
+const REMOVE_TIMEOUT_MS = 8_000;
+
+export type ContainerEngineExec = (
+  args: string[],
+  timeoutMs: number,
+) => Promise<{ stdout: string }>;
+
+function parseContainerState(stdout: unknown): ContainerState | null {
+  if (typeof stdout !== "string") return null;
+  const trimmed = stdout.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as ContainerState;
+  } catch {
+    return null;
+  }
+}
+
 export function containerName(agentId: string, instanceId = "default"): string {
   const safeInstance = instanceId.replace(/[^a-zA-Z0-9_.-]/g, "-").slice(0, 32);
   const safeAgent = agentId.replace(/[^a-zA-Z0-9_.-]/g, "-").slice(0, 48);
@@ -158,12 +190,23 @@ export function buildContainerRunArgs(
 export class ContainerCodexRunner implements AgentRunner {
   private readonly active = new Map<string, ActiveContainer>();
   private readonly mcpProbe: (endpoint: string) => Promise<boolean>;
+  private readonly execEngine: ContainerEngineExec;
 
   constructor(
     private readonly config: AppConfig,
-    options: { mcpProbe?: (endpoint: string) => Promise<boolean> } = {},
+    options: {
+      mcpProbe?: (endpoint: string) => Promise<boolean>;
+      execEngine?: ContainerEngineExec;
+    } = {},
   ) {
     this.mcpProbe = options.mcpProbe ?? ((endpoint) => probeMcpEndpoint(endpoint));
+    this.execEngine =
+      options.execEngine ??
+      ((args, timeoutMs) =>
+        execFileAsync(this.config.containerEngine, args, {
+          timeout: timeoutMs,
+          env: this.childEnvironment(),
+        }));
   }
 
   async isAvailable(): Promise<boolean> {
@@ -191,21 +234,46 @@ export class ContainerCodexRunner implements AgentRunner {
     return true;
   }
 
-  private removeContainer(
+  /**
+   * Inspect the container for its exit evidence, then remove it. Inspect runs
+   * first because `--rm` erases the record the moment removal succeeds; a
+   * failed inspect only means the container is already gone, never an error.
+   */
+  private async inspectAndRemove(
     containerName: string,
-    child: ChildProcess,
-  ): Promise<void> {
-    return execFileAsync(
-      this.config.containerEngine,
-      ["rm", "--force", containerName],
-      { timeout: 8_000, env: this.childEnvironment() },
-    )
-      .then(() => undefined)
-      .catch(() => {
+    child: ChildProcess | undefined,
+    sandboxAudit: SandboxAuditSink | undefined,
+  ): Promise<ContainerState | null> {
+    const cleanupStartedAt = Date.now();
+    let state: ContainerState | null = null;
+    try {
+      const inspected = await this.execEngine(
+        ["inspect", containerName, "--format", "{{json .State}}"],
+        INSPECT_TIMEOUT_MS,
+      );
+      state = parseContainerState(inspected.stdout);
+    } catch {
+      state = null;
+    }
+    try {
+      await this.execEngine(
+        ["rm", "--force", containerName],
+        REMOVE_TIMEOUT_MS,
+      );
+    } catch {
+      // Only a stop path owns the container's removal; on the normal path the
+      // container is already gone and a rejection is expected.
+      if (child) {
+        sandboxAudit?.cleanupFailed({
+          stage: "remove",
+          durationMs: Date.now() - cleanupStartedAt,
+        });
         child.kill("SIGTERM");
         const forceKill = setTimeout(() => child.kill("SIGKILL"), 3_000);
         forceKill.unref();
-      });
+      }
+    }
+    return state;
   }
 
   async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -239,8 +307,30 @@ export class ContainerCodexRunner implements AgentRunner {
       request.agentId,
       this.config.runtimeInstanceId,
     );
-    let termination: Promise<void> | null = null;
+    let termination: Promise<ContainerState | null> | null = null;
+    let inspectedState: ContainerState | null = null;
+    // Inspect + remove is idempotent per run: the stop path and the normal
+    // path share one promise so the container is never inspected twice.
+    const cleanup = (child?: ChildProcess): Promise<ContainerState | null> => {
+      if (!termination) {
+        termination = this.inspectAndRemove(
+          activeContainerName,
+          child,
+          request.sandboxAudit,
+        );
+      }
+      return termination;
+    };
     let execution: ChildProcessExecution;
+    request.sandboxAudit?.started({
+      engine: this.config.containerEngine,
+      image: this.config.containerRuntimeImage,
+      cpuLimit: this.config.containerCpuLimit,
+      memoryLimit: this.config.containerMemoryLimit,
+      pidsLimit: this.config.containerPidsLimit,
+      containerName: activeContainerName,
+    });
+    const startedAt = Date.now();
     try {
       execution = startChildProcessExecution({
         command: this.config.containerEngine,
@@ -251,12 +341,7 @@ export class ContainerCodexRunner implements AgentRunner {
         maxOutputBytes: this.config.codexMaxOutputBytes,
         startErrorMessage: "Container runtime could not start",
         onLine: (line) => parseCodexEventLine(line, parsed, request.observer),
-        stop: (child) => {
-          if (!termination) {
-            termination = this.removeContainer(activeContainerName, child);
-          }
-          return termination;
-        },
+        stop: (child) => cleanup(child).then(() => undefined),
       });
     } catch (error) {
       throw new RetryableModelError("Container runtime could not start", {
@@ -265,8 +350,8 @@ export class ContainerCodexRunner implements AgentRunner {
     }
     this.active.set(request.agentId, { execution });
 
+    let result: Awaited<typeof execution.completed> | undefined;
     try {
-      let result;
       try {
         result = await execution.completed;
       } catch (error) {
@@ -274,6 +359,7 @@ export class ContainerCodexRunner implements AgentRunner {
           cause: error,
         });
       }
+      inspectedState = await cleanup();
       if (result.cancelled) throw new RunCancelledError();
       if (result.timedOut) {
         throw new Error("Runtime timed out after " + this.config.codexTimeoutMs + " ms");
@@ -294,6 +380,17 @@ export class ContainerCodexRunner implements AgentRunner {
       return { output, threadId: parsed.threadId, usage: parsed.usage };
     } finally {
       this.active.delete(request.agentId);
+      const inspected = inspectedState !== null;
+      request.sandboxAudit?.exited({
+        exitCode: inspected
+          ? (inspectedState?.ExitCode ?? null)
+          : (result?.exitCode ?? null),
+        oomKilled: inspected ? Boolean(inspectedState?.OOMKilled) : null,
+        durationMs: Date.now() - startedAt,
+        inspected,
+        cancelled: result?.cancelled ?? false,
+        timedOut: result?.timedOut ?? false,
+      });
     }
   }
 

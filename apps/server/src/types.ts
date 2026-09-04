@@ -268,6 +268,8 @@ export interface RunnerRequest {
   mcp?: RunnerMcpConfig;
   /** Host-side tap over the worker's stdout events; never passed to the child. */
   observer?: import("./audit/runtime-action-audit.js").RuntimeActionObserver;
+  /** Sandbox lifecycle witness; ignored by runners without a container. */
+  sandboxAudit?: import("./audit/sandbox-audit.js").SandboxAuditSink;
 }
 
 export interface AgentRunner {
