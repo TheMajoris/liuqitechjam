@@ -12,6 +12,8 @@ import type { OrchestrationSession } from "../../apps/server/src/orchestration/t
 import type { ProjectView } from "../../apps/server/src/projects/project-types.js";
 import type { AuditEvent, AuditEventInput } from "../../apps/server/src/audit/audit-types.js";
 import type { McpRouteDependencies } from "../../apps/server/src/mcp-server.js";
+import { AgentMetricsService } from "../../apps/server/src/usage/agent-metrics.js";
+import { HttpError } from "../../apps/server/src/errors.js";
 
 const service = {
   listAgents: () => [],
@@ -284,6 +286,51 @@ describe("HTTP boundary", () => {
     const verified = await app.inject({ method: "GET", url: "/api/audit/verify" });
     expect(verified.statusCode).toBe(200);
     expect(verified.json()).toEqual({ ok: true, checked: 3 });
+    await app.close();
+  });
+
+  it("exposes GET /api/agents/:id/metrics and 404s for an unknown Agent", async () => {
+    const agentId = "77777777-7777-4777-8777-777777777777";
+    const metricsService = {
+      listAgents: () => [],
+      systemInfo: async () => ({}),
+      getAgent: (id: string) => {
+        if (id !== agentId) throw new HttpError(404, "Agent not found");
+        return { id };
+      },
+    } as unknown as AgentService;
+    const agentMetrics = new AgentMetricsService({
+      agents: () => [],
+      runs: () => [],
+    });
+    const app = await createApp(
+      loadConfig({ NODE_ENV: "test" }),
+      metricsService,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      agentMetrics,
+    );
+
+    const found = await app.inject({
+      method: "GET",
+      url: `/api/agents/${agentId}/metrics`,
+    });
+    expect(found.statusCode).toBe(200);
+    expect(found.json()).toMatchObject({
+      agentId,
+      lifecycle: "stopped",
+      tools: { calls: 0, denied: 0, sandboxCommands: 0, filesChanged: 0 },
+    });
+
+    const missing = await app.inject({
+      method: "GET",
+      url: "/api/agents/88888888-8888-4888-8888-888888888888/metrics",
+    });
+    expect(missing.statusCode).toBe(404);
     await app.close();
   });
 });

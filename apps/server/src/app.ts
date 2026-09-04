@@ -14,6 +14,8 @@ import {
 import { humanPrincipal } from "./access/access-types.js";
 import type { AgentService } from "./agent-service.js";
 import { registerAgentMiddlewareRoutes } from "./http/agent-middleware-routes.js";
+import { registerAgentMetricsRoutes } from "./http/agent-metrics-routes.js";
+import type { AgentMetricsService } from "./usage/agent-metrics.js";
 import { recordHumanAction } from "./http/human-action-audit.js";
 import { agentIdParams, auditQuery, runIdParams } from "./http/route-schemas.js";
 import { registerMcpRoute, type McpRouteDependencies } from "./mcp-server.js";
@@ -284,6 +286,7 @@ export async function createApp(
   projectService?: ProjectServiceContract,
   mcp?: McpRouteDependencies,
   modelCatalog?: ModelCatalogServiceContract,
+  agentMetrics?: AgentMetricsService,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -604,6 +607,15 @@ export async function createApp(
     service,
     ...(mcp === undefined ? {} : { mcp }),
   });
+
+  if (agentMetrics) {
+    registerAgentMetricsRoutes(app, {
+      metrics: agentMetrics,
+      getAgent: (agentId) => service.getAgent(agentId),
+      projectAgentIds: async (projectId) =>
+        (await requireProjectService(projectService).get(projectId)).agentIds,
+    });
+  }
 
   // ------------------------------------------------------------- Projects
   // A Project owns the shared workspace a Team collaborates on. Its preview
