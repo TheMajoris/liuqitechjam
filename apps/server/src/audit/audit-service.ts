@@ -8,7 +8,11 @@ import type {
 } from "./audit-types.js";
 import { AUDIT_EVENT_CATEGORY } from "./audit-types.js";
 import { safeAuditInput } from "./audit-redaction.js";
-import { queryAuditEvents } from "./audit-query.js";
+import { queryAuditEvents, queryAuditEventsForExport } from "./audit-query.js";
+import {
+  exportAuditEvents,
+  type AuditExportFormat,
+} from "./audit-export.js";
 import { normalizeAuditEvent } from "./audit-normalize.js";
 import { newSpanId, newTraceId } from "./audit-span.js";
 import type { AuditEventDraft, AuditStoreAdapter } from "./audit-store.js";
@@ -76,6 +80,13 @@ export class AuditService implements AuditRecorder, AuditReader {
     return traceId === undefined ? null : this.trace(traceId);
   }
 
+  export(filter: AuditQuery = {}, format: AuditExportFormat = "jsonl"): string {
+    return exportAuditEvents(
+      queryAuditEventsForExport(this.readNormalized(), filter),
+      format,
+    );
+  }
+
   private readNormalized(): AuditEvent[] {
     return this.store.read().map(normalizeAuditEvent);
   }
@@ -127,7 +138,19 @@ export {
 } from "./audit-redaction.js";
 export { normalizeAuditEvent } from "./audit-normalize.js";
 export { newSpanId, newTraceId } from "./audit-span.js";
-export { MAX_AUDIT_QUERY_LIMIT, queryAuditEvents } from "./audit-query.js";
+export {
+  MAX_AUDIT_QUERY_LIMIT,
+  queryAuditEvents,
+  queryAuditEventsForExport,
+} from "./audit-query.js";
+export {
+  AUDIT_CSV_COLUMNS,
+  AUDIT_EXPORT_FORMATS,
+  auditExportContentType,
+  auditExportFilename,
+  exportAuditEvents,
+  type AuditExportFormat,
+} from "./audit-export.js";
 export {
   buildTraceTree,
   listTraces,

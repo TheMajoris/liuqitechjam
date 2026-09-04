@@ -1,6 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { AUDIT_CATEGORIES, type AuditCategory, type AuditReader } from "../audit/audit-types.js";
+import {
+  auditExportContentType,
+  auditExportFilename,
+} from "../audit/audit-export.js";
 import type { AgentService } from "../agent-service.js";
 import { humanPrincipal } from "../access/access-types.js";
 import { HttpError } from "../errors.js";
@@ -9,6 +13,7 @@ import type { McpRouteDependencies } from "../mcp-server.js";
 import {
   agentIdParams,
   auditQuery,
+  auditExportQuery,
   auditTraceIdParams,
   auditTraceListQuery,
   runIdParams,
@@ -593,6 +598,19 @@ export function registerAgentMiddlewareRoutes(
   app.get("/api/audit", async (request) => ({
     events: requireAuditService(mcp).query(auditQuery.parse(request.query)),
   }));
+
+  app.get("/api/audit/export", async (request, reply) => {
+    const audit = requireAuditService(mcp);
+    if (!audit.export) throw new HttpError(503, "Audit export is not configured");
+    const { format, ...filter } = auditExportQuery.parse(request.query);
+    return reply
+      .header("content-type", auditExportContentType(format))
+      .header(
+        "content-disposition",
+        `attachment; filename="${auditExportFilename(format)}"`,
+      )
+      .send(audit.export(filter, format));
+  });
 
   app.get("/api/audit/traces", async (request) => {
     const audit = requireAuditService(mcp);

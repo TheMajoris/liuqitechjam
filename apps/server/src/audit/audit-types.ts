@@ -185,6 +185,9 @@ export interface AuditQuery {
   traceId?: string | undefined;
   category?: AuditCategory | undefined;
   actorType?: AuditActorType | undefined;
+  /** Inclusive ISO bounds on createdAt. */
+  since?: string | undefined;
+  until?: string | undefined;
 }
 
 /** Small seam used by authorization, tool, skill, and approval modules. */
@@ -204,4 +207,9 @@ export interface AuditReader {
     filter?: import("./audit-trace.js").AuditTraceListQuery,
   ) => import("./audit-trace.js").AuditTraceSummary[];
   runTrace?: (runId: string) => import("./audit-trace.js").AuditTrace | null;
+  /** Optional uncapped serialization of the same filtered events. */
+  export?: (
+    filter: AuditQuery,
+    format: import("./audit-export.js").AuditExportFormat,
+  ) => string;
 }
