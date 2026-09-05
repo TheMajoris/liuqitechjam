@@ -3,7 +3,7 @@
 # private keys here.
 region           = "ap-southeast-1"
 zone_id          = "ap-southeast-1a"
-image_id         = "image-yde3i2v6bwbhccnzexzc6"
+image_id         = "image-yde3i2v6bwbhccnzezc6"
 instance_type    = "ecs.g4i.large"
 key_pair_name    = "liuqissh"
 project_name     = "default"
