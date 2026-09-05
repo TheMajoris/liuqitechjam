@@ -5,7 +5,7 @@ terraform {
   # execution so GitHub Actions performs the plan/apply while HCP provides
   # encrypted state storage and locking.
   cloud {
-    organization = "darren322-org"
+    organization = "liuqitechjam-staging"
 
     workspaces {
       name = "liuqitechjam-staging"
