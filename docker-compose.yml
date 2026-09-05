@@ -7,7 +7,7 @@ services:
         NODE_IMAGE: ${CONTAINER_RUNTIME_BASE_IMAGE:-node:22-bookworm-slim}
         DEBIAN_MIRROR: ${CONTAINER_APT_MIRROR:-}
         DEBIAN_SECURITY_MIRROR: ${CONTAINER_APT_SECURITY_MIRROR:-}
-    image: volc-agent-launchpad:local
+    image: ${LAUNCHPAD_IMAGE:-volc-agent-launchpad:local}
     labels:
       org.opencontainers.image.title: "Liu Qi Agent Management (LQAM)"
       org.opencontainers.image.description: "Control and governance for autonomous multi-agent workspaces"
@@ -22,6 +22,19 @@ services:
       AGENT_WORKSPACE_ROOT: /app/workspaces
       CODEX_HOME: /app/codex-home
       CODEX_SANDBOX_MODE: ${CODEX_SANDBOX_MODE:-workspace-write}
+      AUTHORIZATION_MODE: ${AUTHORIZATION_MODE:-permit}
+      APP_AUTH_TOKEN: ${APP_AUTH_TOKEN:-}
+      ARK_API_KEY: ${ARK_API_KEY:-}
+      ARK_MODEL: ${ARK_MODEL:-}
+      ARK_BASE_URL: ${ARK_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      PERMIT_API_KEY: ${PERMIT_API_KEY:-}
+      PERMIT_PDP_URL: ${PERMIT_PDP_URL:-}
+      PERMIT_PROJECT_ID: ${PERMIT_PROJECT_ID:-}
+      PERMIT_ENVIRONMENT_ID: ${PERMIT_ENVIRONMENT_ID:-}
+      PERMIT_TENANT_KEY: ${PERMIT_TENANT_KEY:-}
+      PERMIT_OPERATION_APPROVAL_CONFIG_ID: ${PERMIT_OPERATION_APPROVAL_CONFIG_ID:-}
+      PERMIT_ACCESS_REQUEST_CONFIG_ID: ${PERMIT_ACCESS_REQUEST_CONFIG_ID:-}
+      PERMIT_API_URL: ${PERMIT_API_URL:-https://api.permit.io}
       SEARCH_PROVIDER: ${SEARCH_PROVIDER:-searxng}
       SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080/search}
       PERSISTENCE_BACKEND: ${PERSISTENCE_BACKEND:-postgres}

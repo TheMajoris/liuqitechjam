@@ -42,6 +42,24 @@ variable "allowed_web_cidr" {
 variable "allowed_ssh_cidr" {
   description = "CIDR allowed to SSH to the ECS."
   type        = string
+  validation {
+    condition     = var.allowed_ssh_cidr != "0.0.0.0/0"
+    error_message = "allowed_ssh_cidr must not expose SSH to the entire Internet."
+  }
+}
+
+variable "github_actions_ssh_cidr" {
+  description = "Ephemeral /32 CIDR for the current GitHub-hosted deployment runner."
+  type        = string
+  default     = ""
+  validation {
+    condition = var.github_actions_ssh_cidr == "" || (
+      endswith(var.github_actions_ssh_cidr, "/32") &&
+      can(cidrhost(var.github_actions_ssh_cidr, 0)) &&
+      var.github_actions_ssh_cidr != "0.0.0.0/0"
+    )
+    error_message = "github_actions_ssh_cidr must be an IPv4 /32 or empty; it must not be 0.0.0.0/0."
+  }
 }
 
 variable "repository_url" {
@@ -54,34 +72,16 @@ variable "repository_url" {
 }
 
 variable "repository_ref" {
-  description = "Git branch or tag deployed by cloud-init."
+  description = "Git branch, tag, or commit checked out by cloud-init for deployment scripts."
   type        = string
-  default     = "main"
+  default     = "staging"
 }
 
-variable "ark_api_key" {
-  description = "Volcengine Ark API key. Supplied through TF_VAR_ark_api_key."
+variable "image_ref" {
+  description = "Immutable public GHCR image reference built for this deployment."
   type        = string
-  sensitive   = true
-}
-
-variable "app_auth_token" {
-  description = "Shared browser/API demo token. Supplied through TF_VAR_app_auth_token."
-  type        = string
-  sensitive   = true
   validation {
-    condition     = length(var.app_auth_token) >= 24 && length(var.app_auth_token) <= 128 && can(regex("^[A-Za-z0-9._~-]+$", var.app_auth_token)) && !startswith(var.app_auth_token, "replace-")
-    error_message = "app_auth_token must contain 24-128 URL-safe, non-placeholder characters."
+    condition     = startswith(var.image_ref, "ghcr.io/") && length(var.image_ref) > 20
+    error_message = "image_ref must be a public GHCR image reference (ghcr.io/<owner>/<repo>:<tag>)."
   }
-}
-
-variable "ark_model" {
-  description = "Ark endpoint/model ID supporting the Responses API."
-  type        = string
-}
-
-variable "ark_base_url" {
-  description = "Ark OpenAI-compatible API base URL."
-  type        = string
-  default     = "https://ark.cn-beijing.volces.com/api/v3"
 }

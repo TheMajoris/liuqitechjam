@@ -6,8 +6,12 @@ key_pair_name    = "replace-with-existing-key-pair"
 project_name     = "default"
 allowed_web_cidr = "203.0.113.0/24"
 allowed_ssh_cidr = "203.0.113.10/32"
+github_actions_ssh_cidr = ""
 
 # Push this generated repository to a public Git remote before using the
 # full Terraform + cloud-init path.
 repository_url = "https://github.com/your-org/volc-agent-launchpad.git"
-repository_ref = "main"
+repository_ref = "staging"
+
+# CI replaces this with ghcr.io/<owner>/<repo>:<commit-sha> during plan.
+image_ref = "ghcr.io/your-org/volc-agent-launchpad:replace-with-commit-sha"

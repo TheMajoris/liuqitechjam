@@ -157,9 +157,9 @@ const envSchema = z.object({
     .url()
     .default("https://ark.cn-beijing.volces.com/api/v3"),
   /**
-   * Selects the authorization authority for the process. Permit is the safe
-   * default; the local repository policy is only enabled by an explicit
-   * development/POC launcher choice.
+   * Selects the authorization authority for the process. Permit remains the
+   * default for external-policy deployments; staging can explicitly opt into
+   * the repository-backed policy with AUTHORIZATION_MODE=local.
    */
   AUTHORIZATION_MODE: z.enum(["local", "permit"]).default("permit"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -194,9 +194,13 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
   }
   const authToken = env.APP_AUTH_TOKEN?.trim() ?? "";
   const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"]);
-  if (env.AUTHORIZATION_MODE === "local" && !loopbackHosts.has(env.HOST)) {
+  if (
+    env.AUTHORIZATION_MODE === "local" &&
+    env.NODE_ENV !== "production" &&
+    !loopbackHosts.has(env.HOST)
+  ) {
     throw new Error(
-      "AUTHORIZATION_MODE=local requires HOST to be a loopback address (127.0.0.1, ::1, or localhost)",
+      "AUTHORIZATION_MODE=local requires a loopback HOST outside production (127.0.0.1, ::1, or localhost)",
     );
   }
   if (env.NODE_ENV === "production" && !loopbackHosts.has(env.HOST)) {
