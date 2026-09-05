@@ -1,7 +1,7 @@
 import type { Agent, AgentRun, Message } from "../types.js";
 import type { ModelRef } from "../models/types.js";
 import type { AuditRecorder, AuditSpan } from "../audit/audit-types.js";
-import { JsonStore } from "../store.js";
+import type { Storage } from "../store.js";
 import {
   LangGraphOrchestrator,
   type LangGraphOrchestrationRunner,
@@ -66,7 +66,7 @@ export interface OrchestrationProjectBinding {
 }
 
 export interface OrchestrationServiceDependencies {
-  store: JsonStore;
+  store: Storage;
   /** Required only for Teams that collaborate on a shared Project. */
   projectBinding?: OrchestrationProjectBinding;
   agents?: OrchestrationAgentAccess;
@@ -123,7 +123,7 @@ interface PlatformAgentServiceBridge extends OrchestrationAgentAccess {
 }
 
 export interface NormalizedOrchestrationDependencies {
-  store: JsonStore;
+  store: Storage;
   agents: OrchestrationAgentAccess;
   invokerFactory: () => PlatformAgentInvokerContract;
   selectorFactory: () => OrchestrationParticipantSelector | undefined;
@@ -140,12 +140,12 @@ export interface NormalizedOrchestrationDependencies {
  * small without changing the legacy injection seam.
  */
 export function normalizeOrchestrationDependencies(
-  value: JsonStore | OrchestrationServiceDependencies,
+  value: Storage | OrchestrationServiceDependencies,
   agents?: OrchestrationAgentAccess,
   invoker?: OrchestrationInvokerFactory,
   graphRunner?: OrchestrationGraphRunner,
 ): NormalizedOrchestrationDependencies {
-  if (!(value instanceof JsonStore)) {
+  if ("store" in value) {
     const configured = value;
     const agentAccess = configured.agents ?? configured.agentService;
     if (!agentAccess) {

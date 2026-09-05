@@ -4,7 +4,7 @@ import {
   type AuthorizationService,
 } from "../access/authorization-service.js";
 import type { Principal, ProjectRole } from "../access/access-types.js";
-import type { JsonStore } from "../store.js";
+import type { Storage } from "../store.js";
 import type { Agent, Database } from "../types.js";
 import type { SkillRuntimeContext } from "../skills/skill-types.js";
 import type { SkillService } from "../skills/skill-service.js";
@@ -121,7 +121,7 @@ export class ProjectService {
   private conversationLifecycle: ProjectConversationLifecycleCleanup | undefined;
 
   constructor(
-    private readonly store: JsonStore,
+    private readonly store: Storage,
     private readonly workspaces: ProjectWorkspaceManager,
     private readonly agents: ProjectAgentDirectory,
     private readonly authorization: AuthorizationService,

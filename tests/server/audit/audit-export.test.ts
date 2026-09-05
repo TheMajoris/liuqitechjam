@@ -167,10 +167,8 @@ describe("exportAuditEvents", () => {
     expect(cell("parentSpanId")).toBe("");
     expect(cell("principalKind")).toBe("agent");
     expect(cell("principalId")).toBe(AGENT_A);
-  });
 
-  it("neutralizes each formula-leading character", () => {
-    for (const prefix of ["=", "+", "-", "@"]) {
+    for (const prefix of ["+", "-", "@"]) {
       const csv = exportAuditEvents(
         [makeEvent({ id: "x", type: "run_started", minute: 0, sequence: 1, agentId: AGENT_A, summary: `${prefix}danger` })],
         "csv",

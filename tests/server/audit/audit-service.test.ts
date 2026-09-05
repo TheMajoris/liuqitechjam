@@ -141,7 +141,7 @@ describe("AuditService.record", () => {
 });
 
 describe("AuditService.query", () => {
-  it("back-fills a legacy event missing the new fields", async () => {
+  it("back-fills legacy fields and derives trace ID fallbacks", async () => {
     const { store, service } = makeService();
     store.events.push({
       id: "legacy-1",
@@ -154,18 +154,6 @@ describe("AuditService.query", () => {
       orchestrationId: "orch-1",
       runId: "run-1",
     } as unknown as AuditEvent);
-
-    const [event] = service.query();
-    expect(event).toBeDefined();
-    expect(event?.traceId).toBe("orch-1");
-    expect(event?.spanId).toBe("legacy1");
-    expect(event?.sequence).toBe(1);
-    expect(event?.actorType).toBe("agent");
-    expect(event?.category).toBe("tool_call");
-  });
-
-  it("uses orchestrationId or runId or id for legacy traceId", async () => {
-    const { store, service } = makeService();
     store.events.push({
       id: "legacy-2",
       type: "tool_started",
@@ -188,6 +176,12 @@ describe("AuditService.query", () => {
 
     const events = service.query();
     const byId = Object.fromEntries(events.map((event) => [event.id, event]));
+    expect(byId["legacy-1"]).toBeDefined();
+    expect(byId["legacy-1"]?.traceId).toBe("orch-1");
+    expect(byId["legacy-1"]?.spanId).toBe("legacy1");
+    expect(byId["legacy-1"]?.sequence).toBe(1);
+    expect(byId["legacy-1"]?.actorType).toBe("agent");
+    expect(byId["legacy-1"]?.category).toBe("tool_call");
     expect(byId["legacy-2"]?.traceId).toBe("run-2");
     expect(byId["legacy-3"]?.traceId).toBe("legacy-3");
   });

@@ -8,6 +8,9 @@ services:
         DEBIAN_MIRROR: ${CONTAINER_APT_MIRROR:-}
         DEBIAN_SECURITY_MIRROR: ${CONTAINER_APT_SECURITY_MIRROR:-}
     image: volc-agent-launchpad:local
+    labels:
+      org.opencontainers.image.title: "Liu Qi Agent Management (LQAM)"
+      org.opencontainers.image.description: "Control and governance for autonomous multi-agent workspaces"
     restart: unless-stopped
     env_file:
       - ${LAUNCHPAD_ENV_FILE:-.env}
@@ -21,6 +24,12 @@ services:
       CODEX_SANDBOX_MODE: ${CODEX_SANDBOX_MODE:-workspace-write}
       SEARCH_PROVIDER: ${SEARCH_PROVIDER:-searxng}
       SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080/search}
+      PERSISTENCE_BACKEND: ${PERSISTENCE_BACKEND:-postgres}
+      DATABASE_URL: ${DATABASE_URL:-}
+      # env_file also serves tooling; keep owner/bootstrap secrets out of runtime.
+      DATABASE_ADMIN_URL: ""
+      DATABASE_RUNTIME_PASSWORD: ""
+      POSTGRES_PASSWORD: ""
     ports:
       - "${PUBLIC_PORT:-3000}:3000"
     volumes:
@@ -57,3 +66,29 @@ services:
     pids_limit: 256
     mem_limit: 1g
     cpus: 1
+
+  # Opt in with --profile postgres. Provision/migrate before starting the API;
+  # the normal application role never creates tables or manages roles.
+  postgres:
+    profiles: [postgres]
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: launchpad_owner
+      POSTGRES_DB: launchpad
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U launchpad_owner -d launchpad"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    security_opt:
+      - no-new-privileges:true
+    shm_size: 128mb
+
+volumes:
+  postgres_data:

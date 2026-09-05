@@ -236,8 +236,8 @@ export function AppSidebar({
         <div className="brand">
           <div className="brand-mark" aria-hidden="true">A</div>
           <div className="brand-copy">
-            <strong>Agent Launchpad</strong>
-            <span>{runtimeLabel} · Codex</span>
+            <strong>LQAM</strong>
+            <span>Liu Qi Agent Management · {runtimeLabel} · Codex</span>
           </div>
         </div>
         <button

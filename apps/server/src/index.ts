@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
@@ -14,7 +15,13 @@ import {
   createWorkerModelResolver,
   normalizeModelRef,
 } from "./models/index.js";
-import { JsonStore } from "./store.js";
+import {
+  JsonStore,
+  normalizeDatabase,
+  type Storage,
+} from "./store.js";
+import { PostgresStore } from "./persistence/postgres-store.js";
+import type { Database } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 import { OrchestrationService } from "./orchestration/orchestration-service.js";
 import {
@@ -55,15 +62,30 @@ import {
   PreviewService,
   previewResourceLimitsFromConfig,
 } from "./preview/preview-service.js";
-import { AuditService, JsonAuditStoreAdapter } from "./audit/audit-service.js";
+import { AuditService, StorageAuditStoreAdapter } from "./audit/audit-service.js";
 import { createRuntimeTelemetry } from "./telemetry/runtime-telemetry.js";
 import { AgentMetricsService } from "./usage/agent-metrics.js";
 
 const config = loadConfig();
-await writeCodexConfig(config);
 
-const store = new JsonStore(path.join(config.dataDirectory, "launchpad.json"));
-const auditStore = new JsonAuditStoreAdapter(store);
+// Database credentials are consumed by the server through the validated
+// config object. Remove them from the inherited environment before any Agent
+// worker or Codex child can observe process.env. Migration-owner credentials
+// must never reach a runtime child process.
+for (const key of [
+  "DATABASE_ADMIN_URL",
+  "DATABASE_RUNTIME_PASSWORD",
+  "POSTGRES_PASSWORD",
+  "DATABASE_URL",
+]) {
+  delete process.env[key];
+}
+
+const legacyJsonPath = path.join(config.dataDirectory, "launchpad.json");
+const store: Storage = config.persistenceBackend === "postgres"
+  ? new PostgresStore(config.databaseUrl)
+  : new JsonStore(legacyJsonPath);
+const auditStore = new StorageAuditStoreAdapter(store);
 const audit = new AuditService(auditStore, auditStore);
 const telemetry = createRuntimeTelemetry(config);
 const workspaces = new WorkspaceManager(config.workspaceRoot);
@@ -73,7 +95,73 @@ const mcpSessions = new McpSessionService(config.mcpTokenTtlMs, { audit });
 const modelCatalog = new ArkModelCatalogService(store);
 // The live catalog must exist before AgentService.initialize() materializes
 // defaults for legacy Agent records.
-await store.initialize();
+const hasDatabaseData = (database: Database): boolean =>
+  database.modelCatalog !== null ||
+  database.auditChainAnchor != null ||
+  database.agents.length > 0 ||
+  database.agentConversations.length > 0 ||
+  database.messages.length > 0 ||
+  database.runs.length > 0 ||
+  database.orchestrations.length > 0 ||
+  database.orchestrationTurns.length > 0 ||
+  database.orchestrationEvents.length > 0 ||
+  database.orchestrationContinuationPrompts.length > 0 ||
+  database.previews.length > 0 ||
+  database.projects.length > 0 ||
+  database.projectAgents.length > 0 ||
+  database.projectLeases.length > 0 ||
+  database.approvalRequests.length > 0 ||
+  database.capabilityGrants.length > 0 ||
+  database.auditEvents.length > 0 ||
+  database.permitApprovalCorrelations.length > 0 ||
+  database.roles.length > 0 ||
+  database.installedSkills.length > 0;
+
+try {
+  await store.initialize();
+
+  /**
+   * A configured PostgreSQL backend must never make an existing local JSON
+   * database look like a fresh installation. Import is deliberately offline;
+   * startup only detects the unsafe collision and explains how to resolve it.
+   */
+  if (config.persistenceBackend === "postgres") {
+    let rawLegacy: string;
+    try {
+      rawLegacy = await readFile(legacyJsonPath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      rawLegacy = "";
+    }
+    if (rawLegacy.trim().length > 0) {
+      let legacyDatabase: Database;
+      try {
+        legacyDatabase = normalizeDatabase(JSON.parse(rawLegacy));
+      } catch (error) {
+        throw new Error(
+          `Cannot use PostgreSQL while ${legacyJsonPath} exists but is not a valid database: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      if (hasDatabaseData(legacyDatabase) && !hasDatabaseData(store.snapshot())) {
+        throw new Error(
+          `PostgreSQL persistence is empty while ${legacyJsonPath} contains data. ` +
+          "Run the offline JSON import before starting with PERSISTENCE_BACKEND=postgres.",
+        );
+      }
+    }
+  }
+} catch (error) {
+  // PostgreSQL may hold an advisory single-owner lock or pool handles after a
+  // failed startup check. Release them before surfacing the actionable error.
+  await store.close().catch(() => undefined);
+  throw error;
+}
+
+// Avoid writing the shared Codex runtime configuration until persistence
+// ownership and legacy-data checks have completed successfully.
+await writeCodexConfig(config);
 const seededModelIds = Array.from(new Set([
   ...config.workerCuratedModels,
   ...(config.arkModel.length === 0 ? [] : [config.arkModel]),
@@ -345,6 +433,7 @@ const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");
   await orchestrationService.shutdown();
   await app.close();
+  await store.close();
   await telemetry.shutdown();
   process.exit(0);
 };

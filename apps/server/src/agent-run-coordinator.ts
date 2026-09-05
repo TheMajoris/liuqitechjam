@@ -23,7 +23,7 @@ import type {
   MessageOrigin,
   RunnerResult,
 } from "./types.js";
-import { JsonStore } from "./store.js";
+import type { Storage } from "./store.js";
 import { safeRuntimeError } from "./safe-runtime-error.js";
 import type {
   AuditEventInput,
@@ -67,7 +67,7 @@ function modelRefForRuntime(runtimeModel: WorkerRuntimeModelConfig) {
 
 export interface AgentRunCoordinatorDependencies {
   config: AppConfig;
-  store: JsonStore;
+  store: Storage;
   runner: AgentRunner;
   prompt: AgentRuntimePromptComposer;
   getProjectScope: () => ProjectExecutionScope | undefined;
@@ -131,26 +131,37 @@ export class AgentRunCoordinator {
     modelSnapshot?: AgentModelSnapshot,
     parentSpan?: { traceId: string; spanId: string },
   ): void {
-    const execution = this.executeRun(
-      agentAtStart,
-      run,
-      runtimeModel,
-      projectId,
-      origin,
-      conversation,
-      orchestrationId,
-      fallbackModels,
-      modelSnapshot,
-      parentSpan,
+    // Queue the async body behind the registration. `executeRun` reaches its
+    // first await synchronously, so invoking it before inserting this entry
+    // leaves a cancellation or waitForRun call with no local execution to
+    // observe during that first turn of the event loop.
+    const execution = Promise.resolve().then(() =>
+      this.executeRun(
+        agentAtStart,
+        run,
+        runtimeModel,
+        projectId,
+        origin,
+        conversation,
+        orchestrationId,
+        fallbackModels,
+        modelSnapshot,
+        parentSpan,
+      ),
     );
     this.activeExecutions.set(agentAtStart.id, { runId: run.id, execution });
-    void execution
-      .finally(() => {
+    void execution.then(
+      () => {
         if (this.activeExecutions.get(agentAtStart.id)?.runId === run.id) {
           this.activeExecutions.delete(agentAtStart.id);
         }
-      })
-      .catch(() => undefined);
+      },
+      () => {
+        if (this.activeExecutions.get(agentAtStart.id)?.runId === run.id) {
+          this.activeExecutions.delete(agentAtStart.id);
+        }
+      },
+    );
   }
 
   async waitForRun(
@@ -163,7 +174,9 @@ export class AgentRunCoordinator {
     }
 
     const initial = this.dependencies.getRun(runId);
-    if (isTerminalRun(initial)) return initial;
+    if (isTerminalRun(initial) && !this.activeExecutionFor(initial.agentId, runId)) {
+      return initial;
+    }
     if (options.signal?.aborted) {
       throw waitError("AbortError", "Waiting for Run " + runId + " was aborted");
     }
@@ -172,6 +185,7 @@ export class AgentRunCoordinator {
       let settled = false;
       let interval: NodeJS.Timeout | null = null;
       let timeout: NodeJS.Timeout | null = null;
+      let waitingForExecution = false;
 
       const cleanup = () => {
         if (interval) clearInterval(interval);
@@ -187,9 +201,25 @@ export class AgentRunCoordinator {
       };
 
       const poll = () => {
+        if (settled) return;
         try {
           const current = this.dependencies.getRun(runId);
           if (isTerminalRun(current)) {
+            const execution = this.activeExecutionFor(current.agentId, runId);
+            if (execution) {
+              if (waitingForExecution) return;
+              waitingForExecution = true;
+              const resume = () => {
+                waitingForExecution = false;
+                if (!settled) poll();
+              };
+              // A local execution can still be running its finally block
+              // after it persisted a terminal Run. Wait for both to settle;
+              // supplying both handlers also keeps a rejected execution from
+              // becoming an unhandled rejection for this observer.
+              void execution.then(resume, resume);
+              return;
+            }
             settle(() => resolve(current));
           }
         } catch (error) {
@@ -219,6 +249,11 @@ export class AgentRunCoordinator {
       timeout.unref();
       poll();
     });
+  }
+
+  private activeExecutionFor(agentId: string, runId: string): Promise<void> | undefined {
+    const active = this.activeExecutions.get(agentId);
+    return active?.runId === runId ? active.execution : undefined;
   }
 
   async cancelRun(runId: string): Promise<AgentRun> {

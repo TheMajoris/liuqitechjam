@@ -1,4 +1,4 @@
-import type { JsonStore } from "../store.js";
+import type { Storage } from "../store.js";
 import {
   AuthorizationError,
   type AuthorizationRequest,
@@ -12,7 +12,7 @@ import type { PermissionId } from "./permission-types.js";
  */
 export class RoleTemplateAuthorizationService implements AuthorizationService {
   constructor(
-    private readonly store: JsonStore,
+    private readonly store: Storage,
     private readonly delegate: AuthorizationService,
   ) {}
 

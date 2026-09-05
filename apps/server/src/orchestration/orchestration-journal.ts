@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { HttpError } from "../errors.js";
-import { JsonStore } from "../store.js";
+import type { Storage } from "../store.js";
 import type { Database } from "../types.js";
 import { redactSensitiveText } from "./handoff.js";
 import { ORCHESTRATION_LIMITS } from "./schemas.js";
@@ -231,7 +231,7 @@ export function cloneEvent(event: OrchestrationEvent): OrchestrationEvent {
  * decisions remain in OrchestrationService.
  */
 export class OrchestrationJournal {
-  constructor(private readonly store: JsonStore) {}
+  constructor(private readonly store: Storage) {}
 
   async initialize(): Promise<void> {
     await this.store.initialize();

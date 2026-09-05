@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { HttpError } from "../errors.js";
-import { JsonStore } from "../store.js";
+import type { Storage } from "../store.js";
 import { ORCHESTRATION_LIMITS } from "./schemas.js";
 import type {
   OrchestrationExecutionHooks,
@@ -28,7 +28,7 @@ export interface OrchestrationHookContext {
 }
 
 export interface OrchestrationHookDependencies {
-  store: JsonStore;
+  store: Storage;
   validateParticipant(participant: OrchestrationParticipant): Promise<void>;
   cancelChildRun(runId: string): Promise<void>;
 }

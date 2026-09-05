@@ -511,7 +511,7 @@ export default function App() {
         ) : (
           <div className="no-agent">
             <div className="no-agent-art" aria-hidden="true">A</div>
-            <span className="eyebrow">Agent Launchpad</span>
+            <span className="eyebrow">LQAM</span>
             <h1>No Agent selected.</h1>
             <p>Create an Agent, or open a shared workspace to watch a Team work together.</p>
             <div className="no-agent-actions">

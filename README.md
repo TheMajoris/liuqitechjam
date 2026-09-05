@@ -1,8 +1,8 @@
-# LiuQi Agent Middleware
+# Liu Qi Agent Management (LQAM)
 
 A control and governance layer for autonomous multi-agent workspaces.
 
-![LiuQi Agent Middleware 2D Workspace](docs/images/agent-workspace.png)
+![Liu Qi Agent Management (LQAM) 2D Workspace](docs/images/agent-workspace.png)
 
 Multiple specialized Agents collaborate on shared Projects while the
 middleware handles orchestration, authorization, observability, execution
@@ -26,7 +26,7 @@ allowed to act, what was executed, or how a stopped run can be resumed.
 
 ## Solution
 
-LiuQi Agent Middleware puts those decisions behind server-owned seams:
+LQAM puts those decisions behind server-owned seams:
 
 - `OrchestrationService` persists a Team Conversation, dispatches Agents in
   `sequential`, `round_robin`, or `supervisor` mode, bounds steps and timeouts,
@@ -39,8 +39,9 @@ LiuQi Agent Middleware puts those decisions behind server-owned seams:
   enforces authorization and approval before a platform-owned executor runs.
 - `CodexRunner` and `ContainerCodexRunner` provide local-process and container
   execution. The MCP server gives each run a bounded, expiring session.
-- `JsonStore` persists Agents, Projects, runs, orchestration turns and events,
-  approvals, previews, audit projections, and usage inputs.
+- `Storage` preserves the service contract, with `PostgresStore` for production
+  and explicit legacy/local `JsonStore`. It persists Agents, Projects, Runs,
+  orchestration, approvals, previews, and audit/usage records.
 - `AuditService`, the usage aggregator, and optional OpenTelemetry provide
   safe evidence for activity, errors, latency, token usage, and correlations.
 - The React and Pixi 2D Workspace is a projection and control surface. It
@@ -244,7 +245,7 @@ attached to the same Workspace.
 The one-page local POC architecture is available as both a rendered diagram
 and an editable Excalidraw source:
 
-![LiuQi Agent Launchpad system architecture](docs/architecture/system_architecture.png)
+![Liu Qi Agent Management (LQAM) system architecture](docs/architecture/system_architecture.png)
 
 Source: [`docs/architecture/system-architecture.excalidraw`](docs/architecture/system-architecture.excalidraw)
 
@@ -289,7 +290,7 @@ the resulting state and sends human control actions back through the API.
 
 ## How auditing works
 
-Auditing in LiuQi is **evidence, not control**. The journal describes what the
+Auditing in LQAM is **evidence, not control**. The journal describes what the
 platform observed; it never gates what happens next. Policy stays in
 `AuthorizationService` and `ToolService`. The design rests on five rules.
 
@@ -392,8 +393,11 @@ capped at 240 characters.
 ### Tamper evidence
 
 The store adapter assigns `sequence`, `prevHash`, and `hash` inside the same
-`JsonStore.mutate` call that appends the event, so the chain is atomic with
-persistence. When the 10 000-event ring buffer trims, the last dropped event's
+`Storage.mutate` call that appends the event, so the chain is atomic with
+persistence. PostgreSQL audit storage is append-only: the runtime role has
+SELECT/INSERT only, and database triggers reject updates, deletes, and truncation.
+There is no PostgreSQL runtime retention deletion. In legacy JSON mode only,
+when the 10 000-event ring buffer trims, the last dropped event's
 `sequence` and `hash` are saved as `auditChainAnchor`, so verification stays
 valid across truncation. `GET /api/audit/verify` walks the chain and returns
 `{ ok, checked, brokenAtSequence?, reason? }`; legacy events written before
@@ -472,6 +476,15 @@ ready. Use a small task and a prebuilt runtime image when possible.
 Requirements: Node.js 22+, Docker Desktop, Colima, or Podman, and an Ark API
 key and model. No Permit account, API key, or PDP is used by this path.
 
+The launcher uses PostgreSQL by default and provisions a local database when
+`DATABASE_URL` is absent. If an existing non-empty `launchpad.json` is found
+while that launcher-managed PostgreSQL database is empty, `npm run poc`
+imports it transactionally before starting and leaves the JSON file untouched.
+An externally configured `DATABASE_URL` is never auto-imported. Set
+`PERSISTENCE_BACKEND=json` only for an explicit legacy/recovery run. See
+[PostgreSQL setup and audit permissions](docs/POSTGRESQL.md).
+The architecture supports one active backend with concurrent Agents and Runs.
+
 ```bash
 npm install
 export ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
@@ -496,6 +509,12 @@ cp .env.example .env
 # then fill in ARK_BASE_URL, ARK_API_KEY, ARK_MODEL in .env
 npm run dev
 ```
+
+The copied example selects PostgreSQL. Host development does not provision a
+database, so set `DATABASE_URL` to the restricted runtime login for an existing
+database and run the documented migration/provision steps first. For automatic
+local PostgreSQL provisioning, use `npm run poc`. Set
+`PERSISTENCE_BACKEND=json` explicitly only for a legacy/recovery session.
 
 `npm run dev` (`tsx watch --env-file-if-exists=../../.env`) loads the repo
 root `.env` automatically, so exporting the Ark variables by hand is no
@@ -654,8 +673,10 @@ See [`SECURITY.md`](SECURITY.md) for the repository security policy and
 - Previews are local and loopback-oriented. The resolver supports known
   `package.json` development commands and a static `index.html` fallback; it
   does not install dependencies automatically.
-- Audit evidence is bounded. The JSON store keeps the last 10 000 events with
-  a chain anchor; container CPU and memory samples are in-memory only and are
+- Legacy JSON audit evidence is bounded to the last 10 000 events with a chain
+  anchor. PostgreSQL audit records accumulate without runtime deletion; the
+  current synchronous reader keeps them in memory, so larger deployments will
+  need a paginated reader. Container CPU and memory samples are in-memory and are
   summarised to peaks on `sandbox_exited`. Tokens/s is computed from completed
   runs, so it shows "—" while a turn is in flight rather than an estimate.
 - The runtime tap parses `codex exec --json` item types as documented today

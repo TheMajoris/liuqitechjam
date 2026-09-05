@@ -179,6 +179,42 @@ mkdir -p "$APP_DATA_DIR" "$AGENT_WORKSPACE_ROOT" "$CODEX_HOME"
 log "Persistent state: $local_state_root"
 export CONTAINER_USER="${CONTAINER_USER:-$(id -u):$(id -g)}"
 
+# PostgreSQL is the POC default. A legacy JSON file is never selected
+# implicitly; an existing snapshot is imported only into a fresh,
+# launcher-managed local PostgreSQL database, leaving the source untouched.
+export PERSISTENCE_BACKEND="${PERSISTENCE_BACKEND:-postgres}"
+if [[ -s "$APP_DATA_DIR/launchpad.json" && "$PERSISTENCE_BACKEND" == "postgres" ]]; then
+  log "Existing launchpad.json found; PostgreSQL remains selected."
+fi
+# shellcheck source=start-local-postgres.sh
+source "$repo_dir/scripts/start-local-postgres.sh"
+start_local_postgres
+
+# A JSON snapshot is imported automatically only into a fresh PostgreSQL
+# database created and owned by this launcher. An externally configured
+# DATABASE_URL remains operator-managed and must never receive an implicit
+# import.
+legacy_json_path="$APP_DATA_DIR/launchpad.json"
+if [[ "${LQAM_LOCAL_POSTGRES_MANAGED:-0}" == 1 && -s "$legacy_json_path" ]]; then
+  if [[ "${LQAM_LOCAL_POSTGRES_EMPTY:-0}" == 1 ]]; then
+    log "Importing existing launchpad.json into the empty launcher-managed PostgreSQL database."
+    if npm run db:import -- "$legacy_json_path"; then
+      log "Imported launchpad.json successfully; the source file was left untouched."
+    else
+      log "Automatic JSON import failed; the PostgreSQL database remains unchanged by the failed import."
+      exit 1
+    fi
+  else
+    log "Launcher-managed PostgreSQL already contains data; skipping launchpad.json import."
+  fi
+elif [[ -s "$legacy_json_path" && "$PERSISTENCE_BACKEND" == postgres ]]; then
+  log "Existing launchpad.json was detected, but PostgreSQL is externally configured; skipping automatic import."
+fi
+
+# The API and its child runtimes never need migration-owner credentials.
+unset DATABASE_ADMIN_URL DATABASE_RUNTIME_PASSWORD POSTGRES_PASSWORD
+log "Persistence backend: $PERSISTENCE_BACKEND"
+
 log "Building $runtime_image from Dockerfile.runtime (base: $runtime_base_image)."
 "$engine" build \
   --file Dockerfile.runtime \

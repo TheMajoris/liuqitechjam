@@ -326,7 +326,7 @@ export async function createApp(
 
   app.get("/api/health", async () => ({
     ok: true,
-    service: "volc-agent-launchpad",
+    service: "lqam-server",
   }));
 
   app.get("/api/auth", async () => ({ required: config.authToken.length > 0 }));

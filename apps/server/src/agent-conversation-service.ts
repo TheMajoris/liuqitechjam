@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { HttpError } from "./errors.js";
-import type { JsonStore } from "./store.js";
+import type { Storage } from "./store.js";
 import type {
   Agent,
   AgentConversation,
@@ -51,7 +51,7 @@ export class AgentConversationService {
   private readonly idFactory: IdFactory;
 
   constructor(
-    private readonly store: JsonStore,
+    private readonly store: Storage,
     private readonly assertAgent: AgentAssertion,
     options: { clock?: Clock; idFactory?: IdFactory } = {},
   ) {

@@ -13,7 +13,7 @@ import type {
   WorkerModelResolver,
   WorkerRuntimeModelConfig,
 } from "./models/types.js";
-import { JsonStore } from "./store.js";
+import type { Storage } from "./store.js";
 import type {
   Agent,
   AgentAppearance,
@@ -99,7 +99,7 @@ export class AgentService {
 
   constructor(
     private readonly config: AppConfig,
-    private readonly store: JsonStore,
+    private readonly store: Storage,
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
     private readonly modelResolver: AgentModelResolver =
