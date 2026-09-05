@@ -20,11 +20,9 @@ env:
   TF_INPUT: false
   TF_VAR_github_actions_ssh_cidr: ""
   TF_VAR_image_ref: ghcr.io/placeholder/staging:destroy
-  VOLCENGINE_ACCESS_KEY: ${{ secrets.BYTEPLUS_ACCESS_KEY }}
-  VOLCENGINE_SECRET_KEY: ${{ secrets.BYTEPLUS_SECRET_KEY }}
+  BYTEPLUS_ACCESS_KEY: ${{ secrets.BYTEPLUS_ACCESS_KEY }}
+  BYTEPLUS_SECRET_KEY: ${{ secrets.BYTEPLUS_SECRET_KEY }}
   TF_TOKEN_app_terraform_io: ${{ secrets.TF_TOKEN_APP_TERRAFORM_IO }}
-  AWS_ACCESS_KEY_ID: ${{ secrets.BYTEPLUS_ACCESS_KEY }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.BYTEPLUS_SECRET_KEY }}
 
 jobs:
   destroy:

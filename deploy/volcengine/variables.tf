@@ -1,5 +1,5 @@
 variable "region" {
-  description = "Volcengine region, for example cn-beijing."
+  description = "BytePlus region, for example ap-southeast-1."
   type        = string
 }
 
@@ -25,7 +25,7 @@ variable "key_pair_name" {
 }
 
 variable "project_name" {
-  description = "Volcengine project."
+  description = "BytePlus project."
   type        = string
   default     = "default"
 }

@@ -13,13 +13,13 @@ terraform {
   }
 
   required_providers {
-    bytepluscc = {
-      source  = "byteplus-sdk/bytepluscc"
-      version = "0.0.48"
+    byteplus = {
+      source  = "byteplus-sdk/byteplus"
+      version = "0.0.25"
     }
   }
 }
 
-provider "bytepluscc" {
+provider "byteplus" {
   region = var.region
 }

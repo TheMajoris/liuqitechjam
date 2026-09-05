@@ -1,51 +1,39 @@
 locals {
   name = "agent-launchpad"
 
-  base_ingress_permissions = [
+  base_ingress_rules = [
     {
-      description     = "LQAM web"
-      direction       = "ingress"
-      policy          = "accept"
-      port_end        = 80
-      port_start      = 80
-      priority        = 1
-      protocol        = "tcp"
-      cidr_ip         = var.allowed_web_cidr
-      prefix_list_id  = ""
-      source_group_id = ""
+      description = "LQAM web"
+      port_end    = 80
+      port_start  = 80
+      priority    = 1
+      protocol    = "tcp"
+      cidr_ip     = var.allowed_web_cidr
     },
     {
-      description     = "LQAM SSH"
-      direction       = "ingress"
-      policy          = "accept"
-      port_end        = 22
-      port_start      = 22
-      priority        = 1
-      protocol        = "tcp"
-      cidr_ip         = var.allowed_ssh_cidr
-      prefix_list_id  = ""
-      source_group_id = ""
+      description = "LQAM SSH"
+      port_end    = 22
+      port_start  = 22
+      priority    = 1
+      protocol    = "tcp"
+      cidr_ip     = var.allowed_ssh_cidr
     },
   ]
 
-  github_actions_ingress_permissions = var.github_actions_ssh_cidr == "" ? [] : [
+  github_actions_ingress_rules = var.github_actions_ssh_cidr == "" ? [] : [
     {
-      description     = "GitHub Actions ephemeral SSH"
-      direction       = "ingress"
-      policy          = "accept"
-      port_end        = 22
-      port_start      = 22
-      priority        = 2
-      protocol        = "tcp"
-      cidr_ip         = var.github_actions_ssh_cidr
-      prefix_list_id  = ""
-      source_group_id = ""
+      description = "GitHub Actions ephemeral SSH"
+      port_end    = 22
+      port_start  = 22
+      priority    = 2
+      protocol    = "tcp"
+      cidr_ip     = var.github_actions_ssh_cidr
     },
   ]
 
-  ingress_permissions = concat(
-    local.base_ingress_permissions,
-    local.github_actions_ingress_permissions,
+  ingress_rules = concat(
+    local.base_ingress_rules,
+    local.github_actions_ingress_rules,
   )
 
   runtime_env = join("\n", [
@@ -56,103 +44,87 @@ locals {
   ])
 }
 
-resource "bytepluscc_vpc_vpc" "launchpad" {
-  vpc_name              = local.name
-  description           = "VPC for the Liu Qi Agent Management starter kit"
-  cidr_block            = "172.20.0.0/16"
-  support_ipv_4_gateway = true
-  enable_ipv_6          = false
-  project_name          = var.project_name
-  tags = [
-    {
-      key   = "application"
-      value = local.name
-    }
-  ]
+resource "byteplus_vpc" "launchpad" {
+  vpc_name     = local.name
+  description  = "VPC for the Liu Qi Agent Management starter kit"
+  cidr_block   = "172.20.0.0/16"
+  enable_ipv6  = false
+  project_name = var.project_name
+
+  tags {
+    key   = "application"
+    value = local.name
+  }
 }
 
-resource "bytepluscc_vpc_subnet" "launchpad" {
-  vpc_id      = bytepluscc_vpc_vpc.launchpad.id
+resource "byteplus_subnet" "launchpad" {
+  vpc_id      = byteplus_vpc.launchpad.id
   zone_id     = var.zone_id
   subnet_name = local.name
   description = "LQAM subnet"
   cidr_block  = "172.20.1.0/24"
-  tags = [
-    {
-      key   = "application"
-      value = local.name
-    }
-  ]
+
+  tags {
+    key   = "application"
+    value = local.name
+  }
 }
 
-resource "bytepluscc_vpc_security_group" "launchpad" {
-  vpc_id              = bytepluscc_vpc_vpc.launchpad.id
+resource "byteplus_security_group" "launchpad" {
+  vpc_id              = byteplus_vpc.launchpad.id
   security_group_name = local.name
   description         = "Web and SSH access for LQAM"
   project_name        = var.project_name
-  ingress_permissions = local.ingress_permissions
-  egress_permissions = [
-    {
-      description     = "Outbound access for Ark, Git and package registries"
-      direction       = "egress"
-      policy          = "accept"
-      port_end        = -1
-      port_start      = -1
-      priority        = 1
-      protocol        = "all"
-      cidr_ip         = "0.0.0.0/0"
-      prefix_list_id  = ""
-      source_group_id = ""
-    }
-  ]
-  tags = [
-    {
-      key   = "application"
-      value = local.name
-    }
-  ]
+
+  tags {
+    key   = "application"
+    value = local.name
+  }
 }
 
-resource "bytepluscc_ecs_instance" "launchpad" {
-  instance_name        = local.name
-  hostname             = "agent-launchpad"
-  description          = "Liu Qi Agent Management starter kit"
-  project_name         = var.project_name
-  instance_charge_type = "PostPaid"
-  instance_type        = var.instance_type
-  spot_strategy        = "NoSpot"
-  deletion_protection  = false
-  zone_id              = var.zone_id
+resource "byteplus_security_group_rule" "ingress" {
+  for_each = { for rule in local.ingress_rules : rule.description => rule }
 
-  image = {
-    image_id                      = var.image_id
-    keep_image_credential         = false
-    security_enhancement_strategy = "Active"
-  }
+  security_group_id = byteplus_security_group.launchpad.id
+  direction         = "ingress"
+  protocol          = each.value.protocol
+  port_start        = each.value.port_start
+  port_end          = each.value.port_end
+  cidr_ip           = each.value.cidr_ip
+  policy            = "accept"
+  priority          = each.value.priority
+  description       = each.value.description
+}
 
-  key_pair = {
-    key_pair_name = var.key_pair_name
-  }
+resource "byteplus_security_group_rule" "egress" {
+  security_group_id = byteplus_security_group.launchpad.id
+  direction         = "egress"
+  protocol          = "all"
+  port_start        = -1
+  port_end          = -1
+  cidr_ip           = "0.0.0.0/0"
+  policy            = "accept"
+  priority          = 1
+  description       = "Outbound access for Ark, Git and package registries"
+}
 
-  primary_network_interface = {
-    security_group_ids = [bytepluscc_vpc_security_group.launchpad.id]
-    subnet_id          = bytepluscc_vpc_subnet.launchpad.id
-    vpc_id             = bytepluscc_vpc_vpc.launchpad.id
-  }
-
-  system_volume = {
-    size                 = 50
-    delete_with_instance = true
-    volume_type          = "ESSD_PL0"
-  }
-
-  eip_address = {
-    charge_type           = "PayByTraffic"
-    bandwidth_mbps        = 5
-    isp                   = "BGP"
-    release_with_instance = true
-    bandwidth_package_id  = ""
-  }
+resource "byteplus_ecs_instance" "launchpad" {
+  instance_name                 = local.name
+  host_name                     = "agent-launchpad"
+  description                   = "Liu Qi Agent Management starter kit"
+  project_name                  = var.project_name
+  instance_charge_type          = "PostPaid"
+  instance_type                 = var.instance_type
+  spot_strategy                 = "NoSpot"
+  zone_id                       = var.zone_id
+  image_id                      = var.image_id
+  key_pair_name                 = var.key_pair_name
+  keep_image_credential         = false
+  security_enhancement_strategy = "Active"
+  subnet_id                     = byteplus_subnet.launchpad.id
+  security_group_ids            = [byteplus_security_group.launchpad.id]
+  system_volume_type            = "ESSD_PL0"
+  system_volume_size            = 50
 
   user_data = base64encode(templatefile("${path.module}/cloud-init.yaml.tftpl", {
     repository_url  = var.repository_url
@@ -160,10 +132,28 @@ resource "bytepluscc_ecs_instance" "launchpad" {
     runtime_env_b64 = base64encode(local.runtime_env)
   }))
 
-  tags = [
-    {
-      key   = "application"
-      value = local.name
-    }
-  ]
+  tags {
+    key   = "application"
+    value = local.name
+  }
+}
+
+resource "byteplus_eip_address" "launchpad" {
+  billing_type = "PostPaidByTraffic"
+  bandwidth    = 5
+  isp          = "BGP"
+  name         = local.name
+  description  = "Public IP for the Liu Qi Agent Management starter kit"
+  project_name = var.project_name
+
+  tags {
+    key   = "application"
+    value = local.name
+  }
+}
+
+resource "byteplus_eip_associate" "launchpad" {
+  allocation_id = byteplus_eip_address.launchpad.id
+  instance_id   = byteplus_ecs_instance.launchpad.id
+  instance_type = "EcsInstance"
 }
