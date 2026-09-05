@@ -56,7 +56,7 @@ locals {
   ])
 }
 
-resource "volcenginecc_vpc_vpc" "launchpad" {
+resource "bytepluscc_vpc_vpc" "launchpad" {
   vpc_name              = local.name
   description           = "VPC for the Liu Qi Agent Management starter kit"
   cidr_block            = "172.20.0.0/16"
@@ -71,8 +71,8 @@ resource "volcenginecc_vpc_vpc" "launchpad" {
   ]
 }
 
-resource "volcenginecc_vpc_subnet" "launchpad" {
-  vpc_id      = volcenginecc_vpc_vpc.launchpad.id
+resource "bytepluscc_vpc_subnet" "launchpad" {
+  vpc_id      = bytepluscc_vpc_vpc.launchpad.id
   zone_id     = var.zone_id
   subnet_name = local.name
   description = "LQAM subnet"
@@ -85,8 +85,8 @@ resource "volcenginecc_vpc_subnet" "launchpad" {
   ]
 }
 
-resource "volcenginecc_vpc_security_group" "launchpad" {
-  vpc_id              = volcenginecc_vpc_vpc.launchpad.id
+resource "bytepluscc_vpc_security_group" "launchpad" {
+  vpc_id              = bytepluscc_vpc_vpc.launchpad.id
   security_group_name = local.name
   description         = "Web and SSH access for LQAM"
   project_name        = var.project_name
@@ -113,7 +113,7 @@ resource "volcenginecc_vpc_security_group" "launchpad" {
   ]
 }
 
-resource "volcenginecc_ecs_instance" "launchpad" {
+resource "bytepluscc_ecs_instance" "launchpad" {
   instance_name        = local.name
   hostname             = "agent-launchpad"
   description          = "Liu Qi Agent Management starter kit"
@@ -135,9 +135,9 @@ resource "volcenginecc_ecs_instance" "launchpad" {
   }
 
   primary_network_interface = {
-    security_group_ids = [volcenginecc_vpc_security_group.launchpad.id]
-    subnet_id          = volcenginecc_vpc_subnet.launchpad.id
-    vpc_id             = volcenginecc_vpc_vpc.launchpad.id
+    security_group_ids = [bytepluscc_vpc_security_group.launchpad.id]
+    subnet_id          = bytepluscc_vpc_subnet.launchpad.id
+    vpc_id             = bytepluscc_vpc_vpc.launchpad.id
   }
 
   system_volume = {

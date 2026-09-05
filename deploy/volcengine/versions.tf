@@ -13,13 +13,13 @@ terraform {
   }
 
   required_providers {
-    volcenginecc = {
-      source  = "volcengine/volcenginecc"
-      version = "0.0.58"
+    bytepluscc = {
+      source  = "byteplus-sdk/bytepluscc"
+      version = "0.0.48"
     }
   }
 }
 
-provider "volcenginecc" {
+provider "bytepluscc" {
   region = var.region
 }
