@@ -2,10 +2,20 @@ import type { AgentAppearance, ApprovalRecord } from "../types";
 import { AgentAvatar } from "../components/orchestration/AgentAvatar";
 import { AgentSkinEditor } from "./AgentSkinEditor";
 import { MarkdownMessage } from "../components/MarkdownMessage";
+import { UsageSparkline } from "../components/insights/UsageSparkline";
+import { formatBytes, formatPct, metricsRows } from "./agent-metrics-format";
+import { useMetricsHistory } from "./use-metrics-history";
 import {
   WORKSPACE_ACTIVITY,
   type WorkspaceAgentViewModel,
+  type WorkspaceSandboxActivity,
 } from "./workspace-view-model";
+
+/** Short label for the sandbox echo shown when no platform tool is open. */
+function sandboxActivityLabel(sandbox: WorkspaceSandboxActivity): string {
+  if (sandbox.kind === "command") return "$ " + sandbox.program;
+  return "editing " + sandbox.fileCount + " " + (sandbox.fileCount === 1 ? "file" : "files");
+}
 
 export type AgentLifecycleAction = "start" | "stop";
 
@@ -46,6 +56,8 @@ export function AgentInspector({
   onDeny,
   onAppearanceChange,
 }: AgentInspectorProps) {
+  const history = useMetricsHistory(agent?.agentId ?? null, agent?.metrics ?? null);
+
   if (!agent) {
     return (
       <aside className="ws-inspector is-empty" aria-label="Agent inspector">
@@ -100,11 +112,50 @@ export function AgentInspector({
         </section>
       )}
 
+      {!agent.activeTool && agent.sandboxActivity && (
+        <section className="ws-inspector-block">
+          <h4>Running now</h4>
+          <p className="ws-inspector-tool">
+            <code>{sandboxActivityLabel(agent.sandboxActivity)}</code>
+          </p>
+        </section>
+      )}
+
       {agent.safeSummary && (
         <section className="ws-inspector-block">
           <h4>Latest safe summary</h4>
           {/* Agent output, so it goes through the one markdown renderer. */}
           <MarkdownMessage className="ws-inspector-summary" content={agent.safeSummary} />
+        </section>
+      )}
+
+      {agent.metrics && (
+        <section className="ws-inspector-block">
+          <h4>Metrics</h4>
+          <dl className="ws-inspector-facts">
+            {metricsRows(agent.metrics).map((row) => (
+              <div key={row.label}>
+                <dt>{row.label}</dt>
+                <dd>{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+          {agent.metrics.container ? (
+            <div className="ws-inspector-sparklines">
+              <UsageSparkline
+                label="CPU"
+                series={history.cpu.map((value, index) => ({ key: String(index), value }))}
+                formatValue={formatPct}
+              />
+              <UsageSparkline
+                label="Memory"
+                series={history.mem.map((value, index) => ({ key: String(index), value }))}
+                formatValue={formatBytes}
+              />
+            </div>
+          ) : (
+            <p className="ws-inspector-muted">No container metrics (local runner)</p>
+          )}
         </section>
       )}
 

@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { AgentPrincipal } from "../access/access-types.js";
 import { agentPrincipal } from "../access/access-types.js";
 import { DEFAULT_MCP_TOKEN_TTL_MS } from "../config.js";
+import type { AuditRecorder } from "../audit/audit-types.js";
 
 export const MCP_BEARER_TOKEN_ENV = "LAUNCHPAD_MCP_BEARER_TOKEN";
 
@@ -18,7 +19,18 @@ export interface McpSessionContext {
 interface SessionRecord extends McpSessionContext {
   tokenHash: string;
   revokedAt?: string;
+  /** Set once an expiry event has been emitted so prune/resolve never double-report. */
+  expiryReported?: boolean;
 }
+
+export interface McpSessionServiceOptions {
+  audit?: AuditRecorder;
+  now?: () => number;
+}
+
+export type ResolveMcpSessionResult =
+  | { context: McpSessionContext }
+  | { context: null; reason: "missing" | "invalid" | "expired" };
 
 export interface MintMcpSessionInput {
   agentId: string;
@@ -47,15 +59,28 @@ function sameHash(left: string, right: string): boolean {
 export class McpSessionService {
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly ttlMs: number;
+  private readonly audit?: AuditRecorder;
+  private readonly now: () => number;
 
-  constructor(ttlMs = DEFAULT_MCP_TOKEN_TTL_MS) {
+  constructor(ttlMs = DEFAULT_MCP_TOKEN_TTL_MS, options: McpSessionServiceOptions = {}) {
     this.ttlMs = Number.isInteger(ttlMs) && ttlMs > 0 ? ttlMs : DEFAULT_MCP_TOKEN_TTL_MS;
+    if (options.audit !== undefined) this.audit = options.audit;
+    this.now = options.now ?? Date.now;
+  }
+
+  private emit(input: Parameters<AuditRecorder["record"]>[0]): void {
+    if (!this.audit) return;
+    try {
+      void this.audit.record(input).catch((error) => console.warn("audit write failed", error));
+    } catch (error) {
+      console.warn("audit write failed", error);
+    }
   }
 
   mint(input: MintMcpSessionInput): MintedMcpSession {
     this.prune();
     const token = randomBytes(32).toString("base64url");
-    const expiresAt = new Date(Date.now() + this.ttlMs).toISOString();
+    const expiresAt = new Date(this.now() + this.ttlMs).toISOString();
     const tokenHash = hashToken(token);
     const context: McpSessionContext = {
       principal: agentPrincipal(input.agentId),
@@ -70,28 +95,64 @@ export class McpSessionService {
       ...context,
       tokenHash,
     });
+    this.emit({
+      type: "mcp_session_issued",
+      status: "success",
+      summary: "MCP session issued",
+      principal: context.principal,
+      agentId: context.agentId,
+      ...(context.projectId === undefined ? {} : { projectId: context.projectId }),
+      runId: context.runId,
+      ...(context.orchestrationId === undefined ? {} : { orchestrationId: context.orchestrationId }),
+      metadata: { expiresAt, ttlMs: this.ttlMs },
+    });
     return { token, context };
   }
 
   resolve(token: string): McpSessionContext | null {
-    this.prune();
-    if (!token || token.length > 512) return null;
+    return this.resolveDetailed(token).context;
+  }
+
+  resolveDetailed(token: string): ResolveMcpSessionResult {
+    if (!token) return { context: null, reason: "missing" };
+    if (token.length > 512) return { context: null, reason: "invalid" };
     const tokenHash = hashToken(token);
     const record = this.sessions.get(tokenHash);
-    if (!record || !sameHash(record.tokenHash, tokenHash) || record.revokedAt) return null;
-    if (Date.parse(record.expiresAt) <= Date.now()) {
+    if (!record || !sameHash(record.tokenHash, tokenHash) || record.revokedAt) {
+      return { context: null, reason: "invalid" };
+    }
+    if (Date.parse(record.expiresAt) <= this.now()) {
+      this.reportExpiry(record);
       this.sessions.delete(tokenHash);
-      return null;
+      return { context: null, reason: "expired" };
     }
     return {
-      principal: { ...record.principal },
+      context: {
+        principal: { ...record.principal },
+        agentId: record.agentId,
+        ...(record.projectId === undefined ? {} : { projectId: record.projectId }),
+        runId: record.runId,
+        ...(record.orchestrationId === undefined ? {} : { orchestrationId: record.orchestrationId }),
+        ...(record.traceparent === undefined ? {} : { traceparent: record.traceparent }),
+        expiresAt: record.expiresAt,
+      },
+    };
+  }
+
+  private reportExpiry(record: SessionRecord): void {
+    if (record.expiryReported) return;
+    record.expiryReported = true;
+    this.emit({
+      type: "mcp_session_expired",
+      status: "failure",
+      summary: "MCP session expired",
+      principal: agentPrincipal(record.agentId),
       agentId: record.agentId,
       ...(record.projectId === undefined ? {} : { projectId: record.projectId }),
       runId: record.runId,
       ...(record.orchestrationId === undefined ? {} : { orchestrationId: record.orchestrationId }),
-      ...(record.traceparent === undefined ? {} : { traceparent: record.traceparent }),
-      expiresAt: record.expiresAt,
-    };
+      metadata: { reason: "expired", expiresAt: record.expiresAt },
+    });
   }
 
   revoke(token: string): boolean {
@@ -105,9 +166,14 @@ export class McpSessionService {
 
   /** Revoke all stale records without exposing token material. */
   prune(): void {
-    const timestamp = Date.now();
+    const timestamp = this.now();
     for (const [tokenHash, record] of this.sessions) {
-      if (record.revokedAt || Date.parse(record.expiresAt) <= timestamp) {
+      if (record.revokedAt) {
+        this.sessions.delete(tokenHash);
+        continue;
+      }
+      if (Date.parse(record.expiresAt) <= timestamp) {
+        this.reportExpiry(record);
         this.sessions.delete(tokenHash);
       }
     }

@@ -7,6 +7,8 @@ export interface PlatformAgentInvokerInput {
   projectId?: string | undefined;
   /** Correlates this child Run with its parent orchestration. */
   orchestrationId?: string | undefined;
+  /** Audit span of the dispatching participant; the child Run parents under it. */
+  parentSpan?: { traceId: string; spanId: string } | undefined;
   timeoutMs: number;
   signal?: AbortSignal;
   /** Called after the platform accepts the child Run, before waiting for it. */
@@ -42,6 +44,7 @@ export class PlatformAgentInvoker implements PlatformAgentInvokerContract {
       origin: "orchestration",
       ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
       ...(input.orchestrationId === undefined ? {} : { orchestrationId: input.orchestrationId }),
+      ...(input.parentSpan === undefined ? {} : { parentSpan: input.parentSpan }),
     });
     let run;
     try {

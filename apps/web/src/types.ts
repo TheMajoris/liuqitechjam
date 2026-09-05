@@ -598,6 +598,36 @@ export interface UsageReport {
   daily: UsageDailyPoint[];
 }
 
+/** Live runtime/telemetry snapshot for one Agent, polled by the workspace. */
+export interface AgentMetrics {
+  agentId: string;
+  lifecycle: "ready" | "busy" | "stopped" | "error";
+  currentRun: { id: string; elapsedMs: number; model: string | null } | null;
+  tokens: {
+    lastRun: {
+      inputTokens?: number;
+      cachedInputTokens?: number;
+      outputTokens?: number;
+    } | null;
+    session: { inputTokens: number; cachedInputTokens: number; outputTokens: number };
+    tokensPerSecondLastRun: number | null;
+    tokensPerSecondAvg: number | null;
+  };
+  tools: { calls: number; denied: number; sandboxCommands: number; filesChanged: number };
+  container: {
+    cpuPct: number;
+    memBytes: number;
+    memLimitBytes: number | null;
+    pids: number | null;
+    sampledAt: string;
+    oomKilled: boolean | null;
+    uptimeMs: number | null;
+  } | null;
+  lastError: string | null;
+  model: string | null;
+  fallbackUsed: boolean;
+}
+
 /** Safe audit projection the workspace polls to see live tool activity. */
 export interface AuditEventRecord {
   id: string;
@@ -611,4 +641,51 @@ export interface AuditEventRecord {
   orchestrationId?: string;
   permission?: string;
   resource?: { kind: string; id: string };
+  /** Redacted, allow-listed evidence for the event (e.g. sandbox_command, workspace_file_change). */
+  metadata?: Record<string, string | number | boolean | null>;
+  category?: string;
+  traceId?: string;
+  spanId?: string;
+  parentSpanId?: string;
+  actorType?: string;
+  durationMs?: number;
+  sequence?: number;
 }
+
+export type AuditCategory =
+  | "orchestration"
+  | "model_call"
+  | "tool_call"
+  | "sandbox_execution"
+  | "workspace"
+  | "policy_decision"
+  | "human_approval"
+  | "session"
+  | "system"
+  | "cloud_operation";
+
+export interface AuditTraceNode {
+  event: AuditEventRecord;
+  events: AuditEventRecord[];
+  children: AuditTraceNode[];
+}
+
+export interface AuditTrace {
+  traceId: string;
+  root: AuditTraceNode | null;
+  orphans: AuditTraceNode[];
+  status: "success" | "failure";
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  eventCount: number;
+  countsByCategory: Record<AuditCategory, number>;
+  failingStep: { spanId: string; eventId: string; type: string } | null;
+  agentIds: string[];
+  runIds: string[];
+}
+
+export type AuditTraceSummary = Omit<AuditTrace, "root" | "orphans"> & {
+  rootType: string | null;
+  rootSummary: string;
+};

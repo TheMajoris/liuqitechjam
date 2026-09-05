@@ -13,6 +13,7 @@ import type {
   RunnerRequest,
   RunnerResult,
 } from "./types.js";
+import type { RuntimeActionObserver } from "./audit/runtime-action-audit.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -63,12 +64,24 @@ export function buildCodexArgs(
   return args;
 }
 
-export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
+export function parseCodexEventLine(
+  line: string,
+  parsed: ParsedEvents,
+  observer?: RuntimeActionObserver,
+): void {
   let event: Record<string, unknown>;
   try {
     event = JSON.parse(line) as Record<string, unknown>;
   } catch {
     return;
+  }
+
+  // The audit tap is passive evidence; a failure there must not cost us the
+  // parse of this line.
+  try {
+    observer?.onEvent(event);
+  } catch {
+    // ignored
   }
 
   if (event.type === "thread.started" && typeof event.thread_id === "string") {
@@ -157,7 +170,7 @@ export class CodexRunner implements AgentRunner {
         timeoutMs: this.config.codexTimeoutMs,
         maxOutputBytes: this.config.codexMaxOutputBytes,
         startErrorMessage: "Codex could not start",
-        onLine: (line) => parseCodexEventLine(line, parsed),
+        onLine: (line) => parseCodexEventLine(line, parsed, request.observer),
         stop: (child) => {
           if (child.exitCode !== null || child.signalCode !== null) return;
           child.kill("SIGTERM");

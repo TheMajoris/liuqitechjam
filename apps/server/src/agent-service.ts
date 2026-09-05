@@ -692,6 +692,8 @@ export class AgentService {
       conversationId?: string | undefined;
       /** Parent orchestration ID for Team turns. */
       orchestrationId?: string | undefined;
+      /** Audit span this Run's span should be parented under. */
+      parentSpan?: { traceId: string; spanId: string } | undefined;
     } = {},
   ): Promise<{ run: AgentRun; message: Message }> {
     if (this.runCoordinator.isCancelling(agentId)) {
@@ -803,6 +805,7 @@ export class AgentService {
       options.orchestrationId,
       modelPlan.fallbacks,
       modelPlan.snapshot,
+      options.parentSpan,
     );
     return { run, message };
   }

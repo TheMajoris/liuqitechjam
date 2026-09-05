@@ -25,7 +25,27 @@ import type {
   SkillCatalogEntry,
   SkillDiscoveryResult,
   AgentRole,
+  AgentMetrics,
+  AuditTrace,
+  AuditTraceSummary,
 } from "./types";
+
+export interface AuditTraceQuery {
+  agentId?: string;
+  projectId?: string;
+  status?: "success" | "failure";
+  limit?: number;
+}
+
+export interface AuditExportQuery {
+  format: "jsonl" | "csv";
+  agentId?: string;
+  projectId?: string;
+  runId?: string;
+  traceId?: string;
+  since?: string;
+  until?: string;
+}
 
 export class ApiError extends Error {
   constructor(
@@ -115,6 +135,45 @@ export const api = {
       "/api/runs/" + encodeURIComponent(runId) + "/activity?limit=" + limit,
     ),
   listTools: () => request<{ tools: import("./types").ToolMetadata[] }>("/api/tools"),
+  traces: (query: AuditTraceQuery = {}) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (typeof value === "string" && value.length > 0) params.set(key, value);
+      else if (typeof value === "number") params.set(key, String(value));
+    }
+    const suffix = params.toString();
+    return request<{ traces: AuditTraceSummary[] }>(
+      "/api/audit/traces" + (suffix ? "?" + suffix : ""),
+    );
+  },
+  trace: (traceId: string) =>
+    request<{ trace: AuditTrace }>("/api/audit/traces/" + encodeURIComponent(traceId)),
+  runTrace: (runId: string) =>
+    request<{ trace: AuditTrace }>("/api/runs/" + encodeURIComponent(runId) + "/trace"),
+  /**
+   * Export is a file download, but the API is bearer-authenticated, so a plain
+   * `<a download>` cannot carry the token. The caller gets a Blob instead and
+   * hands it to an object URL.
+   */
+  auditExport: async (params: AuditExportQuery): Promise<Blob> => {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (typeof value === "string" && value.length > 0) search.set(key, value);
+    }
+    const response = await fetch("/api/audit/export?" + search.toString(), {
+      headers: authToken ? { Authorization: "Bearer " + authToken } : {},
+    });
+    if (!response.ok) {
+      throw new ApiError("Could not export audit records", response.status);
+    }
+    return response.blob();
+  },
+  agentMetrics: (agentId: string) =>
+    request<AgentMetrics>("/api/agents/" + encodeURIComponent(agentId) + "/metrics"),
+  projectAgentMetrics: (projectId: string) =>
+    request<{ agents: AgentMetrics[] }>(
+      "/api/projects/" + encodeURIComponent(projectId) + "/agent-metrics",
+    ),
   listSkills: () => request<{ skills: SkillMetadata[] }>("/api/skills"),
   searchSkills: (query = "", installed?: boolean) => {
     const params = new URLSearchParams({ q: query });

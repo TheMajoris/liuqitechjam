@@ -204,6 +204,8 @@ export interface Database {
   approvalRequests: ApprovalRequest[];
   capabilityGrants: CapabilityGrant[];
   auditEvents: AuditEvent[];
+  /** Chain state for audit events dropped by the ring buffer; null before any trim. */
+  auditChainAnchor?: { sequence: number; hash: string } | null;
   /** Permit request IDs and safe local correlation only; never authorization. */
   permitApprovalCorrelations: PermitApprovalCorrelation[];
   /** Additive role-template collection; absent in pre-role stores. */
@@ -255,6 +257,8 @@ export interface RunnerMcpConfig {
 
 export interface RunnerRequest {
   agentId: string;
+  /** Omitted for callers that have not been updated to pass it. */
+  runId?: string;
   workspacePath: string;
   /** Set when the run executes against a shared Project workspace. */
   projectId?: string | undefined;
@@ -266,6 +270,10 @@ export interface RunnerRequest {
   modelSnapshot?: AgentModelSnapshot;
   /** Omitted for isolated/test runs where MCP is disabled. */
   mcp?: RunnerMcpConfig;
+  /** Host-side tap over the worker's stdout events; never passed to the child. */
+  observer?: import("./audit/runtime-action-audit.js").RuntimeActionObserver;
+  /** Sandbox lifecycle witness; ignored by runners without a container. */
+  sandboxAudit?: import("./audit/sandbox-audit.js").SandboxAuditSink;
 }
 
 export interface AgentRunner {

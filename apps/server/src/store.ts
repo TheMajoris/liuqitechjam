@@ -33,6 +33,7 @@ const emptyDatabase = (): Database => ({
   approvalRequests: [],
   capabilityGrants: [],
   auditEvents: [],
+  auditChainAnchor: null,
   permitApprovalCorrelations: [],
   roles: [],
   installedSkills: [],
@@ -98,6 +99,22 @@ function normalizeDatabase(value: unknown): Database {
     }
   } else {
     normalized.modelCatalog = null;
+  }
+  if (Object.prototype.hasOwnProperty.call(value, "auditChainAnchor")) {
+    const anchor = value.auditChainAnchor;
+    if (anchor === null || anchor === undefined) {
+      normalized.auditChainAnchor = null;
+    } else if (
+      isRecord(anchor) &&
+      typeof anchor.sequence === "number" &&
+      typeof anchor.hash === "string"
+    ) {
+      normalized.auditChainAnchor = { sequence: anchor.sequence, hash: anchor.hash };
+    } else {
+      throw new Error("Unsupported database format");
+    }
+  } else {
+    normalized.auditChainAnchor = null;
   }
   for (const collection of ADDITIVE_COLLECTIONS) {
     if (Object.prototype.hasOwnProperty.call(value, collection)) {

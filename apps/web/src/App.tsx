@@ -4,6 +4,8 @@ import { OrchestrationWorkspace } from "./components/orchestration/Orchestration
 import { AuthScreen } from "./components/playground/AuthScreen";
 import { AppSidebar, type ShellView } from "./components/shell/AppSidebar";
 import { InsightsView } from "./components/insights/InsightsView";
+import { TraceRunsView } from "./components/trace/TraceRunsView";
+import { TraceDetailView } from "./components/trace/TraceDetailView";
 import { RolesAndSkillsView } from "./components/access/RolesAndSkillsView";
 import { AgentWorkspaceView } from "./components/playground/AgentWorkspaceView";
 import { CreateAgentModal } from "./components/playground/CreateAgentModal";
@@ -57,6 +59,7 @@ export default function App() {
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
   const [view, setView] = useState<ShellView>("workspace");
+  const [traceId, setTraceId] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [roles, setRoles] = useState<AgentRole[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(readSidebarPreference);
@@ -356,6 +359,10 @@ export default function App() {
         onNewWorkspace={newWorkspace}
         onNewAgent={openCreate}
         onSelectInsights={() => setView("insights")}
+        onSelectTraces={() => {
+          setTraceId(null);
+          setView("traces");
+        }}
         onSelectAccess={() => setView("access")}
         onSelectModelCatalog={() => setView("model-catalog")}
         onSelectSession={(sessionId) => {
@@ -389,7 +396,10 @@ export default function App() {
       <main
         className={
           "main " +
-          (view === "insights" || view === "access" || view === "model-catalog"
+          (view === "insights" ||
+          view === "traces" ||
+          view === "access" ||
+          view === "model-catalog"
             ? "main-insights"
             : view === "workspace"
               ? "main-chat"
@@ -448,6 +458,15 @@ export default function App() {
               setView("workspace");
             }}
           />
+        ) : view === "traces" ? (
+          traceId ? (
+            <TraceDetailView traceId={traceId} onBack={() => setTraceId(null)} />
+          ) : (
+            <TraceRunsView
+              projectId={orchestration.selectedWorkspaceId ?? undefined}
+              onOpenTrace={setTraceId}
+            />
+          )
         ) : view === "workspace" ? (
           <OrchestrationWorkspace
             agents={agents}

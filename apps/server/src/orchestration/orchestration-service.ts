@@ -36,6 +36,13 @@ import {
   createOrchestrationExecutionHooks,
   DispatchLifecycleError,
 } from "./orchestration-execution-hooks.js";
+import type {
+  AuditEventInput,
+  AuditRecorder,
+  AuditSpan,
+} from "../audit/audit-types.js";
+import { newSpanId } from "../audit/audit-span.js";
+import { systemPrincipal } from "../access/access-types.js";
 import {
   appendEvent,
   boundedSafeText,
@@ -125,6 +132,9 @@ export class OrchestrationService {
   private readonly orchestratorFactory: () => Orchestrator;
   private readonly projectBinding: OrchestrationProjectBinding | undefined;
   private telemetry: RuntimeTelemetry | undefined;
+  private readonly audit: AuditRecorder | undefined;
+  /** Trace roots keyed by orchestration ID; participants parent under these. */
+  private readonly orchestrationSpans = new Map<string, AuditSpan>();
   private readonly activeSessions = new Map<string, ActiveOrchestrationSession>();
 
   constructor(dependencies: OrchestrationServiceDependencies);
@@ -155,6 +165,49 @@ export class OrchestrationService {
     this.supervisorTimeoutMs = normalized.supervisorTimeoutMs;
     this.orchestratorFactory = normalized.orchestratorFactory;
     this.projectBinding = normalized.projectBinding;
+    this.audit = normalized.audit;
+  }
+
+  /**
+   * The trace root of one orchestration. A session continued after a restart
+   * has no in-memory span, so the root is created lazily on first use.
+   */
+  orchestrationSpan(id: string): AuditSpan {
+    const existing = this.orchestrationSpans.get(id);
+    if (existing) return existing;
+    const created: AuditSpan = { traceId: id, spanId: newSpanId() };
+    this.orchestrationSpans.set(id, created);
+    return created;
+  }
+
+  /** An audit sink failure must never change an orchestration's outcome. */
+  private async recordAudit(input: AuditEventInput): Promise<void> {
+    if (!this.audit) return;
+    await this.audit.record(input).catch((error) => {
+      console.warn("audit write failed", error);
+    });
+  }
+
+  private async recordLifecycle(
+    id: string,
+    type: AuditEventInput["type"],
+    summary: string,
+    options: {
+      status?: AuditEventInput["status"];
+      durationMs?: number | undefined;
+      metadata?: Readonly<Record<string, unknown>>;
+    } = {},
+  ): Promise<void> {
+    await this.recordAudit({
+      type,
+      status: options.status ?? "success",
+      orchestrationId: id,
+      principal: systemPrincipal(),
+      summary,
+      span: this.orchestrationSpan(id),
+      ...(options.durationMs === undefined ? {} : { durationMs: options.durationMs }),
+      ...(options.metadata === undefined ? {} : { metadata: options.metadata }),
+    });
   }
 
   /** Attach runtime telemetry after the application graph is assembled. */
@@ -391,6 +444,13 @@ export class OrchestrationService {
       return structuredClone(session);
     });
 
+    await this.recordLifecycle(accepted.id, "orchestration_started", "Orchestration queued", {
+      metadata: {
+        mode: accepted.mode ?? "sequential",
+        participantCount: accepted.participants.length,
+        maxSteps: accepted.maxSteps,
+      },
+    });
     this.launch(accepted);
     return cloneSession(accepted);
   }
@@ -514,6 +574,12 @@ export class OrchestrationService {
       };
     });
 
+    await this.recordLifecycle(
+      accepted.session.id,
+      "orchestration_continued",
+      "Orchestration continued",
+      { metadata: { cycleIndex: accepted.cycleIndex, stepOffset: accepted.stepOffset } },
+    );
     this.launch(accepted.session, {
       cyclePrompt: accepted.prompt,
       cycleIndex: accepted.cycleIndex,
@@ -1024,6 +1090,24 @@ export class OrchestrationService {
       currentRunId: null,
       cancellationRequestedRunId: null,
       execution: null,
+      participantSpan: null,
+    };
+    // Child Runs must parent under the participant span journaled just before
+    // dispatch, which the engine never sees. Attach it at this seam instead.
+    context.invoker = {
+      invoke: (input) =>
+        invoker.invoke({
+          ...input,
+          ...(context.participantSpan
+            ? {
+                parentSpan: {
+                  traceId: context.participantSpan.traceId,
+                  spanId: context.participantSpan.spanId,
+                },
+              }
+            : {}),
+        }),
+      cancel: (runId) => invoker.cancel(runId),
     };
     this.activeSessions.set(session.id, context);
     const execution = this.runSession(context);
@@ -1050,11 +1134,79 @@ export class OrchestrationService {
   private executionHooks(
     context: ActiveOrchestrationSession,
   ): OrchestrationExecutionHooks {
-    return createOrchestrationExecutionHooks(context, {
+    const journalHooks = createOrchestrationExecutionHooks(context, {
       store: this.store,
       validateParticipant: (participant) => this.validateParticipant(participant),
       cancelChildRun: (runId) => this.cancelChildRun(context, runId),
     });
+    if (!this.audit) return journalHooks;
+
+    return {
+      ...journalHooks,
+      onSupervisorDecision: async (input) => {
+        await journalHooks.onSupervisorDecision?.(input);
+        const selectedAgentId = input.participantId
+          ? this.findSession(context.id).participants.find(
+              (participant) => participant.id === input.participantId,
+            )?.agentId
+          : undefined;
+        await this.recordAudit({
+          type: "supervisor_decision",
+          status: "success",
+          orchestrationId: context.id,
+          ...(selectedAgentId === undefined ? {} : { agentId: selectedAgentId }),
+          principal: systemPrincipal(),
+          summary: "Supervisor chose the next step",
+          span: this.orchestrationSpan(context.id),
+          metadata: {
+            action: input.action,
+            stepIndex: input.stepIndex,
+            ...(selectedAgentId === undefined ? {} : { selectedAgentId }),
+          },
+        });
+      },
+      onBeforeDispatch: async (input) => {
+        await journalHooks.onBeforeDispatch?.(input);
+        const root = this.orchestrationSpan(context.id);
+        const participantSpan: AuditSpan = {
+          traceId: root.traceId,
+          spanId: newSpanId(),
+          parentSpanId: root.spanId,
+        };
+        context.participantSpan = participantSpan;
+        await this.recordAudit({
+          type: "participant_dispatched",
+          status: "success",
+          orchestrationId: context.id,
+          agentId: input.participant.agentId,
+          principal: systemPrincipal(),
+          summary: "Participant dispatched",
+          span: participantSpan,
+          metadata: {
+            participantIndex: input.participant.position,
+            role: input.participant.role,
+            stepIndex: input.stepIndex,
+          },
+        });
+      },
+      onHandoffApplied: async (input) => {
+        await journalHooks.onHandoffApplied?.(input);
+        await this.recordAudit({
+          type: "handoff_applied",
+          status: "success",
+          orchestrationId: context.id,
+          agentId: input.participant.agentId,
+          principal: systemPrincipal(),
+          summary: "Handoff applied to the next participant",
+          span: this.orchestrationSpan(context.id),
+          metadata: {
+            role: input.participant.role,
+            stepIndex: input.stepIndex,
+            truncated: input.envelope.truncated,
+          },
+        });
+      },
+    };
   }
 
   private async runSession(context: ActiveOrchestrationSession): Promise<void> {
@@ -1143,9 +1295,9 @@ export class OrchestrationService {
     context: ActiveOrchestrationSession,
     result: OrchestrationExecutionResult,
   ): Promise<void> {
-    await this.store.mutate((database) => {
+    const outcome = await this.store.mutate((database) => {
       const session = database.orchestrations.find((item) => item.id === context.id);
-      if (!session || statusIsTerminal(session.status)) return;
+      if (!session || statusIsTerminal(session.status)) return null;
       const completedAt = now();
       // A bounded round-robin run is not a successful completion merely
       // because an injected engine returned `completed`. The service owns
@@ -1195,7 +1347,7 @@ export class OrchestrationService {
           errorCode: "ORCHESTRATION_STOPPED",
           safeSummary: session.errorMessage,
         });
-        return;
+        return this.terminalOutcome(session, "orchestration_stopped", completedAt);
       }
 
       if (result.status === "completed") {
@@ -1223,7 +1375,7 @@ export class OrchestrationService {
           completionEventFields.completionReason = completionReason;
         }
         appendEvent(database, session, "orchestration_completed", completionEventFields);
-        return;
+        return this.terminalOutcome(session, "orchestration_completed", completedAt);
       }
 
       session.status = "failed";
@@ -1238,7 +1390,57 @@ export class OrchestrationService {
         errorCode: session.errorCode,
         safeSummary: session.errorMessage,
       });
+      return this.terminalOutcome(session, "orchestration_failed", completedAt);
     });
+    await this.recordTerminal(context.id, outcome);
+  }
+
+  /**
+   * Safe evidence about one terminal transition. Only the stable error code
+   * travels here; the session's error message may quote runtime text.
+   */
+  private terminalOutcome(
+    session: OrchestrationSession,
+    type: "orchestration_completed" | "orchestration_failed" | "orchestration_stopped",
+    completedAt: string,
+  ): {
+    type: "orchestration_completed" | "orchestration_failed" | "orchestration_stopped";
+    durationMs: number;
+    errorCode: string | null;
+    stepIndex: number;
+  } {
+    const startedAt = session.startedAt ?? session.createdAt;
+    return {
+      type,
+      durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
+      errorCode: session.errorCode,
+      stepIndex: session.stepIndex,
+    };
+  }
+
+  private async recordTerminal(
+    id: string,
+    outcome: ReturnType<OrchestrationService["terminalOutcome"]> | null,
+  ): Promise<void> {
+    if (outcome === null) return;
+    await this.recordLifecycle(
+      id,
+      outcome.type,
+      outcome.type === "orchestration_completed"
+        ? "Orchestration completed"
+        : outcome.type === "orchestration_stopped"
+          ? "Orchestration stopped"
+          : "Orchestration failed",
+      {
+        status: outcome.type === "orchestration_failed" ? "failure" : "success",
+        durationMs: outcome.durationMs,
+        metadata: {
+          stepIndex: outcome.stepIndex,
+          ...(outcome.errorCode === null ? {} : { errorCode: outcome.errorCode }),
+        },
+      },
+    );
+    this.orchestrationSpans.delete(id);
   }
 
   private executionErrorMessage(code: OrchestrationErrorCode | null): string {
@@ -1286,9 +1488,9 @@ export class OrchestrationService {
             OrchestrationErrorCodeSchema.safeParse(explicitCode).success
           ? (explicitCode as OrchestrationErrorCode)
           : "INTERNAL_ERROR";
-    await this.store.mutate((database) => {
+    const outcome = await this.store.mutate((database) => {
       const session = database.orchestrations.find((item) => item.id === id);
-      if (!session || statusIsTerminal(session.status)) return;
+      if (!session || statusIsTerminal(session.status)) return null;
       const completedAt = now();
       session.status = "failed";
       session.completionReason = null;
@@ -1302,13 +1504,15 @@ export class OrchestrationService {
         errorCode: code,
         safeSummary: session.errorMessage,
       });
+      return this.terminalOutcome(session, "orchestration_failed", completedAt);
     });
+    await this.recordTerminal(id, outcome);
   }
 
   private async finalizeStopped(id: string): Promise<void> {
-    await this.store.mutate((database) => {
+    const outcome = await this.store.mutate((database) => {
       const session = database.orchestrations.find((item) => item.id === id);
-      if (!session || statusIsTerminal(session.status)) return;
+      if (!session || statusIsTerminal(session.status)) return null;
       const completedAt = now();
       session.status = "stopped";
       session.completionReason = null;
@@ -1322,7 +1526,9 @@ export class OrchestrationService {
         errorCode: "ORCHESTRATION_STOPPED",
         safeSummary: session.errorMessage,
       });
+      return this.terminalOutcome(session, "orchestration_stopped", completedAt);
     });
+    await this.recordTerminal(id, outcome);
   }
 }
 

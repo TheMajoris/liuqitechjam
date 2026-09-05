@@ -1,6 +1,6 @@
 import type { RunUsage } from "../types.js";
 import { normalizeRunUsage, type UsageAvailability } from "../telemetry/telemetry-usage.js";
-import type { AuditEvent, AuditQuery } from "./audit-types.js";
+import { AUDIT_CATEGORIES, type AuditCategory, type AuditEvent, type AuditQuery } from "./audit-types.js";
 import { queryAuditEvents } from "./audit-query.js";
 
 export interface AuditRunSnapshot {
@@ -27,6 +27,8 @@ export interface AuditTimelineSummary {
   toolCount: number;
   authorizationCount: number;
   errorCount: number;
+  /** Every category is present; absent categories count zero. */
+  countsByCategory: Record<AuditCategory, number>;
   executionLatencyMs?: number;
   authorizationLatencyMs?: number;
   toolLatencyMs?: number;
@@ -35,6 +37,17 @@ export interface AuditTimelineSummary {
 export interface AuditTimeline {
   events: AuditEvent[];
   summary: AuditTimelineSummary;
+}
+
+function countByCategory(
+  events: readonly AuditEvent[],
+): Record<AuditCategory, number> {
+  const counts = {} as Record<AuditCategory, number>;
+  for (const category of AUDIT_CATEGORIES) counts[category] = 0;
+  for (const event of events) {
+    if (counts[event.category] !== undefined) counts[event.category] += 1;
+  }
+  return counts;
 }
 
 function durationFromEvents(
@@ -124,6 +137,7 @@ export function queryAuditTimeline(
       (event) => event.type === "authorization_decision",
     ).length,
     errorCount: matchedEvents.filter((event) => event.status === "failure").length,
+    countsByCategory: countByCategory(matchedEvents),
   };
   const executionMs = executionLatency(matchedRuns);
   const authorizationMs = durationFromEvents(matchedEvents, ["authorization_decision"]);

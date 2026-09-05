@@ -9,7 +9,8 @@ import { ToolService } from "./tools/tool-service.js";
 import type { SkillService } from "./skills/skill-service.js";
 import type { RoleService } from "./roles/role-service.js";
 import type { PermitApprovalService } from "./access/permit-approval-service.js";
-import type { AuditReader } from "./audit/audit-types.js";
+import type { AuditReader, AuditRecorder } from "./audit/audit-types.js";
+import { systemPrincipal } from "./access/access-types.js";
 import { correlationAttributes, type RuntimeTelemetry, type TelemetryCarrier } from "./telemetry/telemetry-types.js";
 import type { SearchProvider } from "./tools/search-provider.js";
 import type { WebFetchAdapter } from "./tools/web-fetch-adapter.js";
@@ -23,8 +24,12 @@ export interface McpRouteDependencies {
   roleService?: RoleService;
   /** Optional in isolated tests; production wires the Permit-backed service. */
   approvalService?: PermitApprovalService;
-  /** Read-only server-owned activity projection; clients cannot append events. */
-  auditService?: AuditReader;
+  /**
+   * Server-owned activity projection. Reads are the primary contract;
+   * `record` is optional and used only by the HTTP route layer to append
+   * human-intent control-action events (start/stop/approve/etc).
+   */
+  auditService?: AuditReader & Partial<AuditRecorder>;
   /** The selected provider is exposed only through safe health metadata. */
   searchProvider?: SearchProvider;
   /** Safe public-only fetcher reused for explicit skill Markdown imports. */
@@ -38,6 +43,12 @@ function bearerToken(request: FastifyRequest): string | null {
   const match = /^Bearer\s+(.+)$/i.exec(header.trim());
   const token = match?.[1]?.trim();
   return token ? token : null;
+}
+
+const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+
+function isLoopback(ip: string): boolean {
+  return LOOPBACK_ADDRESSES.has(ip);
 }
 
 function annotationsForRisk(
@@ -148,13 +159,25 @@ export function registerMcpRoute(
     // Authentication happens before creating the SDK server or request
     // context. The token itself is never placed in an error or log payload.
     const token = bearerToken(request);
-    const context = token === null ? null : dependencies.sessions.resolve(token);
-    if (!context) {
+    const detailed = token === null ? null : dependencies.sessions.resolveDetailed(token);
+    if (!detailed || detailed.context === null) {
+      const reason = detailed === null ? "missing" : detailed.reason;
+      void dependencies.auditService
+        ?.record?.({
+          type: "mcp_session_rejected",
+          status: "failure",
+          summary: "MCP session rejected",
+          principal: systemPrincipal(),
+          actorType: "system",
+          metadata: { reason, loopback: isLoopback(request.ip) },
+        })
+        ?.catch((error) => console.warn("audit write failed", error));
       return reply
         .code(401)
         .header("WWW-Authenticate", 'Bearer realm="launchpad-mcp"')
         .send({ error: "Authentication required" });
     }
+    const context = detailed.context;
 
     const handleRequest = async () => {
       const server = createMcpServer(context, dependencies.toolService);

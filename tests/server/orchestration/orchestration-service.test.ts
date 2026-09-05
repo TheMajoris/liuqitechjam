@@ -16,6 +16,19 @@ import type {
   CreateOrchestrationInput,
   OrchestrationSession,
 } from "../../../apps/server/src/orchestration/types.js";
+import { AgentService } from "../../../apps/server/src/agent-service.js";
+import { loadConfig } from "../../../apps/server/src/config.js";
+import { WorkspaceManager } from "../../../apps/server/src/workspace.js";
+import type {
+  AgentRunner,
+  RunnerRequest,
+  RunnerResult,
+} from "../../../apps/server/src/types.js";
+import type {
+  AuditEvent,
+  AuditEventInput,
+  AuditRecorder,
+} from "../../../apps/server/src/audit/audit-types.js";
 
 const agentIds = [
   "11111111-1111-4111-8111-111111111111",
@@ -145,6 +158,63 @@ class PendingInvoker implements PlatformAgentInvokerContract {
 
 function makeAgentsAccess(agents: Agent[]): OrchestrationAgentAccess {
   return { listAgents: () => agents };
+}
+
+/** Records audit inputs verbatim so the span tree can be asserted. */
+class RecordingAudit implements AuditRecorder {
+  readonly inputs: AuditEventInput[] = [];
+
+  async record(input: AuditEventInput): Promise<AuditEvent> {
+    this.inputs.push(input);
+    return {} as AuditEvent;
+  }
+
+  ofType(type: AuditEventInput["type"]): AuditEventInput[] {
+    return this.inputs.filter((input) => input.type === type);
+  }
+}
+
+class EchoRunner implements AgentRunner {
+  async run(request: RunnerRequest): Promise<RunnerResult> {
+    return {
+      output: "Completed: " + request.prompt,
+      threadId: request.threadId ?? "echo-thread",
+      usage: { inputTokens: 4, outputTokens: 2 },
+    };
+  }
+  async cancel(): Promise<boolean> {
+    return false;
+  }
+  async isAvailable(): Promise<boolean> {
+    return true;
+  }
+}
+
+/** A real AgentService so child Runs travel the platform invoker path. */
+async function makePlatformAgentService(
+  audit: AuditRecorder,
+): Promise<{ service: AgentService; store: JsonStore }> {
+  const root = await mkdtemp(path.join(tmpdir(), "launchpad-orchestration-audit-"));
+  temporaryDirectories.push(root);
+  const config = loadConfig({
+    NODE_ENV: "test",
+    APP_DATA_DIR: path.join(root, "data"),
+    AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+    CODEX_HOME: path.join(root, "codex"),
+    ARK_API_KEY: "test-key",
+    ARK_MODEL: "ep-test",
+    WORKER_CURATED_MODELS: "",
+  });
+  const store = new JsonStore(path.join(root, "data", "db.json"));
+  const service = new AgentService(
+    config,
+    store,
+    new WorkspaceManager(path.join(root, "workspaces")),
+    new EchoRunner(),
+  );
+  service.setAuditRecorder(audit);
+  await service.initialize();
+  return { service, store };
 }
 
 describe("OrchestrationService", () => {
@@ -474,4 +544,58 @@ describe("OrchestrationService", () => {
     expect(terminal.supervisorAgentId).toBe(agents[0]!.id);
   });
 
+  it("audits one span tree rooted at the orchestration for every child Run", async () => {
+    const audit = new RecordingAudit();
+    const { service: agentService, store } = await makePlatformAgentService(audit);
+    const planner = await agentService.createAgent({ name: "Planner" });
+    const builder = await agentService.createAgent({ name: "Builder" });
+    const service = new OrchestrationService({ store, agentService, audit });
+    const created = await service.createSession({
+      name: "Traced pipeline",
+      originalPrompt: "Ship the requested change safely.",
+      participants: [
+        { id: "first", agentId: planner.id, role: "Planner", position: 0 },
+        { id: "second", agentId: builder.id, role: "Builder", position: 1 },
+      ],
+      maxSteps: 2,
+      perAgentTimeoutMs: 5_000,
+    });
+
+    await service.startSession(created.id);
+    const terminal = await waitForTerminal(service, created.id);
+    expect(terminal.status).toBe("completed");
+
+    const roots = audit.ofType("orchestration_started");
+    expect(roots).toHaveLength(1);
+    const root = roots[0]?.span;
+    expect(root?.traceId).toBe(created.id);
+    expect(root?.parentSpanId).toBeUndefined();
+
+    const dispatched = audit.ofType("participant_dispatched");
+    expect(dispatched).toHaveLength(2);
+    for (const event of dispatched) {
+      expect(event.span?.parentSpanId).toBe(root?.spanId);
+      expect(event.span?.traceId).toBe(created.id);
+    }
+    const participantSpanIds = dispatched.map((event) => event.span?.spanId);
+
+    const started = audit.ofType("run_started");
+    expect(started).toHaveLength(2);
+    for (const event of started) {
+      expect(event.span?.traceId).toBe(created.id);
+      expect(participantSpanIds).toContain(event.span?.parentSpanId);
+    }
+
+    const completed = audit.ofType("run_completed");
+    expect(completed).toHaveLength(2);
+    for (const event of completed) {
+      expect(started.some((item) => item.span?.spanId === event.span?.spanId)).toBe(true);
+      expect(typeof event.durationMs).toBe("number");
+    }
+
+    const finished = audit.ofType("orchestration_completed");
+    expect(finished).toHaveLength(1);
+    expect(finished[0]?.span?.spanId).toBe(root?.spanId);
+    expect(typeof finished[0]?.durationMs).toBe("number");
+  });
 });

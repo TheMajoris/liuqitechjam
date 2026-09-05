@@ -13,7 +13,13 @@ import {
 import type { UseOrchestrationResult } from "../orchestration/use-orchestration";
 
 /** What the main pane is showing. The sidebar selection decides it. */
-export type ShellView = "workspace" | "agent" | "insights" | "access" | "model-catalog";
+export type ShellView =
+  | "workspace"
+  | "agent"
+  | "insights"
+  | "traces"
+  | "access"
+  | "model-catalog";
 
 interface AppSidebarProps {
   collapsed: boolean;
@@ -27,6 +33,7 @@ interface AppSidebarProps {
   onNewWorkspace: () => void;
   onNewAgent: () => void;
   onSelectInsights: () => void;
+  onSelectTraces: () => void;
   onSelectAccess: () => void;
   onSelectModelCatalog: () => void;
   onSelectSession: (sessionId: string) => void;
@@ -64,6 +71,7 @@ export function AppSidebar({
   onNewWorkspace,
   onNewAgent,
   onSelectInsights,
+  onSelectTraces,
   onSelectAccess,
   onSelectModelCatalog,
   onSelectSession,
@@ -198,6 +206,16 @@ export function AppSidebar({
           </button>
           <button
             type="button"
+            className={"rail-item" + (view === "traces" ? " is-active" : "")}
+            aria-label="Traces"
+            aria-current={view === "traces" ? "page" : undefined}
+            onClick={onSelectTraces}
+          >
+            <span aria-hidden="true">⋔</span>
+            <span className="rail-tip" aria-hidden="true">Traces</span>
+          </button>
+          <button
+            type="button"
             className={"rail-item" + (view === "workspace" ? " is-active" : "")}
             aria-label={`Workspaces (${activeProjects.length})`}
             onClick={onToggleCollapsed}
@@ -249,6 +267,15 @@ export function AppSidebar({
           >
             <span aria-hidden="true">◔</span>
             Insights
+          </button>
+          <button
+            type="button"
+            className={"shell-nav-item" + (view === "traces" ? " selected" : "")}
+            aria-current={view === "traces" ? "page" : undefined}
+            onClick={onSelectTraces}
+          >
+            <span aria-hidden="true">⋔</span>
+            Traces
           </button>
           <button
             type="button"

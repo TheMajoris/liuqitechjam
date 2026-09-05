@@ -57,6 +57,7 @@ import {
 } from "./preview/preview-service.js";
 import { AuditService, JsonAuditStoreAdapter } from "./audit/audit-service.js";
 import { createRuntimeTelemetry } from "./telemetry/runtime-telemetry.js";
+import { AgentMetricsService } from "./usage/agent-metrics.js";
 
 const config = loadConfig();
 await writeCodexConfig(config);
@@ -66,8 +67,9 @@ const auditStore = new JsonAuditStoreAdapter(store);
 const audit = new AuditService(auditStore, auditStore);
 const telemetry = createRuntimeTelemetry(config);
 const workspaces = new WorkspaceManager(config.workspaceRoot);
-const runner = createRunner(config);
-const mcpSessions = new McpSessionService(config.mcpTokenTtlMs);
+// `containerHealthSampler` is only set for the container runtime provider.
+const { runner, healthSampler: containerHealthSampler } = createRunner(config);
+const mcpSessions = new McpSessionService(config.mcpTokenTtlMs, { audit });
 const modelCatalog = new ArkModelCatalogService(store);
 // The live catalog must exist before AgentService.initialize() materializes
 // defaults for legacy Agent records.
@@ -105,6 +107,12 @@ const service = new AgentService(
 service.setAuditRecorder(audit);
 service.setMcpSessionService(mcpSessions);
 service.setTelemetry(telemetry);
+const agentMetrics = new AgentMetricsService({
+  agents: () => service.listAgents(),
+  runs: (agentId) => service.getRuns(agentId),
+  audit,
+  ...(containerHealthSampler === undefined ? {} : { healthSampler: containerHealthSampler }),
+});
 const permitMode = config.authorizationMode === "permit";
 // Permit is the only authorization authority in the production graph. Local
 // POC mode uses the repository's fixed role policy and never constructs a
@@ -238,6 +246,7 @@ const supervisorSelector = supervisorCredentialsConfigured
 const orchestrationService = new OrchestrationService({
   store,
   agentService: service,
+  audit,
   // Attaching here keeps Project membership rules inside ProjectService while
   // letting each Conversation declare its shared Workspace at creation time.
   projectBinding: {
@@ -329,6 +338,7 @@ const app = await createApp(
     telemetry,
   },
   modelCatalog,
+  agentMetrics,
 );
 
 const shutdown = async (signal: string) => {

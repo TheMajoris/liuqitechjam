@@ -16,8 +16,16 @@ export type AgentPrincipal = {
   id: string;
 };
 
+/** The server runtime acting on its own behalf (not a human or Agent). */
+export const SYSTEM_PRINCIPAL = { kind: "system", id: "runtime" } as const;
+
+export type SystemPrincipal = {
+  kind: "system";
+  id: "runtime";
+};
+
 /** A trusted actor. HTTP callers never get to provide this object. */
-export type Principal = HumanPrincipal | AgentPrincipal;
+export type Principal = HumanPrincipal | AgentPrincipal | SystemPrincipal;
 
 export function principalKey(principal: Principal): string {
   return principal.kind + ":" + principal.id;
@@ -29,6 +37,10 @@ export function agentPrincipal(id: string): AgentPrincipal {
 
 export function humanPrincipal(): HumanPrincipal {
   return DEMO_HUMAN_PRINCIPAL;
+}
+
+export function systemPrincipal(): SystemPrincipal {
+  return SYSTEM_PRINCIPAL;
 }
 
 export type ResourceRef =

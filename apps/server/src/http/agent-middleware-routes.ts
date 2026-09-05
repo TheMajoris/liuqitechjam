@@ -1,10 +1,23 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import type { AuditReader } from "../audit/audit-types.js";
+import { AUDIT_CATEGORIES, type AuditCategory, type AuditReader } from "../audit/audit-types.js";
+import {
+  auditExportContentType,
+  auditExportFilename,
+} from "../audit/audit-export.js";
 import type { AgentService } from "../agent-service.js";
+import { humanPrincipal } from "../access/access-types.js";
 import { HttpError } from "../errors.js";
+import { recordHumanAction } from "./human-action-audit.js";
 import type { McpRouteDependencies } from "../mcp-server.js";
-import { agentIdParams, auditQuery } from "./route-schemas.js";
+import {
+  agentIdParams,
+  auditQuery,
+  auditExportQuery,
+  auditTraceIdParams,
+  auditTraceListQuery,
+  runIdParams,
+} from "./route-schemas.js";
 import { RoleError, type RoleService } from "../roles/role-service.js";
 import { WebFetchError } from "../tools/web-fetch-adapter.js";
 import {
@@ -17,6 +30,12 @@ import {
   SkillError,
   type CreateSkillInput,
 } from "../skills/skill-service.js";
+
+function emptyAuditCategoryCounts(): Record<AuditCategory, number> {
+  const counts = {} as Record<AuditCategory, number>;
+  for (const category of AUDIT_CATEGORIES) counts[category] = 0;
+  return counts;
+}
 
 const MAX_IMPORTED_SKILL_INSTRUCTION_LENGTH = 10_000;
 const MAX_DISCOVERY_TITLE_LENGTH = 300;
@@ -457,21 +476,59 @@ export function registerAgentMiddlewareRoutes(
   app.post("/api/approvals/:id/approve", async (request) => {
     const { id } = approvalIdParams.parse(request.params);
     const body = approvalDecisionBody.parse(request.body ?? {});
-    return {
-      approval: await requireApprovalService(mcp).approve(id, body.scope ?? "once"),
-    };
+    const approval = await requireApprovalService(mcp).approve(id, body.scope ?? "once");
+    await recordHumanAction(mcp?.auditService, {
+      type: "approval_decided",
+      status: "success",
+      summary: "Approval request approved",
+      principal: humanPrincipal(),
+      actorType: "human",
+      approvalRequestId: id,
+      permitRequestId: id,
+      agentId: approval.agentId,
+      ...(approval.projectId ? { projectId: approval.projectId } : {}),
+      resource: { kind: "tool", id: approval.toolId },
+      metadata: { decision: "approved", toolId: approval.toolId },
+    }, request.log);
+    return { approval };
   });
 
   app.post("/api/approvals/:id/grant", async (request) => {
     const { id } = approvalIdParams.parse(request.params);
-    return {
-      approval: await requireApprovalService(mcp).approve(id, "project"),
-    };
+    const approval = await requireApprovalService(mcp).approve(id, "project");
+    await recordHumanAction(mcp?.auditService, {
+      type: "approval_decided",
+      status: "success",
+      summary: "Approval request granted",
+      principal: humanPrincipal(),
+      actorType: "human",
+      approvalRequestId: id,
+      permitRequestId: id,
+      agentId: approval.agentId,
+      ...(approval.projectId ? { projectId: approval.projectId } : {}),
+      resource: { kind: "tool", id: approval.toolId },
+      metadata: { decision: "approved", toolId: approval.toolId },
+    }, request.log);
+    return { approval };
   });
 
   app.post("/api/approvals/:id/deny", async (request) => {
     const { id } = approvalIdParams.parse(request.params);
-    return { approval: await requireApprovalService(mcp).deny(id) };
+    const approval = await requireApprovalService(mcp).deny(id);
+    await recordHumanAction(mcp?.auditService, {
+      type: "approval_decided",
+      status: "success",
+      summary: "Approval request denied",
+      principal: humanPrincipal(),
+      actorType: "human",
+      approvalRequestId: id,
+      permitRequestId: id,
+      agentId: approval.agentId,
+      ...(approval.projectId ? { projectId: approval.projectId } : {}),
+      resource: { kind: "tool", id: approval.toolId },
+      metadata: { decision: "denied", toolId: approval.toolId },
+    }, request.log);
+    return { approval };
   });
 
   app.post("/api/approvals/:id/revoke", async (request) => {
@@ -532,6 +589,7 @@ export function registerAgentMiddlewareRoutes(
           toolCount: 0,
           authorizationCount: 0,
           errorCount: 0,
+          countsByCategory: emptyAuditCategoryCounts(),
         },
       },
     };
@@ -540,4 +598,47 @@ export function registerAgentMiddlewareRoutes(
   app.get("/api/audit", async (request) => ({
     events: requireAuditService(mcp).query(auditQuery.parse(request.query)),
   }));
+
+  app.get("/api/audit/export", async (request, reply) => {
+    const audit = requireAuditService(mcp);
+    if (!audit.export) throw new HttpError(503, "Audit export is not configured");
+    const { format, ...filter } = auditExportQuery.parse(request.query);
+    return reply
+      .header("content-type", auditExportContentType(format))
+      .header(
+        "content-disposition",
+        `attachment; filename="${auditExportFilename(format)}"`,
+      )
+      .send(audit.export(filter, format));
+  });
+
+  app.get("/api/audit/traces", async (request) => {
+    const audit = requireAuditService(mcp);
+    if (!audit.traces) throw new HttpError(503, "Audit traces are not configured");
+    return { traces: audit.traces(auditTraceListQuery.parse(request.query)) };
+  });
+
+  app.get("/api/audit/traces/:traceId", async (request) => {
+    const audit = requireAuditService(mcp);
+    if (!audit.trace) throw new HttpError(503, "Audit traces are not configured");
+    const { traceId } = auditTraceIdParams.parse(request.params);
+    const trace = audit.trace(traceId);
+    if (!trace) throw new HttpError(404, "Trace not found");
+    return { trace };
+  });
+
+  app.get("/api/runs/:id/trace", async (request) => {
+    const audit = requireAuditService(mcp);
+    if (!audit.runTrace) throw new HttpError(503, "Audit traces are not configured");
+    const { id } = runIdParams.parse(request.params);
+    const trace = audit.runTrace(id);
+    if (!trace) throw new HttpError(404, "Trace not found");
+    return { trace };
+  });
+
+  app.get("/api/audit/verify", async () => {
+    const audit = requireAuditService(mcp);
+    if (!audit.verify) throw new HttpError(503, "Audit chain verification is not configured");
+    return audit.verify();
+  });
 }
