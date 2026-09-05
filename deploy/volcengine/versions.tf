@@ -1,6 +1,17 @@
 terraform {
   required_version = ">= 1.6.0"
 
+  # HCP Terraform stores the remote state. The workspace must use Local
+  # execution so GitHub Actions performs the plan/apply while HCP provides
+  # encrypted state storage and locking.
+  cloud {
+    organization = "darren322-org"
+
+    workspaces {
+      name = "liuqitechjam-staging"
+    }
+  }
+
   required_providers {
     volcenginecc = {
       source  = "volcengine/volcenginecc"

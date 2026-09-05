@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 .env.production
+.staging.env
 .data/
 .local/
 data/

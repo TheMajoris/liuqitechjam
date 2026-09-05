@@ -28,36 +28,39 @@ export interface PermitAuthorizationCheck {
   context?: PermitContext;
 }
 
+// Permit action keys may contain letters, numbers, dashes, and underscores,
+// but not dots or colons. Keep the repository permission IDs stable while
+// translating them to valid, unambiguous Permit action keys at the boundary.
 const ACTIONS: Readonly<Record<PermissionId, string>> = {
-  "agent.invoke": "agent.invoke",
-  "project.manage": "project.manage",
-  "project.members.manage": "project.members.manage",
-  "preview.inspect": "preview.inspect",
-  "preview.start": "preview.start",
-  "preview.restart": "preview.restart",
-  "preview.stop": "preview.stop",
-  "preview.logs": "preview.logs",
-  "project.read": "project.read",
-  "project.write": "project.write",
-  "project.preview.inspect": "project.preview.inspect",
-  "project.preview.start": "project.preview.start",
-  "project.preview.restart": "project.preview.restart",
-  "project.preview.stop": "project.preview.stop",
-  "project.preview.logs": "project.preview.logs",
-  "skill.read": "skill.read",
-  "skill.assign": "skill.assign",
-  "skill.search": "skill.search",
-  "skill.install": "skill.install",
-  "skill.remove": "skill.remove",
-  "role.read": "role.read",
-  "role.manage": "role.manage",
+  "agent.invoke": "agent_invoke",
+  "project.manage": "project_manage",
+  "project.members.manage": "project_members_manage",
+  "preview.inspect": "preview_inspect",
+  "preview.start": "preview_start",
+  "preview.restart": "preview_restart",
+  "preview.stop": "preview_stop",
+  "preview.logs": "preview_logs",
+  "project.read": "project_read",
+  "project.write": "project_write",
+  "project.preview.inspect": "project_preview_inspect",
+  "project.preview.start": "project_preview_start",
+  "project.preview.restart": "project_preview_restart",
+  "project.preview.stop": "project_preview_stop",
+  "project.preview.logs": "project_preview_logs",
+  "skill.read": "skill_read",
+  "skill.assign": "skill_assign",
+  "skill.search": "skill_search",
+  "skill.install": "skill_install",
+  "skill.remove": "skill_remove",
+  "role.read": "role_read",
+  "role.manage": "role_manage",
   // Tool action keys are stable policy identifiers. Project-scoped calls use
   // the reconciled Project resource below; they do not depend on a separate
   // Permit tool-instance directory that the repository never synchronizes.
-  "tool.execute:web.search": "tool.execute.web_search",
-  "tool.execute:web.fetch": "tool.execute.web_fetch",
-  "tool.execute:project.preview.inspect": "tool.execute.preview_inspect",
-  "tool.execute:project.preview.restart": "tool.execute.preview_restart",
+  "tool.execute:web.search": "tool_execute_web_search",
+  "tool.execute:web.fetch": "tool_execute_web_fetch",
+  "tool.execute:project.preview.inspect": "tool_execute_preview_inspect",
+  "tool.execute:project.preview.restart": "tool_execute_preview_restart",
 };
 
 const CONTEXT_KEYS = [

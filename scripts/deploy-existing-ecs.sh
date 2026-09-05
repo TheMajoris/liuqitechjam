@@ -10,6 +10,16 @@ if [[ ! -f "$env_file" ]]; then
   exit 1
 fi
 
+set -a
+# shellcheck disable=SC1090
+source "$env_file"
+set +a
+
+if [[ -z "${LAUNCHPAD_IMAGE:-}" || "${LAUNCHPAD_IMAGE}" != ghcr.io/* ]]; then
+  echo "LAUNCHPAD_IMAGE must be an immutable public GHCR image reference." >&2
+  exit 1
+fi
+
 if ! command -v docker >/dev/null 2>&1; then
   echo "Docker Engine 24 or newer is required. Follow the Linux install section in README.md." >&2
   exit 1
@@ -43,7 +53,23 @@ if [[ "$(stat -c '%u:%g' data)" != "1000:1000" ]] \
 fi
 export LAUNCHPAD_ENV_FILE="$env_file"
 
-docker compose --env-file "$env_file" up -d --build
+docker compose --env-file "$env_file" --profile postgres pull launchpad
+docker compose --env-file "$env_file" --profile postgres up -d --wait postgres
+
+# Migrations and runtime-role provisioning are explicit owner operations. The
+# owner URL/password are passed only to one-shot containers and are blanked
+# from the long-running API service by docker-compose.yml.
+: "${DATABASE_ADMIN_URL:?DATABASE_ADMIN_URL is required for migrations}"
+: "${DATABASE_RUNTIME_PASSWORD:?DATABASE_RUNTIME_PASSWORD is required for provisioning}"
+docker compose --env-file "$env_file" --profile postgres run --rm --no-deps \
+  -e DATABASE_ADMIN_URL="$DATABASE_ADMIN_URL" launchpad \
+  node /app/apps/server/dist/persistence/migrate.js
+docker compose --env-file "$env_file" --profile postgres run --rm --no-deps \
+  -e DATABASE_ADMIN_URL="$DATABASE_ADMIN_URL" \
+  -e DATABASE_RUNTIME_PASSWORD="$DATABASE_RUNTIME_PASSWORD" launchpad \
+  node /app/scripts/provision-postgres.mjs
+
+docker compose --env-file "$env_file" --profile postgres up -d --no-build --pull always --force-recreate launchpad searxng
 
 requested_sandbox_mode="$(sed -n 's/^CODEX_SANDBOX_MODE=//p' "$env_file" | tail -n 1)"
 requested_sandbox_mode="${requested_sandbox_mode:-workspace-write}"
