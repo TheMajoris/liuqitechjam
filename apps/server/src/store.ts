@@ -15,7 +15,8 @@ import {
 import { ArkModelCatalogSchema } from "./models/catalog.js";
 import type { Database } from "./types.js";
 
-const emptyDatabase = (): Database => ({
+/** Create a fresh, normalized application database snapshot. */
+export const emptyDatabase = (): Database => ({
   version: 1,
   modelCatalog: null,
   agents: [],
@@ -76,7 +77,8 @@ function isRecord(value: unknown): value is UnknownRecord {
  * Orchestration collections were added after the original database format;
  * only those absent fields receive an empty-array default.
  */
-function normalizeDatabase(value: unknown): Database {
+/** Validate and fill the additive fields in a persisted database snapshot. */
+export function normalizeDatabase(value: unknown): Database {
   if (!isRecord(value) || value.version !== 1) {
     throw new Error("Unsupported database format");
   }
@@ -219,7 +221,26 @@ function needsDatabaseMigration(value: UnknownRecord): boolean {
   );
 }
 
-export class JsonStore {
+export type AuditRetentionPolicy = "bounded" | "append-only";
+
+/**
+ * Durable application state contract shared by the legacy JSON adapter and
+ * production database adapters.
+ *
+ * Mutations receive an isolated, normalized snapshot and are committed by the
+ * adapter only after the callback resolves. Adapters should keep that callback
+ * atomic from the caller's perspective.
+ */
+export interface Storage {
+  readonly auditRetention?: AuditRetentionPolicy;
+  initialize(): Promise<void>;
+  snapshot(): Database;
+  mutate<T>(mutation: (database: Database) => T | Promise<T>): Promise<T>;
+  close(): Promise<void>;
+}
+
+export class JsonStore implements Storage {
+  readonly auditRetention: AuditRetentionPolicy = "bounded";
   private data: Database = emptyDatabase();
   private queue: Promise<void> = Promise.resolve();
 
@@ -258,6 +279,10 @@ export class JsonStore {
     this.queue = operation.catch(() => undefined);
     await operation;
     return result;
+  }
+
+  async close(): Promise<void> {
+    await this.queue;
   }
 
   private async persist(data: Database = this.data): Promise<void> {

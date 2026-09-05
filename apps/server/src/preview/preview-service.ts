@@ -33,7 +33,7 @@ import type {
   PreviewCommandResolver,
   ResolvedPreviewCommand,
 } from "./preview-command-resolver.js";
-import type { JsonStore } from "../store.js";
+import type { Storage } from "../store.js";
 import { correlationAttributes, type RuntimeTelemetry } from "../telemetry/telemetry-types.js";
 
 const DEFAULT_RESOURCE_LIMITS: PreviewResourceLimits = {
@@ -212,7 +212,7 @@ export class PreviewService implements PreviewLifecycleCleanup {
   private readonly telemetry: RuntimeTelemetry | undefined;
 
   constructor(
-    private readonly store: JsonStore,
+    private readonly store: Storage,
     private readonly agentService: PreviewAgentService,
     private readonly runtime: PreviewRuntime,
     private readonly commandResolver: PreviewCommandResolver,

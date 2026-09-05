@@ -14,7 +14,7 @@ import {
 } from "../access/permit-approval-service.js";
 import type { PermissionId } from "../access/permission-types.js";
 import { redactSensitiveText } from "../orchestration/handoff.js";
-import type { JsonStore } from "../store.js";
+import type { Storage } from "../store.js";
 import type { ResourceRef } from "../access/access-types.js";
 import { ToolRegistry } from "./tool-registry.js";
 import {
@@ -103,7 +103,7 @@ export class ToolService {
   constructor(
     private readonly registry: ToolRegistry,
     private readonly authorization: AuthorizationService,
-    private readonly _store: JsonStore,
+    private readonly _store: Storage,
     private readonly approvals?: ToolApprovalGateway,
     private readonly audit?: AuditRecorder,
     private readonly telemetry?: RuntimeTelemetry,

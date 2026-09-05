@@ -1,10 +1,10 @@
 # Minimal local-PoC settings. Change server.secret_key before exposing this
 # instance beyond the local machine. The image supplies the engine list and
-# defaults; this file only enables the JSON endpoint used by Launchpad.
+# defaults; this file only enables the JSON endpoint used by LQAM.
 use_default_settings: true
 
 general:
-  instance_name: "Launchpad local search"
+  instance_name: "LQAM local search"
 
 search:
   formats:
@@ -17,4 +17,3 @@ server:
   secret_key: "launchpad-local-poc-change-this-secret"
   limiter: false
   image_proxy: false
-

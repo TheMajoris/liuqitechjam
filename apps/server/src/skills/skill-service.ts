@@ -6,7 +6,7 @@ import type { AuditRecorder } from "../audit/audit-types.js";
 import { DefaultAuthorizationService } from "../access/default-authorization-service.js";
 import { redactSensitiveText } from "../orchestration/handoff.js";
 import { HttpError } from "../errors.js";
-import type { JsonStore } from "../store.js";
+import type { Storage } from "../store.js";
 import type { Agent } from "../types.js";
 import type {
   ToolCapabilitiesView,
@@ -66,7 +66,7 @@ export interface SkillCapabilityResolver {
 
 export interface SkillServiceOptions {
   /** Store-backed installed/custom skill definitions. */
-  store?: JsonStore | undefined;
+  store?: Storage | undefined;
   /** Approved instruction-only catalog; defaults to the bundled catalog. */
   catalog?: readonly SkillDefinition[] | undefined;
 }
@@ -144,7 +144,7 @@ function metadataFor(definition: SkillDefinition): AssignedSkillView {
  * CapabilityGrant.
  */
 export class SkillService {
-  private readonly store: JsonStore | undefined;
+  private readonly store: Storage | undefined;
   private readonly catalog: readonly SkillDefinition[];
   private roleSkills?: ProjectRoleSkillResolver;
 
@@ -435,7 +435,7 @@ export class SkillService {
   }
 
   /** Reconcile persisted Agent assignments against the code-owned registry. */
-  async reconcileAgentSkillIds(store: JsonStore): Promise<void> {
+  async reconcileAgentSkillIds(store: Storage): Promise<void> {
     const snapshot = store.snapshot();
     const needsReconciliation = snapshot.agents.some((agent) => {
       if (!Array.isArray(agent.skillIds)) return agent.skillIds !== undefined;
@@ -453,7 +453,7 @@ export class SkillService {
   }
 
   /** Normalize persisted installed/custom records after a server restart. */
-  async reconcileInstalledSkills(store: JsonStore = this.store!): Promise<void> {
+  async reconcileInstalledSkills(store: Storage = this.store!): Promise<void> {
     if (!store) return;
     const snapshot = store.snapshot();
     const normalized: InstalledSkillRecord[] = [];

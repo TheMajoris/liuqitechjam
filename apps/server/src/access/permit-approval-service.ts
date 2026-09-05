@@ -1,4 +1,4 @@
-import type { JsonStore } from "../store.js";
+import type { Storage } from "../store.js";
 import {
   PermitApprovalConflictError,
   PermitApprovalError,
@@ -57,7 +57,7 @@ export class PermitApprovalService {
   private readonly projectAccess: PermitProjectAccessWorkflow;
 
   constructor(
-    store: JsonStore,
+    store: Storage,
     client: PermitApprovalClient | null | undefined,
     options: PermitApprovalServiceOptions,
   ) {

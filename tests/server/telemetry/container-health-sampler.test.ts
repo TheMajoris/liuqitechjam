@@ -17,7 +17,7 @@ describe("parseContainerStats", () => {
     });
   });
 
-  it("parses Podman's stats shape with a string PIDs field", () => {
+  it("parses Podman's stats shape with string and numeric PIDs fields", () => {
     const sample = parseContainerStats(
       '{"CPU":"5.00%","MemUsage":"120MB / 2GB","PIDs":"14"}',
     );
@@ -27,13 +27,10 @@ describe("parseContainerStats", () => {
       memLimitBytes: 2_000_000_000,
       pids: 14,
     });
-  });
-
-  it("parses Podman's numeric PIDS field", () => {
-    const sample = parseContainerStats(
+    const numericPids = parseContainerStats(
       '{"CPU":"5.00%","MemUsage":"120MB / 2GB","PIDS":14}',
     );
-    expect(sample?.pids).toBe(14);
+    expect(numericPids?.pids).toBe(14);
   });
 
   it("supports plain byte units without a limit", () => {

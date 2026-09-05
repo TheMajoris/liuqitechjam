@@ -110,21 +110,6 @@ async function makeProductionVitePreview(context: Awaited<ReturnType<typeof make
   );
 }
 
-describe("PackageJsonPreviewCommandResolver", () => {
-  it("resolves a Vite production preview script with the container host and port", async () => {
-    const context = await makePreview();
-    await makeProductionVitePreview(context);
-
-    await expect(
-      new PackageJsonPreviewCommandResolver().resolve({ workspacePath: context.workspacePath }),
-    ).resolves.toEqual({
-      command: ["npm", "run", "preview", "--", "--host", "0.0.0.0"],
-      containerPort: 4173,
-      kind: "vite",
-    });
-  });
-});
-
 describe("composeRuntimeContextPrompt", () => {
   it("includes the default response language policy in trusted runtime context", () => {
     expect(

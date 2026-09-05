@@ -8,11 +8,14 @@ COPY apps/web/package.json apps/web/package.json
 RUN npm ci
 
 COPY apps ./apps
+COPY scripts/copy-postgres-migrations.mjs ./scripts/copy-postgres-migrations.mjs
 RUN npm run build
 RUN npm prune --omit=dev
 
 FROM ${NODE_IMAGE} AS runtime
 ENV NODE_ENV=production
+LABEL org.opencontainers.image.title="Liu Qi Agent Management (LQAM)" \
+      org.opencontainers.image.description="Control and governance for autonomous multi-agent workspaces"
 WORKDIR /app
 
 ARG DEBIAN_MIRROR=""

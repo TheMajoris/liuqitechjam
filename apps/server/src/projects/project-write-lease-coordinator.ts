@@ -1,5 +1,5 @@
 import type { Principal } from "../access/access-types.js";
-import type { JsonStore } from "../store.js";
+import type { Storage } from "../store.js";
 import type { Database } from "../types.js";
 import { ProjectError } from "./project-errors.js";
 import {
@@ -31,7 +31,7 @@ export type ProjectLeaseEventSink = (event: ProjectLeaseEvent) => void;
  * Coordinates the single-writer Project lease without owning Project policy.
  *
  * The coordinator has one deliberately small seam: the ProjectService supplies
- * the authorization callback. Persistence remains serialized by JsonStore,
+ * the authorization callback. Persistence remains serialized by Storage,
  * while the waiter set and archive guard stay process-local implementation
  * details. ProjectService keeps the public facade used by orchestration and
  * Playground callers.
@@ -41,7 +41,7 @@ export class ProjectWriteLeaseCoordinator {
   private readonly archivingProjects = new Set<string>();
 
   constructor(
-    private readonly store: JsonStore,
+    private readonly store: Storage,
     private readonly authorizeAgentExecution: (
       projectId: string,
       agentId: string,
@@ -85,7 +85,7 @@ export class ProjectWriteLeaseCoordinator {
     this.archivingProjects.delete(projectId);
   }
 
-  /** Atomic check used inside a JsonStore mutation during archive. */
+  /** Atomic check used inside a Storage mutation during archive. */
   assertDatabaseLeaseFree(
     database: Pick<Database, "projectLeases">,
     projectId: string,
@@ -112,7 +112,7 @@ export class ProjectWriteLeaseCoordinator {
     const deadline = Date.now() + waitMs;
     for (;;) {
       const acquired = await this.store.mutate(async (database) => {
-        // JsonStore serializes this callback with role and attachment writes.
+        // Storage serializes this callback with role and attachment writes.
         // Reauthorize immediately before persistence to close the wait/revoke
         // race: an authorization change cannot leave an unauthorized lease.
         this.assertNotArchiving(projectId);

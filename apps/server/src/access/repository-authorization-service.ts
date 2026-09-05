@@ -1,4 +1,4 @@
-import type { JsonStore } from "../store.js";
+import type { Storage } from "../store.js";
 import {
   AuthorizationError,
   type AuthorizationDecision,
@@ -52,7 +52,7 @@ function denyReason(permission: PermissionId): string {
  * 7 authorization seam and are never treated as a browser-supplied role.
  */
 export class RepositoryAuthorizationService implements AuthorizationService {
-  constructor(private readonly store: JsonStore) {}
+  constructor(private readonly store: Storage) {}
 
   async decide(input: AuthorizationRequest): Promise<AuthorizationDecision> {
     const principal = principalFromRequest(input);

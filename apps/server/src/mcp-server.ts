@@ -113,7 +113,7 @@ export function createMcpServer(
   // authenticated HTTP boundary as a parent-context fallback.
   const { traceparent: _traceparent, ...toolContext } = context;
   const server = new McpServer({
-    name: "volc-agent-launchpad",
+    name: "lqam",
     version: "1.0.0",
   });
   for (const definition of toolService.getRegistry().list()) {

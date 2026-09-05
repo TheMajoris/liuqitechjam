@@ -172,6 +172,7 @@ export {
 } from "./audit-timeline.js";
 export {
   JsonAuditStoreAdapter,
+  StorageAuditStoreAdapter,
   MAX_PERSISTED_AUDIT_EVENTS,
   type AuditEventDraft,
   type AuditStoreAdapter,

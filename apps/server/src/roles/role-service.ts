@@ -13,7 +13,7 @@ import {
 } from "../access/permission-types.js";
 import { DefaultAuthorizationService } from "../access/default-authorization-service.js";
 import { HttpError } from "../errors.js";
-import type { JsonStore } from "../store.js";
+import type { Storage } from "../store.js";
 import type { ToolMetadata } from "../tools/tool-types.js";
 import type { ProjectAgentAttachment } from "../projects/project-types.js";
 import type { Agent } from "../types.js";
@@ -119,7 +119,7 @@ function permissionListForLegacyRole(role: LegacyRoleName): PermissionId[] {
  */
 export class RoleService {
   constructor(
-    private readonly store: JsonStore,
+    private readonly store: Storage,
     private readonly tools: RoleToolDirectory,
     private readonly skills: RoleSkillDirectory,
     private readonly authorization: AuthorizationService = new DefaultAuthorizationService(),

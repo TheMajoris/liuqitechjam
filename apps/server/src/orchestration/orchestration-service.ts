@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { HttpError } from "../errors.js";
 import type { Agent } from "../types.js";
 import type { ModelRef } from "../models/types.js";
-import { JsonStore } from "../store.js";
+import type { Storage } from "../store.js";
 import {
   ContinueOrchestrationSchema,
   CreateOrchestrationSchema,
@@ -120,7 +120,7 @@ function participantsMatch(
  * and recovery.
  */
 export class OrchestrationService {
-  private readonly store: JsonStore;
+  private readonly store: Storage;
   private readonly journal: OrchestrationJournal;
   private readonly agents: OrchestrationAgentAccess;
   private readonly invokerFactory: () => PlatformAgentInvokerContract;
@@ -139,13 +139,13 @@ export class OrchestrationService {
 
   constructor(dependencies: OrchestrationServiceDependencies);
   constructor(
-    store: JsonStore,
+    store: Storage,
     agents: OrchestrationAgentAccess,
     invoker?: OrchestrationInvokerFactory,
     graphRunner?: OrchestrationGraphRunner,
   );
   constructor(
-    value: JsonStore | OrchestrationServiceDependencies,
+    value: Storage | OrchestrationServiceDependencies,
     agents?: OrchestrationAgentAccess,
     invoker?: OrchestrationInvokerFactory,
     graphRunner?: OrchestrationGraphRunner,

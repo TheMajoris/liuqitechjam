@@ -127,7 +127,7 @@ export class SearXngSearchAdapter implements SearchProvider {
         redirect: "error",
         headers: {
           Accept: "application/json",
-          "User-Agent": "Volc-Agent-Launchpad/1.0",
+          "User-Agent": "LQAM/1.0",
         },
         signal: controller.signal,
       });
@@ -180,12 +180,12 @@ export class SearXngSearchAdapter implements SearchProvider {
     timeout.unref();
     try {
       const url = new URL(this.endpoint);
-      url.searchParams.set("q", "launchpad health check");
+      url.searchParams.set("q", "lqam health check");
       url.searchParams.set("format", "json");
       const response = await this.fetchImpl(url, {
         method: "GET",
         redirect: "error",
-        headers: { Accept: "application/json", "User-Agent": "Volc-Agent-Launchpad/1.0" },
+        headers: { Accept: "application/json", "User-Agent": "LQAM/1.0" },
         signal: controller.signal,
       });
       if (response.body) void response.body.cancel().catch(() => undefined);

@@ -44,7 +44,7 @@ export function CapabilitiesPanel({ agent }: { agent: Agent }) {
       await api.testTool(tool.tool.id, {
         agentId: agent.id,
         ...(projectId.trim() ? { projectId: projectId.trim() } : {}),
-        input: tool.tool.id === "web.search" ? { query: "Launchpad" } : {},
+        input: tool.tool.id === "web.search" ? { query: "LQAM" } : {},
       });
       setTestMessage(tool.tool.title + " completed.");
     } catch (reason) {

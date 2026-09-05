@@ -1,4 +1,4 @@
-import type { JsonStore } from "../store.js";
+import type { Storage } from "../store.js";
 import type {
   PermitApprovalCorrelation,
   PermitApprovalListFilter,
@@ -22,7 +22,7 @@ import {
  * without ever making that state a reason to allow a tool call.
  */
 export class PermitApprovalProjection {
-  constructor(private readonly store: JsonStore) {}
+  constructor(private readonly store: Storage) {}
 
   list(filter: PermitApprovalListFilter = {}): PermitApprovalCorrelation[] {
     return this.store.snapshot().permitApprovalCorrelations.filter((item) =>

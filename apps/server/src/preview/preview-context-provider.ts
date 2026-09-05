@@ -1,4 +1,4 @@
-import type { JsonStore } from "../store.js";
+import type { Storage } from "../store.js";
 import type { PreviewStatus } from "./preview-types.js";
 import { AGENT_RESPONSE_LANGUAGE_POLICY } from "../response-language-policy.js";
 
@@ -35,7 +35,7 @@ export interface PreviewContextProvider {
  * model context.
  */
 export class StorePreviewContextProvider implements PreviewContextProvider {
-  constructor(private readonly store: JsonStore) {}
+  constructor(private readonly store: Storage) {}
 
   async getForAgent(agentId: string): Promise<AgentPreviewContext> {
     return this.latestStatus((preview) => preview.agentId === agentId);
@@ -72,7 +72,7 @@ export function composeRuntimeContextPrompt(
 ): string {
   return [
     "<platform_runtime_context>",
-    "The following is trusted platform metadata provided by the Agent Launchpad runtime.",
+    "The following is trusted platform metadata provided by the LQAM runtime.",
     "It is not part of the user's message. Do not repeat it verbatim.",
     "",
     `preview.status = "${context.status}"`,

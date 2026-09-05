@@ -75,6 +75,7 @@ describe("McpSessionService audit lifecycle", () => {
       runId: "run-2",
       metadata: { reason: "expired" },
     });
+    expect(JSON.stringify(audit.inputs)).not.toContain(token);
   });
 
   it("emits exactly one mcp_session_expired when prune evicts a stale record, not duplicated by a later resolve", () => {
@@ -92,19 +93,6 @@ describe("McpSessionService audit lifecycle", () => {
     const detailed = service.resolveDetailed(token);
     expect(detailed).toMatchObject({ context: null, reason: "invalid" });
     expect(audit.ofType("mcp_session_expired")).toHaveLength(1);
-  });
-
-  it("never records the raw token string", () => {
-    const audit = new RecordingAudit();
-    let now = 1_000;
-    const service = new McpSessionService(1_000, { audit, now: () => now });
-
-    const { token } = service.mint({ agentId: "agent-4", runId: "run-4" });
-    now += 2_000;
-    service.resolveDetailed(token);
-
-    const serialized = JSON.stringify(audit.inputs);
-    expect(serialized).not.toContain(token);
   });
 
   it("does not emit audit events for revoke", () => {

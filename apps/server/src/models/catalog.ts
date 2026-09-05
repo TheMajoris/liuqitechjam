@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { JsonStore } from "../store.js";
+import type { Storage } from "../store.js";
 import { ModelCatalogError } from "./errors.js";
 import { ARK_WORKER_PROVIDER_ID } from "./ark-provider.js";
 import { ModelRefSchema } from "./schemas.js";
@@ -246,11 +246,11 @@ export interface ModelCatalogReader {
 }
 
 /**
- * Persistent, atomic Ark catalog service. JsonStore serializes mutations and
+ * Persistent, atomic Ark catalog service. Storage serializes mutations and
  * publishes the in-memory snapshot only after its temp-file rename succeeds.
  */
 export class ArkModelCatalogService implements ModelCatalogReader {
-  constructor(private readonly store: JsonStore) {}
+  constructor(private readonly store: Storage) {}
 
   /** Seed a new store once; an existing operator-managed catalog wins. */
   async initialize(seed: unknown): Promise<ArkModelCatalogRecord> {

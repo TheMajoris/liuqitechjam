@@ -458,7 +458,7 @@ export class WebFetchAdapter {
           redirect: "manual",
           headers: {
             Accept: "text/html, text/plain, application/xhtml+xml, application/json, application/xml;q=0.9, */*;q=0.1",
-            "User-Agent": "Volc-Agent-Launchpad/1.0",
+            "User-Agent": "LQAM/1.0",
           },
           signal: controller.signal,
         };
