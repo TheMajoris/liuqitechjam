@@ -543,19 +543,16 @@ port if `PORT` isn't 3000). This runs Agents through `ContainerCodexRunner`
 instead, matching the sandbox `npm run poc` exercises, with no `codex`
 install needed on the host.
 
-### BytePlus ECS staging deployment
+### Staging CI checks
 
-The `staging` branch has a GitHub Actions pipeline with pre-build checks,
-container image publishing, Terraform infrastructure planning, and a protected
-manual deployment. PostgreSQL and SearXNG run as Docker services on the ECS
-host. Staging uses the repository-backed local authorization policy, so it does
-not require Permit credentials. The manual destroy workflow removes the ECS
-system volume and therefore its PostgreSQL data; HCP Terraform keeps the
-infrastructure state separately.
+The `staging` GitHub Actions workflow runs `npm ci` and `npm run check` on
+staging pushes, pull requests targeting `staging`, and manual dispatches. It
+does not provision BytePlus infrastructure, publish container images, request
+environment approval, or deploy to ECS. The Terraform and ECS scripts remain
+available for separately managed infrastructure work.
 
-See [GitHub Actions staging deployment](docs/GITHUB_ACTIONS_STAGING.md) for the
-required repository secrets, `staging` environment secrets, HCP Terraform
-workspace, and deployment steps.
+See [GitHub Actions staging checks](docs/GITHUB_ACTIONS_STAGING.md) for the
+current workflow scope.
 
 ### Permit integration POC: `npm run build` then `npm run start`
 
