@@ -60,6 +60,7 @@ export default function App() {
   const [authInput, setAuthInput] = useState("");
   const [view, setView] = useState<ShellView>("workspace");
   const [traceId, setTraceId] = useState<string | null>(null);
+  const [runId, setRunId] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [roles, setRoles] = useState<AgentRole[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(readSidebarPreference);
@@ -370,6 +371,7 @@ export default function App() {
         onSelectInsights={() => setView("insights")}
         onSelectTraces={() => {
           setTraceId(null);
+          setRunId(null);
           setView("traces");
         }}
         onSelectAccess={() => setView("access")}
@@ -458,13 +460,18 @@ export default function App() {
             }}
           />
         ) : view === "traces" ? (
-          traceId ? (
+          // One detail implementation serves both entry points: a Run opens by
+          // run ID, a multi-Run orchestration trace opens by trace ID.
+          runId ? (
+            <TraceDetailView
+              runId={runId}
+              backLabel="Back to runs"
+              onBack={() => setRunId(null)}
+            />
+          ) : traceId ? (
             <TraceDetailView traceId={traceId} onBack={() => setTraceId(null)} />
           ) : (
-            <TraceRunsView
-              projectId={orchestration.selectedWorkspaceId ?? undefined}
-              onOpenTrace={setTraceId}
-            />
+            <TraceRunsView onOpenTrace={setTraceId} onOpenRun={setRunId} />
           )
         ) : view === "workspace" ? (
           <OrchestrationWorkspace

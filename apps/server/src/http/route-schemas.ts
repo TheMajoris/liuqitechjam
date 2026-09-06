@@ -36,6 +36,18 @@ export const auditTraceListQuery = z.object({
 
 export const auditTraceIdParams = z.object({ traceId: z.string().min(1).max(64) });
 
+/**
+ * Historical Run listing.
+ *
+ * The Agent filter is deliberately not validated against the live Agent
+ * directory: a deleted Agent's Runs must remain listable by its ID.
+ */
+export const runHistoryQuery = z.object({
+  agentId: z.string().uuid().optional(),
+  status: z.enum(["queued", "running", "completed", "failed", "cancelled"]).optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+});
+
 /** Export reuses the audit filters but chooses a serialization format. */
 export const auditExportQuery = z.object({
   format: z.enum(AUDIT_EXPORT_FORMATS).default("jsonl"),

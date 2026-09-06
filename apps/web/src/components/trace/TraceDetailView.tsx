@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../../api";
-import type { AuditEventRecord, AuditTrace, AuditTraceNode } from "../../types";
+import type {
+  AuditEventRecord,
+  AuditTrace,
+  AuditTraceNode,
+  RunHistoryEntry,
+} from "../../types";
 import { Spinner } from "../playground/Spinner";
-import { formatCount, formatDuration } from "../insights/usage-format";
+import { formatDuration } from "../insights/usage-format";
+import { formatStarted, shortId } from "./run-format";
 import {
   categoryColorVar,
   flattenTrace,
@@ -13,9 +19,20 @@ import {
   type FlatSpan,
 } from "./trace-tree";
 
+/**
+ * The one trace/audit detail implementation.
+ *
+ * It is reached from an Agent's Runs list and from the global observability
+ * explorer, so it accepts either identity rather than being duplicated per
+ * entry point. A Run opened here never needs its Agent record to still exist.
+ */
 interface TraceDetailViewProps {
-  traceId: string;
+  /** Opens a trace directly. Supply exactly one of traceId or runId. */
+  traceId?: string;
+  /** Opens the trace of one Run, headed by that Run's own record. */
+  runId?: string;
   onBack: () => void;
+  backLabel?: string;
 }
 
 function nodeSpanId(node: AuditTraceNode): string {
@@ -63,8 +80,85 @@ function EventDetail({ event }: { event: AuditEventRecord }) {
   );
 }
 
-export function TraceDetailView({ traceId, onBack }: TraceDetailViewProps) {
+/**
+ * Attribution evidence, kept conceptually apart from the trace.
+ *
+ * The span tree answers "what happened during this Run"; these categories
+ * answer "who or what requested it, and what was decided".
+ */
+const AUDIT_CATEGORIES = new Set(["policy_decision", "human_approval", "session"]);
+
+function AuditEvidence({ spans }: { spans: FlatSpan[] }) {
+  const events = spans
+    .flatMap((span) => span.events)
+    .filter((event) => AUDIT_CATEGORIES.has(event.category ?? "system"));
+  if (events.length === 0) return null;
+  return (
+    <section className="trace-audit" aria-labelledby="trace-audit-heading">
+      <div className="trace-audit-head">
+        <span className="eyebrow">Audit</span>
+        <h3 id="trace-audit-heading">Who requested it, and what was decided</h3>
+      </div>
+      <div className="usage-table-scroll">
+        <table className="usage-table">
+          <thead>
+            <tr>
+              <th scope="col">Time</th>
+              <th scope="col">Actor</th>
+              <th scope="col">Action</th>
+              <th scope="col">Permission</th>
+              <th scope="col">Decision</th>
+            </tr>
+          </thead>
+          <tbody>
+            {events.map((event) => (
+              <tr key={event.id}>
+                <td>{formatTime(event.createdAt)}</td>
+                <td>
+                  <strong>{event.actorType ?? "system"}</strong>
+                  {event.principal && (
+                    <span className="usage-row-meta">{shortId(event.principal.id)}</span>
+                  )}
+                </td>
+                <td>
+                  <code>{event.type}</code>
+                  <span className="trace-row-sub">{event.summary}</span>
+                </td>
+                <td>{event.permission ?? "—"}</td>
+                <td>
+                  <span className={"trace-pill trace-pill-" + event.status}>{event.status}</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+/** Run header shown when the detail view was opened from a Run. */
+function RunSummaryHeading({ run }: { run: RunHistoryEntry }) {
+  return (
+    <>
+      <span className="eyebrow">
+        {run.agentName}
+        {run.agentDeleted && <span className="trace-deleted-badge">Deleted</span>}
+      </span>
+      <h2>Run {shortId(run.runId)}</h2>
+      <p className="trace-run-title">{run.title}</p>
+    </>
+  );
+}
+
+export function TraceDetailView({
+  traceId,
+  runId,
+  onBack,
+  backLabel = "Back",
+}: TraceDetailViewProps) {
   const [trace, setTrace] = useState<AuditTrace | null>(null);
+  const [run, setRun] = useState<RunHistoryEntry | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -77,8 +171,18 @@ export function TraceDetailView({ traceId, onBack }: TraceDetailViewProps) {
     const requestId = ++requestSequence.current;
     setLoading(true);
     try {
-      const result = await api.trace(traceId);
-      if (requestSequence.current !== requestId) return;
+      // The Run record is the identity of the page; its trace is the evidence.
+      // A Run with no recorded events still renders its header.
+      const [summary, result] = await Promise.all([
+        runId === undefined ? Promise.resolve(null) : api.runSummary(runId),
+        runId === undefined
+          ? api.trace(traceId ?? "")
+          : api.runTrace(runId).catch((cause) => {
+              if (cause instanceof ApiError && cause.status === 404) return { trace: null };
+              throw cause;
+            }),
+      ]);
+      setRun(summary?.run ?? null);
       setTrace(result.trace);
       setError(null);
     } catch (cause) {
@@ -88,7 +192,7 @@ export function TraceDetailView({ traceId, onBack }: TraceDetailViewProps) {
     } finally {
       if (requestSequence.current === requestId) setLoading(false);
     }
-  }, [traceId]);
+  }, [runId, traceId]);
 
   useEffect(() => {
     void load();
@@ -131,13 +235,13 @@ export function TraceDetailView({ traceId, onBack }: TraceDetailViewProps) {
     );
   }
 
-  if (trace === null) {
+  if (trace === null && run === null) {
     return (
       <div className="insights-view insights-centered">
         <h2>Trace is unavailable</h2>
         <p>{error ?? "This trace has no recorded events."}</p>
         <button type="button" className="button" onClick={onBack}>
-          Back to traces
+          {backLabel}
         </button>
       </div>
     );
@@ -189,87 +293,55 @@ export function TraceDetailView({ traceId, onBack }: TraceDetailViewProps) {
     );
   };
 
+  const durationMs = run?.durationMs ?? trace?.durationMs ?? 0;
+  const eventCount = trace?.eventCount ?? run?.eventCount ?? 0;
+  const status = run === null ? trace?.status ?? "success" : run.failed ? "failure" : "success";
+
   return (
     <div className="insights-view trace-detail">
       <header className="insights-head">
         <div>
-          <span className="eyebrow">Trace</span>
-          <h2>{trace.traceId.slice(0, 12)}</h2>
+          {run === null ? (
+            <>
+              <span className="eyebrow">Trace</span>
+              <h2>{(trace?.traceId ?? "").slice(0, 12)}</h2>
+            </>
+          ) : (
+            <RunSummaryHeading run={run} />
+          )}
           <p className="trace-detail-facts">
-            <span className={"trace-pill trace-pill-" + trace.status}>{trace.status}</span>
-            <span>{formatDuration(trace.durationMs)}</span>
-            <span>{trace.eventCount} events</span>
+            <span className={"trace-pill trace-pill-" + status}>
+              {run === null ? status : run.status}
+            </span>
+            <span>{formatDuration(durationMs)}</span>
+            <span>{eventCount} events</span>
+            {run !== null && <span>{formatStarted(run.startedAt ?? run.createdAt)}</span>}
           </p>
         </div>
         <div className="trace-head-actions">
           <div className="insights-range">
-            {trace.failingStep && (
+            {trace?.failingStep && (
               <button type="button" className="button" onClick={jumpToFailing}>
                 Jump to failing step
               </button>
             )}
             <button type="button" className="button" onClick={onBack}>
-              Back
+              {backLabel}
             </button>
           </div>
         </div>
       </header>
 
       {error && <p className="trace-error">{error}</p>}
-
-      {modelEvidence.length > 0 && (
-        <section className="trace-model-evidence" aria-labelledby="trace-model-evidence-heading">
-          <div className="trace-model-evidence-head">
-            <div>
-              <span className="eyebrow">Execution evidence</span>
-              <h3 id="trace-model-evidence-heading">Models used in this run</h3>
-            </div>
-            <span className="trace-model-evidence-note">Server-reported values</span>
-          </div>
-          <div className="usage-table-scroll">
-            <table className="usage-table trace-model-evidence-table">
-              <caption className="sr-only">Per-run model and token evidence</caption>
-              <thead>
-                <tr>
-                  <th scope="col">Run / Agent</th>
-                  <th scope="col">Provider</th>
-                  <th scope="col">Requested</th>
-                  <th scope="col">Resolved</th>
-                  <th scope="col">Tokens</th>
-                  <th scope="col">Fallback</th>
-                </tr>
-              </thead>
-              <tbody>
-                {modelEvidence.map((evidence) => {
-                  const tokenParts = [
-                    evidence.totalTokens === undefined ? null : `${formatCount(evidence.totalTokens)} total`,
-                    evidence.inputTokens === undefined ? null : `${formatCount(evidence.inputTokens)} in`,
-                    evidence.cachedInputTokens === undefined ? null : `${formatCount(evidence.cachedInputTokens)} cached`,
-                    evidence.outputTokens === undefined ? null : `${formatCount(evidence.outputTokens)} out`,
-                  ].filter((part): part is string => part !== null);
-                  return (
-                    <tr key={evidence.key}>
-                      <th scope="row">
-                        <span>{evidence.runId ?? "Run"}</span>
-                        {evidence.agentId && <span className="usage-row-meta">{evidence.agentId}</span>}
-                      </th>
-                      <td>{evidence.providerId ?? "—"}</td>
-                      <td className="trace-model-value">{evidence.requestedModel ?? "—"}</td>
-                      <td className="trace-model-value">{evidence.resolvedModel ?? "—"}</td>
-                      <td>{tokenParts.length > 0 ? tokenParts.join(" · ") : "Not reported"}</td>
-                      <td>
-                        {evidence.fallback ? "Used" : evidence.retried ? "Retry only" : "No"}
-                        {evidence.failed ? " · failed" : ""}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </section>
+      {run?.error && (
+        <p className="trace-error">{run.error}</p>
       )}
 
+      {trace === null ? (
+        <p className="usage-empty">This Run recorded no trace events.</p>
+      ) : (
+      <>
+      <AuditEvidence spans={spans} />
       <div className="trace-panes">
         <section className="trace-timeline" aria-label="Timeline">
           {spans.map((span, index) => {
@@ -301,6 +373,8 @@ export function TraceDetailView({ traceId, onBack }: TraceDetailViewProps) {
           {trace.orphans.map((orphan) => renderNode(orphan, 0))}
         </section>
       </div>
+      </>
+      )}
     </div>
   );
 }

@@ -550,6 +550,7 @@ export class AgentService {
     const before = this.store.snapshot();
     const previousAttachments = before.projectAgents.filter((item) => item.agentId === id);
     const archivedWorkspace = await this.workspaces.archive(stoppedAgent);
+    const deletedAt = now();
     try {
       await this.store.mutate((database) => {
         database.agents = database.agents.filter((item) => item.id !== id);
@@ -557,7 +558,14 @@ export class AgentService {
           (item) => item.agentId !== id,
         );
         database.messages = database.messages.filter((item) => item.agentId !== id);
-        database.runs = database.runs.filter((item) => item.agentId !== id);
+        // Runs are historical execution records, not Agent state: they are
+        // retained and tombstoned so their traces and audit evidence stay
+        // understandable once the live Agent record is gone.
+        for (const run of database.runs) {
+          if (run.agentId !== id) continue;
+          if (run.agentName === undefined) run.agentName = stoppedAgent.name;
+          run.agentDeletedAt = deletedAt;
+        }
         database.previews = database.previews.filter((item) => item.agentId !== id);
         // Cancellation has settled any active Project turn, so these records
         // cannot be live anymore. Remove both membership and lease remnants so
@@ -739,6 +747,8 @@ export class AgentService {
     const run: AgentRun = {
       id: runId,
       agentId,
+      // Snapshotted so the Run stays readable after the Agent is deleted.
+      agentName: agentBeforeRun.name,
       ...(conversation === null ? {} : { conversationId: conversation.id }),
       status: "queued",
       prompt,

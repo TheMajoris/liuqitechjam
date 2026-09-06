@@ -1,6 +1,8 @@
-import { useEffect, useRef } from "react";
-import type { Agent, AgentRole, SkillMetadata, SystemInfo } from "../../types";
+import { useEffect, useRef, useState } from "react";
+import type { Agent, SkillMetadata, SystemInfo } from "../../types";
 import { MarkdownMessage } from "../MarkdownMessage";
+import { RunListView } from "../trace/RunListView";
+import { TraceDetailView } from "../trace/TraceDetailView";
 import { PreviewSidecar } from "../PreviewSidecar";
 import { StickyComposer } from "../StickyComposer";
 import { formatReasoningEffort, formatWorkerModelRef } from "../WorkerModelFields";
@@ -77,6 +79,10 @@ export function AgentWorkspaceView({
   onDeleteAgent,
 }: AgentWorkspaceViewProps) {
   const messageEnd = useRef<HTMLDivElement>(null);
+  // Which side of the Agent this pane shows: the live conversation, or the
+  // Agent's historical Runs and their evidence.
+  const [tab, setTab] = useState<"conversation" | "runs">("conversation");
+  const [openRunId, setOpenRunId] = useState<string | null>(null);
   const openConversation = controller.conversations.find(
     (conversation) => conversation.id === controller.conversationId,
   );
@@ -87,6 +93,11 @@ export function AgentWorkspaceView({
   useEffect(() => {
     messageEnd.current?.scrollIntoView({ behavior: "smooth" });
   }, [controller.messages, controller.activeRun]);
+
+  useEffect(() => {
+    setTab("conversation");
+    setOpenRunId(null);
+  }, [agent.id]);
 
   return (
     <div className="agent-workspace">
@@ -161,19 +172,65 @@ export function AgentWorkspaceView({
             onClose={onCloseSettings}
           />
         )}
-        <section className="conversation-pane" aria-label="Conversation">
+        <section
+          className="conversation-pane"
+          aria-label={tab === "runs" ? "Runs" : "Conversation"}
+        >
           <div className="playground-topbar">
             <div>
               <span className="eyebrow">Agent workspace</span>
-              <h2>{openConversation?.title ?? "New conversation"}</h2>
+              <h2>{tab === "runs" ? "Runs" : openConversation?.title ?? "New conversation"}</h2>
             </div>
-            <div className="session-info">
-              <span className="pulse" />
-              {/* Session continuity is per conversation, never per Agent. */}
-              {openConversation?.codexThreadId ? "Session connected" : "New session"}
+            <div className="agent-pane-tabs" role="group" aria-label="Agent workspace view">
+              <button
+                type="button"
+                className={"button" + (tab === "conversation" ? " is-active" : "")}
+                aria-pressed={tab === "conversation"}
+                onClick={() => setTab("conversation")}
+              >
+                Conversation
+              </button>
+              <button
+                type="button"
+                className={"button" + (tab === "runs" ? " is-active" : "")}
+                aria-pressed={tab === "runs"}
+                onClick={() => setTab("runs")}
+              >
+                Runs
+              </button>
             </div>
+            {tab === "conversation" && (
+              <div className="session-info">
+                <span className="pulse" />
+                {/* Session continuity is per conversation, never per Agent. */}
+                {openConversation?.codexThreadId ? "Session connected" : "New session"}
+              </div>
+            )}
           </div>
 
+          {tab === "runs" ? (
+            // The Agent-centric path: Agent → Runs → Run detail → trace/audit,
+            // rendered by the same detail view the global explorer uses.
+            openRunId === null ? (
+              <div className="agent-runs-pane">
+                <RunListView
+                  agentId={agent.id}
+                  hideAgent
+                  onOpenRun={setOpenRunId}
+                  emptyMessage={"No runs recorded for " + agent.name + " yet."}
+                />
+              </div>
+            ) : (
+              <div className="agent-runs-pane">
+                <TraceDetailView
+                  runId={openRunId}
+                  backLabel="Back to runs"
+                  onBack={() => setOpenRunId(null)}
+                />
+              </div>
+            )
+          ) : (
+          <>
           <div className="messages">
             {controller.messages.length === 0 && !controller.activeRun ? (
               <div className="welcome">
@@ -248,6 +305,8 @@ export function AgentWorkspaceView({
             onChange={controller.setPrompt}
             onSubmit={controller.sendMessage}
           />
+          </>
+          )}
         </section>
 
         <PreviewSidecar

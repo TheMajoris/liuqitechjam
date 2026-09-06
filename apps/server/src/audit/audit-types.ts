@@ -207,6 +207,11 @@ export interface AuditReader {
     filter?: import("./audit-trace.js").AuditTraceListQuery,
   ) => import("./audit-trace.js").AuditTraceSummary[];
   runTrace?: (runId: string) => import("./audit-trace.js").AuditTrace | null;
+  /** Optional historical Run projection; survives deletion of the Agent. */
+  runs?: (
+    filter?: import("./run-history.js").RunHistoryQuery,
+  ) => import("./run-history.js").RunHistoryEntry[];
+  run?: (runId: string) => import("./run-history.js").RunHistoryEntry | null;
   /** Optional uncapped serialization of the same filtered events. */
   export?: (
     filter: AuditQuery,

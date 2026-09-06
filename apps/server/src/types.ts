@@ -160,6 +160,21 @@ export interface RunUsage {
 export interface AgentRun {
   id: string;
   agentId: string;
+  /**
+   * The Agent's name when the Run was accepted.
+   *
+   * A Run is a historical execution record and outlives the Agent that
+   * produced it, so the name is snapshotted rather than joined at read time.
+   * Omitted on Runs recorded before the snapshot existed.
+   */
+  agentName?: string;
+  /**
+   * Set when the owning Agent was deleted. The Run itself is retained: it is
+   * evidence of an execution that really happened.
+   */
+  agentDeletedAt?: string;
+  /** Trace identity of this Run, captured when execution starts. */
+  traceId?: string;
   /** Set on direct runs only, mirroring the message that started them. */
   conversationId?: string | undefined;
   status: RunStatus;

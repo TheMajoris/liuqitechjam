@@ -364,13 +364,6 @@ export class AgentRunCoordinator {
     parentSpan?: { traceId: string; spanId: string },
   ): Promise<void> {
     const startedAt = now();
-    await this.dependencies.store.mutate((database) => {
-      const storedRun = database.runs.find((item) => item.id === run.id);
-      if (storedRun) {
-        storedRun.status = "running";
-        storedRun.startedAt = startedAt;
-      }
-    });
     // One span identity for the whole Run: every lifecycle event of this turn
     // shares it, and runtime events can parent under it via runSpan().
     const auditSpan: AuditSpan = {
@@ -382,6 +375,16 @@ export class AgentRunCoordinator {
         ? {}
         : { parentSpanId: parentSpan.spanId }),
     };
+    await this.dependencies.store.mutate((database) => {
+      const storedRun = database.runs.find((item) => item.id === run.id);
+      if (storedRun) {
+        storedRun.status = "running";
+        storedRun.startedAt = startedAt;
+        // Persist the trace identity on the Run so historical evidence stays
+        // reachable from the Run record alone.
+        storedRun.traceId = auditSpan.traceId;
+      }
+    });
     this.runSpans.set(run.id, auditSpan);
     const correlation = {
       agentId: agentAtStart.id,

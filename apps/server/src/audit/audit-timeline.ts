@@ -1,14 +1,29 @@
-import type { RunUsage } from "../types.js";
+import type { RunStatus, RunUsage } from "../types.js";
 import { normalizeRunUsage, type UsageAvailability } from "../telemetry/telemetry-usage.js";
 import { AUDIT_CATEGORIES, type AuditCategory, type AuditEvent, type AuditQuery } from "./audit-types.js";
 import { queryAuditEvents } from "./audit-query.js";
 
+/**
+ * The Run fields observability reads.
+ *
+ * Usage aggregation needs only the first five; the historical fields below are
+ * optional so a caller supplying a minimal projection stays valid, and so Runs
+ * recorded before the snapshot existed still satisfy the contract.
+ */
 export interface AuditRunSnapshot {
   id: string;
   agentId: string;
   usage: RunUsage | null;
   startedAt: string | null;
   completedAt: string | null;
+  status?: RunStatus;
+  prompt?: string;
+  error?: string | null;
+  createdAt?: string;
+  /** Agent identity captured on the Run; survives the Agent's deletion. */
+  agentName?: string;
+  agentDeletedAt?: string;
+  traceId?: string;
 }
 
 export interface AuditRunReader {
