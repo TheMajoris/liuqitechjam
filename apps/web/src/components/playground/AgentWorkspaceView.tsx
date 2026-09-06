@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Agent, SkillMetadata, SystemInfo } from "../../types";
+import type { Agent, AgentRole, SkillMetadata, SystemInfo } from "../../types";
 import { MarkdownMessage } from "../MarkdownMessage";
 import { RunListView } from "../trace/RunListView";
 import { TraceDetailView } from "../trace/TraceDetailView";
@@ -230,82 +230,82 @@ export function AgentWorkspaceView({
               </div>
             )
           ) : (
-          <>
-          <div className="messages">
-            {controller.messages.length === 0 && !controller.activeRun ? (
-              <div className="welcome">
-                <div className="welcome-orbit">
-                  <div>⌁</div>
-                </div>
-                <h3>What should {agent.name} build?</h3>
-                <p>
-                  The Agent can inspect files, write code, run commands, and continue the same
-                  Codex session across messages.
-                </p>
-                <div className="prompt-grid">
-                  {starterPrompts.map((item) => (
-                    <button key={item} onClick={() => controller.setPrompt(item)}>
-                      <span>↗</span>
-                      {item}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              controller.messages.map((message) => (
-                <article className={"message message-" + message.role} key={message.id}>
-                  <div className="message-meta">
-                    <strong>{message.role === "user" ? "You" : agent.name}</strong>
-                    <span>{formatTime(message.createdAt)}</span>
+            <>
+              <div className="messages">
+                {controller.messages.length === 0 && !controller.activeRun ? (
+                  <div className="welcome">
+                    <div className="welcome-orbit">
+                      <div>⌁</div>
+                    </div>
+                    <h3>What should {agent.name} build?</h3>
+                    <p>
+                      The Agent can inspect files, write code, run commands, and continue the same
+                      Codex session across messages.
+                    </p>
+                    <div className="prompt-grid">
+                      {starterPrompts.map((item) => (
+                        <button key={item} onClick={() => controller.setPrompt(item)}>
+                          <span>↗</span>
+                          {item}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                  {message.role === "assistant" ? (
-                    <MarkdownMessage className="message-body" content={message.content} />
-                  ) : (
-                    <div className="message-body">{message.content}</div>
+                ) : (
+                  controller.messages.map((message) => (
+                    <article className={"message message-" + message.role} key={message.id}>
+                      <div className="message-meta">
+                        <strong>{message.role === "user" ? "You" : agent.name}</strong>
+                        <span>{formatTime(message.createdAt)}</span>
+                      </div>
+                      {message.role === "assistant" ? (
+                        <MarkdownMessage className="message-body" content={message.content} />
+                      ) : (
+                        <div className="message-body">{message.content}</div>
+                      )}
+                    </article>
+                  ))
+                )}
+                {controller.activeRun &&
+                  (controller.activeRun.status === "queued" ||
+                    controller.activeRun.status === "running") && (
+                    <article className="message message-assistant thinking">
+                      <div className="message-meta">
+                        <strong>{agent.name}</strong>
+                        <span>working in the Agent workspace</span>
+                      </div>
+                      <div className="thinking-row">
+                        <Spinner />
+                        Codex is reading, editing, or running commands…
+                      </div>
+                    </article>
                   )}
-                </article>
-              ))
-            )}
-            {controller.activeRun &&
-              (controller.activeRun.status === "queued" ||
-                controller.activeRun.status === "running") && (
-                <article className="message message-assistant thinking">
-                  <div className="message-meta">
-                    <strong>{agent.name}</strong>
-                    <span>working in the Agent workspace</span>
-                  </div>
-                  <div className="thinking-row">
-                    <Spinner />
-                    Codex is reading, editing, or running commands…
-                  </div>
-                </article>
-              )}
-            {controller.activeRun?.status === "failed" && (
-              <article className="run-error">
-                <strong>Run failed</strong>
-                <span>{controller.activeRun.error}</span>
-              </article>
-            )}
-            <div ref={messageEnd} />
-          </div>
+                {controller.activeRun?.status === "failed" && (
+                  <article className="run-error">
+                    <strong>Run failed</strong>
+                    <span>{controller.activeRun.error}</span>
+                  </article>
+                )}
+                <div ref={messageEnd} />
+              </div>
 
-          <StickyComposer
-            value={controller.prompt}
-            placeholder={
-              agent.status === "stopped"
-                ? "Start this Agent to continue…"
-                : "Describe what you want the Agent to do…"
-            }
-            hint={
-              "Enter to send · Shift + Enter for newline · " +
-              (system?.codexSandboxMode ?? "checking sandbox")
-            }
-            disabled={agent.status === "stopped" || agent.status === "busy"}
-            sending={controller.runInFlight}
-            onChange={controller.setPrompt}
-            onSubmit={controller.sendMessage}
-          />
-          </>
+              <StickyComposer
+                value={controller.prompt}
+                placeholder={
+                  agent.status === "stopped"
+                    ? "Start this Agent to continue…"
+                    : "Describe what you want the Agent to do…"
+                }
+                hint={
+                  "Enter to send · Shift + Enter for newline · " +
+                  (system?.codexSandboxMode ?? "checking sandbox")
+                }
+                disabled={agent.status === "stopped" || agent.status === "busy"}
+                sending={controller.runInFlight}
+                onChange={controller.setPrompt}
+                onSubmit={controller.sendMessage}
+              />
+            </>
           )}
         </section>
 
