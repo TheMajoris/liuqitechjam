@@ -15,7 +15,10 @@ export interface WorkerModelFieldsProps {
   value?: ModelRef | null;
   fallbackValues?: ModelRef[];
   loadingProviders?: boolean;
+  catalogRefreshing?: boolean;
   loadingModels?: boolean;
+  providerErrors?: Record<string, string | null>;
+  providerStale?: Record<string, boolean>;
   catalogError?: string | null;
   disabled?: boolean;
   /** New Agents must use an explicit resolved default when one is available. */
@@ -27,7 +30,8 @@ export interface WorkerModelFieldsProps {
   onRemoveFallback?: (index: number) => void;
   onFallbackProviderChange?: (index: number, providerId: string) => void;
   onFallbackModelChange?: (index: number, modelId: string) => void;
-  onRetry?: () => void;
+  onRefresh?: () => void | Promise<void>;
+  onRetry?: () => void | Promise<void>;
 }
 
 export function providerSupportsWorkers(provider: ModelProviderDescriptor): boolean {
@@ -67,7 +71,7 @@ export function formatWorkerModelRef(
   models: ModelDescriptor[] = [],
 ): string {
   if (!modelRef?.providerId || !modelRef.modelId) {
-    return "Default runtime configuration";
+    return "Model assignment required";
   }
   const model = models.find(
     (candidate) =>
@@ -99,7 +103,10 @@ export function WorkerModelFields({
   value,
   fallbackValues = [],
   loadingProviders = false,
+  catalogRefreshing = false,
   loadingModels = false,
+  providerErrors = {},
+  providerStale = {},
   catalogError = null,
   disabled = false,
   isNew = false,
@@ -110,6 +117,7 @@ export function WorkerModelFields({
   onRemoveFallback,
   onFallbackProviderChange,
   onFallbackModelChange,
+  onRefresh,
   onRetry,
 }: WorkerModelFieldsProps) {
   const supportedProviders = workerProviders(providers);
@@ -127,13 +135,30 @@ export function WorkerModelFields({
     selectedEffort === undefined || efforts.includes(selectedEffort);
 
   return (
-    <section className="worker-model-fields" aria-labelledby="worker-model-heading">
+    <section
+      className="worker-model-fields"
+      aria-labelledby="worker-model-heading"
+      aria-busy={loadingProviders || catalogRefreshing}
+    >
       <div className="worker-model-heading">
         <div>
           <span className="eyebrow">Worker model</span>
           <h3 id="worker-model-heading">Choose how this Agent runs</h3>
         </div>
-        <span className="worker-model-lock" aria-hidden="true">Backend resolved</span>
+        <div className="worker-model-heading-actions">
+          <span className="worker-model-lock">Server-owned catalog</span>
+          {onRefresh && (
+            <button
+              type="button"
+              className="button button-ghost worker-model-refresh"
+              onClick={() => void onRefresh()}
+              disabled={disabled || loadingProviders || catalogRefreshing}
+              aria-label="Refresh worker model catalog"
+            >
+              {catalogRefreshing ? "Checking…" : "Refresh"}
+            </button>
+          )}
+        </div>
       </div>
       <p className="worker-model-help">
         The selected configuration is used whenever this Agent is invoked on its own or
@@ -143,6 +168,12 @@ export function WorkerModelFields({
       {loadingProviders && (
         <div className="worker-model-loading" role="status" aria-live="polite">
           <span className="spinner" aria-hidden="true" /> Loading worker providers…
+        </div>
+      )}
+
+      {!loadingProviders && catalogRefreshing && (
+        <div className="worker-model-inline-status" role="status" aria-live="polite">
+          <span className="spinner" aria-hidden="true" /> Checking for running endpoints…
         </div>
       )}
 
@@ -161,8 +192,8 @@ export function WorkerModelFields({
         <div className="worker-model-empty" role="status">
           <strong>No worker models are available</strong>
           <span>
-            Ask the server operator to configure a worker-compatible Codex model. Existing Agents
-            can continue on the default runtime configuration.
+            Ask the server operator to expose a running worker endpoint. Agents must carry an
+            explicit persisted model assignment before they can be saved or edited.
           </span>
         </div>
       )}
@@ -177,10 +208,7 @@ export function WorkerModelFields({
             disabled={disabled || loadingProviders || supportedProviders.length === 0}
             onChange={(event) => onProviderChange(event.target.value)}
           >
-            {!isNew && !value?.providerId && (
-              <option value="">Default runtime configuration</option>
-            )}
-            {isNew && <option value="">Select a resolved provider</option>}
+            {!value?.providerId && <option value="">Select a running provider</option>}
             {value?.providerId &&
               !supportedProviders.some((provider) => provider.id === value.providerId) && (
                 <option value={value.providerId} disabled>
@@ -226,6 +254,21 @@ export function WorkerModelFields({
           {selectedProviderId && loadingModels && (
             <span className="worker-model-inline-status" role="status">
               <span className="spinner" aria-hidden="true" /> Checking models available to Codex…
+            </span>
+          )}
+          {selectedProviderId && providerErrors[selectedProviderId] && !loadingModels && (
+            <span className="worker-model-field-warning" role="status">
+              Could not refresh this provider: {providerErrors[selectedProviderId]}
+              {onRetry && (
+                <button type="button" className="button button-ghost" onClick={() => void onRetry()}>
+                  Retry
+                </button>
+              )}
+            </span>
+          )}
+          {selectedProviderId && providerStale[selectedProviderId] && !loadingModels && !providerErrors[selectedProviderId] && (
+            <span className="worker-model-field-warning" role="status">
+              Showing the last successful endpoint list.
             </span>
           )}
           {selectedProviderId && !loadingModels && models.length === 0 && !catalogError && (
@@ -278,10 +321,10 @@ export function WorkerModelFields({
         </p>
       )}
 
-      {!isNew && !value?.providerId && (
-        <p className="worker-model-legacy" role="note">
-          This legacy Agent has no explicit assignment and will use the server’s default runtime
-          configuration until you choose a resolved provider and model.
+      {!value?.providerId && (
+        <p className="worker-model-legacy" role="alert">
+          This Agent has no persisted model assignment. Choose a running provider and model before
+          saving; runtime defaults are not accepted for Create or Edit.
         </p>
       )}
 
@@ -319,6 +362,12 @@ export function WorkerModelFields({
                   : [];
                 const fallbackLoading = fallback.providerId
                   ? loadingByProvider[fallback.providerId] === true
+                  : false;
+                const fallbackError = fallback.providerId
+                  ? providerErrors[fallback.providerId]
+                  : null;
+                const fallbackStale = fallback.providerId
+                  ? providerStale[fallback.providerId] === true
                   : false;
                 const fallbackModel = fallbackModels.find(
                   (model) =>
@@ -380,6 +429,21 @@ export function WorkerModelFields({
                       {fallback.providerId && fallbackLoading && (
                         <span className="worker-model-inline-status" role="status">
                           <span className="spinner" aria-hidden="true" /> Checking models available to Codex…
+                        </span>
+                      )}
+                      {fallback.providerId && fallbackError && !fallbackLoading && (
+                        <span className="worker-model-field-warning" role="status">
+                          Could not refresh this provider: {fallbackError}
+                          {onRetry && (
+                            <button type="button" className="button button-ghost" onClick={() => void onRetry()}>
+                              Retry
+                            </button>
+                          )}
+                        </span>
+                      )}
+                      {fallback.providerId && fallbackStale && !fallbackLoading && !fallbackError && (
+                        <span className="worker-model-field-warning" role="status">
+                          Showing the last successful endpoint list.
                         </span>
                       )}
                       {fallback.providerId && !fallbackLoading && fallbackModels.length === 0 && !catalogError && (

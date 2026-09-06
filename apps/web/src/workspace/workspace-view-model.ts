@@ -1,6 +1,7 @@
 import type {
   AgentAppearance,
   AgentMetrics,
+  ModelResourceSnapshot,
   OrchestrationStatus,
   PreviewStatus,
   ProjectRole,
@@ -22,7 +23,6 @@ export type WorkspaceAgentActivity =
   | "waiting"
   | "reviewing"
   | "testing"
-  | "blocked"
   | "success"
   | "failed"
   | "stopped";
@@ -31,7 +31,6 @@ export type WorkspaceAgentActivity =
 export type WorkspaceStation =
   | "desk"
   | "board"
-  | "door"
   | "library"
   | "server"
   | "lounge";
@@ -40,7 +39,7 @@ export type WorkspaceStation =
  * The tool an Agent is running right now, as reported by the audit journal.
  *
  * Derived from a `tool_started` with no matching outcome yet. It only decides
- * which way the character walks; the tool itself already ran (or was blocked)
+ * which way the character walks; the tool itself already ran
  * on the server long before this reaches the room.
  */
 export interface WorkspaceToolActivity {
@@ -76,6 +75,8 @@ export interface WorkspaceAgentViewModel {
   isSupervisorChoice: boolean;
   isSelected: boolean;
   modelLabel: string | null;
+  /** Whether the Agent has an explicit persisted worker model assignment. */
+  modelAssigned: boolean;
   projectRole: ProjectRole | null;
   /** False when the roster references an Agent that no longer exists. */
   available: boolean;
@@ -94,34 +95,14 @@ export interface WorkspaceAgentViewModel {
   appearance: AgentAppearance | null;
   /** Live runtime telemetry, when the metrics poll has reported one. */
   metrics: AgentMetrics | null;
+  /** Live endpoint/usage state for the explicitly assigned model, when known. */
+  modelResource: ModelResourceSnapshot | null;
 }
 
 export type WorkspacePreviewActivity =
   | "unavailable"
   | "not_started"
   | PreviewStatus;
-
-/**
- * The permission boundary's *appearance*. The door never enforces anything:
- * `PermitApprovalService` and the policy layer decide, and this only mirrors
- * the decision they already made.
- */
-export type WorkspaceDoorState =
-  | "dormant"
-  | "locked"
-  | "waiting"
-  | "open"
-  | "denied";
-
-export interface WorkspaceApprovalViewModel {
-  id: string;
-  agentId: string;
-  agentName: string;
-  toolId: string;
-  safeSummary: string;
-  status: string;
-  createdAt: string;
-}
 
 export interface WorkspaceHandoffViewModel {
   /** Event id; a new id is what triggers the visual handoff, once. */
@@ -152,8 +133,6 @@ export interface WorkspaceViewModel {
   activeAgentId: string | null;
   selectedAgentId: string | null;
   latestHandoff: WorkspaceHandoffViewModel | null;
-  pendingApprovals: WorkspaceApprovalViewModel[];
-  doorState: WorkspaceDoorState;
 }
 
 interface ActivityDescriptor {
@@ -174,7 +153,6 @@ export const WORKSPACE_ACTIVITY: Record<WorkspaceAgentActivity, ActivityDescript
   waiting: { label: "Waiting", detail: "Finished a turn, waiting for the Team.", tone: "waiting", glyph: "◔" },
   reviewing: { label: "Reviewing", detail: "Running a review turn.", tone: "active", glyph: "◑" },
   testing: { label: "Testing", detail: "Running a test turn.", tone: "active", glyph: "◒" },
-  blocked: { label: "Needs approval", detail: "Stopped at the permission boundary.", tone: "danger", glyph: "▲" },
   success: { label: "Completed", detail: "Its last turn finished successfully.", tone: "positive", glyph: "✓" },
   failed: { label: "Failed", detail: "Its last turn did not finish.", tone: "danger", glyph: "✕" },
   stopped: { label: "Stopped", detail: "Not running.", tone: "muted", glyph: "◼" },
@@ -205,12 +183,4 @@ export const PREVIEW_ACTIVITY_LABEL: Record<WorkspacePreviewActivity, string> = 
   stopped: "Stopped",
   failed: "Failed",
   interrupted: "Interrupted",
-};
-
-export const DOOR_STATE_LABEL: Record<WorkspaceDoorState, string> = {
-  dormant: "Approvals not configured",
-  locked: "Locked",
-  waiting: "Waiting for you",
-  open: "Approved",
-  denied: "Denied",
 };

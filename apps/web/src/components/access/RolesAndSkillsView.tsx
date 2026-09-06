@@ -23,11 +23,10 @@ import type {
 interface Props {
   agents: Agent[];
   projects: Project[];
-  onProjectsChanged: () => Promise<void>;
   onAgentsChanged?: () => Promise<void>;
 }
 
-type AccessTab = "roles" | "assignments" | "skills";
+type AccessTab = "roles" | "skills";
 type SkillLibraryFilter = "all" | "installed" | "discoverable";
 
 interface RoleDraft {
@@ -52,15 +51,8 @@ const BASE_PERMISSIONS = [
   ["project.preview.stop", "Stop preview", "Stop the shared Workspace preview server."],
 ] as const;
 
-const LEGACY_ROLE_IDS = {
-  owner: "legacy-owner",
-  editor: "legacy-editor",
-  viewer: "legacy-viewer",
-} as const;
-
 const TABS: Array<{ id: AccessTab; label: string; description: string }> = [
   { id: "roles", label: "Roles", description: "Reusable access presets" },
-  { id: "assignments", label: "Assignments", description: "Workspace membership" },
   { id: "skills", label: "Skill library", description: "Instruction-only guidance" },
 ];
 
@@ -88,24 +80,6 @@ function errorMessage(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
 }
 
-function membershipsFor(project: Project): ProjectMembership[] {
-  const memberships = Array.isArray(project.memberships)
-    ? project.memberships.filter((membership) => typeof membership?.agentId === "string" && membership.agentId.trim().length > 0)
-    : [];
-  const source = memberships.length > 0
-      ? memberships
-    : (Array.isArray(project.agentIds) ? project.agentIds : [])
-      .filter((agentId): agentId is string => typeof agentId === "string" && agentId.trim().length > 0)
-      .map((agentId): ProjectMembership => ({ agentId, role: "editor" }));
-  // The API enforces one attachment per Agent/Workspace pair. Deduping the
-  // projection keeps a stale or legacy payload from rendering an Agent twice.
-  const seen = new Set<string>();
-  return source.filter((membership) => {
-    if (seen.has(membership.agentId)) return false;
-    seen.add(membership.agentId);
-    return true;
-  });
-}
 
 function isDisplayableProject(project: Project): boolean {
   const name = typeof project.name === "string" ? project.name.trim() : "";
@@ -126,7 +100,7 @@ function domainFor(url: string): string {
   }
 }
 
-export function RolesAndSkillsView({ agents, projects, onProjectsChanged, onAgentsChanged }: Props) {
+export function RolesAndSkillsView({ agents, projects, onAgentsChanged }: Props) {
   const [tab, setTab] = useState<AccessTab>("roles");
   const [roles, setRoles] = useState<AgentRole[]>([]);
   const [tools, setTools] = useState<ToolMetadata[]>([]);
@@ -149,12 +123,7 @@ export function RolesAndSkillsView({ agents, projects, onProjectsChanged, onAgen
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const selected = roles.find((role) => role.id === selectedId) ?? null;
-  const agentNames = useMemo(
-    () => new Map(agents.map((agent) => [agent.id, agent])),
-    [agents],
-  );
-
-  /** Active Workspaces are the available scope for nested Agent memberships. */
+  /** Active Workspaces, counted in the header summary. */
   const visibleWorkspaces = useMemo(() => {
     const rows = projects
       .filter((project) => project.status === "active" && isDisplayableProject(project))
@@ -170,31 +139,6 @@ export function RolesAndSkillsView({ agents, projects, onProjectsChanged, onAgen
       duplicateName: (nameCounts.get(row.project.name) ?? 0) > 1,
     }));
   }, [projects]);
-
-  /** One row per complete Agent roster, including Agents with no memberships. */
-  const assignmentRows = useMemo(() => {
-    const membershipsByAgent = new Map<string, Array<{
-      project: Project;
-      membership: ProjectMembership;
-      duplicateName: boolean;
-    }>>();
-    for (const { project, duplicateName } of visibleWorkspaces) {
-      for (const membership of membershipsFor(project)) {
-        if (!agentNames.has(membership.agentId)) continue;
-        const memberships = membershipsByAgent.get(membership.agentId) ?? [];
-        // This second guard protects against duplicate IDs from mixed legacy
-        // fields even when the workspace projection was malformed.
-        if (!memberships.some((item) => item.project.id === project.id)) {
-          memberships.push({ project, membership, duplicateName });
-        }
-        membershipsByAgent.set(membership.agentId, memberships);
-      }
-    }
-    return [...agentNames.values()].map((agent) => ({
-      agent,
-      memberships: membershipsByAgent.get(agent.id) ?? [],
-    }));
-  }, [agentNames, visibleWorkspaces]);
 
   const installedSkills = useMemo(
     () => librarySkills.filter((skill) => skill.installed || skill.source === "built-in"),
@@ -349,66 +293,6 @@ export function RolesAndSkillsView({ agents, projects, onProjectsChanged, onAgen
     if (!next) return;
     setTab(next.id);
     document.getElementById(`${next.id}-tab`)?.focus();
-  };
-
-  const attachAgent = async (projectId: string, agentId: string) => {
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      await api.attachProjectAgent(projectId, agentId);
-      await onProjectsChanged();
-      setNotice("Agent added to workspace.");
-    } catch (reason) {
-      setError(errorMessage(reason));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const detachAgent = async (projectId: string, agentId: string) => {
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      await api.detachProjectAgent(projectId, agentId);
-      await onProjectsChanged();
-      setNotice("Agent removed from workspace.");
-    } catch (reason) {
-      setError(errorMessage(reason));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const changeAssignment = async (projectId: string, agentId: string, roleId: string) => {
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      await api.assignProjectRole(projectId, agentId, roleId);
-      await Promise.all([refreshRoleAndCatalog(), onProjectsChanged()]);
-      setNotice("Assignment updated.");
-    } catch (reason) {
-      setError(errorMessage(reason));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const changeGlobalRole = async (agentId: string, globalRoleId: string | null) => {
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      await api.updateAgent(agentId, { globalRoleId });
-      await Promise.all([refreshRoleAndCatalog(), onAgentsChanged?.()]);
-      setNotice(globalRoleId ? "Global Agent role updated." : "Global Agent role cleared.");
-    } catch (reason) {
-      setError(errorMessage(reason));
-    } finally {
-      setBusy(false);
-    }
   };
 
   const refreshAfterSkillChange = async () => {
@@ -727,131 +611,6 @@ export function RolesAndSkillsView({ agents, projects, onProjectsChanged, onAgen
             )}
           </section>
         </div>
-      )}
-
-      {tab === "assignments" && (
-        <section id="access-panel-assignments" className="access-tab-panel assignments-panel" role="tabpanel" aria-labelledby="assignments-tab">
-          <div className="access-panel-heading">
-            <div>
-              <span className="access-kicker">Agent roster</span>
-              <h2>Assignments</h2>
-              <p>
-                Each Agent appears once. Workspaces and roles are nested beneath
-                them, including Agents that are not assigned yet.
-              </p>
-            </div>
-            <span className="access-count-label">{assignmentRows.length} Agent{assignmentRows.length === 1 ? "" : "s"}</span>
-          </div>
-
-          {assignmentRows.length === 0 ? (
-            <div className="access-empty-state">
-              <span className="access-empty-icon" aria-hidden="true">⌁</span>
-              <h3>No Agents yet</h3>
-              <p>Create an Agent to manage its Workspace memberships here.</p>
-            </div>
-          ) : (
-            <div className="assignment-list">
-              {assignmentRows.map(({ agent, memberships }) => {
-                const assignedWorkspaceIds = new Set(memberships.map(({ project }) => project.id));
-                const addableWorkspaces = visibleWorkspaces.filter(({ project }) => !assignedWorkspaceIds.has(project.id));
-                return (
-                  <article className="access-card assignment-card assignment-agent-card" key={agent.id}>
-                    <header className="assignment-card-heading">
-                      <div className="assignment-agent-heading">
-                        <AgentAvatar agentId={agent.id} name={agent.name} size="sm" />
-                        <div className="assignment-card-title">
-                          <h3>{agent.name}</h3>
-                          <span className="assignment-agent-status">
-                            {agent.status === "busy" ? "Working" : agent.status === "stopped" ? "Stopped" : agent.status === "error" ? "Needs attention" : "Available"}
-                          </span>
-                        </div>
-                      </div>
-                    </header>
-                    {/* Policy band: the global fallback sits beside the only action
-                        that changes membership, so both read as one decision. */}
-                    <div className="assignment-card-controls">
-                      <label className="assignment-global-role-field">
-                        <span>Global Agent role <em>Optional</em></span>
-                        <select
-                          aria-label={`Global Agent role for ${agent.name}`}
-                          value={agent.globalRoleId ?? ""}
-                          disabled={busy}
-                          onChange={(event) => void changeGlobalRole(agent.id, event.target.value || null)}
-                        >
-                          <option value="">No role</option>
-                          {roles.map((role) => <option value={role.id} key={role.id}>{role.name}</option>)}
-                        </select>
-                        <small>Fallback outside Workspace overrides</small>
-                      </label>
-                      {/* A disabled select offers nothing, so the fully assigned
-                          state becomes quiet status text instead of a dead control. */}
-                      {addableWorkspaces.length > 0 ? (
-                        <label className="assignment-add-field">
-                          <span>Workspace membership</span>
-                          <select
-                            aria-label={`Add ${agent.name} to workspace`}
-                            value=""
-                            disabled={busy}
-                            onChange={(event) => {
-                              const projectId = event.target.value;
-                              if (projectId) void attachAgent(projectId, agent.id);
-                            }}
-                          >
-                            <option value="">Add to workspace…</option>
-                            {addableWorkspaces.map(({ project, duplicateName }) => (
-                              <option value={project.id} key={project.id}>
-                                {project.name}{duplicateName ? ` · ${project.id.slice(0, 8)}` : ""}
-                              </option>
-                            ))}
-                          </select>
-                          <small>New assignments appear below</small>
-                        </label>
-                      ) : (
-                        <div className="assignment-add-status">
-                          <span className="assignment-add-status-label">Workspace membership</span>
-                          <p className="assignment-add-status-value">
-                            <span className="assignment-add-status-check" aria-hidden="true">✓</span>
-                            All workspaces assigned
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                    <div className="assignment-workspace-list">
-                      {memberships.length === 0 ? (
-                        <p className="assignment-empty">Not assigned to a workspace</p>
-                      ) : memberships.map(({ project, membership, duplicateName }) => {
-                        const roleId = membership.roleId ?? LEGACY_ROLE_IDS[membership.role];
-                        return (
-                          <div className="assignment-workspace-row" key={project.id}>
-                            <div className="assignment-workspace-copy">
-                              <strong title={project.name}>{project.name}</strong>
-                              {duplicateName && <code className="assignment-discriminator" title={project.id}>{project.id.slice(0, 8)}</code>}
-                            </div>
-                            <label className="assignment-role-field">
-                              <span className="assignment-field-label">Workspace override</span>
-                              <select aria-label={`Workspace override role for ${agent.name} in ${project.name}`} disabled={busy || roles.length === 0} value={roleId} onChange={(event) => void changeAssignment(project.id, agent.id, event.target.value)}>
-                                {roles.map((role) => <option value={role.id} key={role.id}>{role.name}</option>)}
-                              </select>
-                            </label>
-                            <button
-                              type="button"
-                              className="button button-ghost assignment-remove"
-                              disabled={busy}
-                              aria-label={`Remove ${agent.name} from workspace ${project.name}`}
-                              onClick={() => void detachAgent(project.id, agent.id)}
-                            >
-                              Remove
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          )}
-        </section>
       )}
 
       {tab === "skills" && (

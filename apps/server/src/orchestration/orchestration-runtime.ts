@@ -21,9 +21,8 @@ export interface OrchestrationAgentAccess {
 }
 
 /**
- * Server-owned proof that one Agent model is valid for supervisor routing.
- * The resolver is responsible for checking the live model catalog/scope; the
- * orchestration service only persists this credential-free snapshot.
+ * Server-owned snapshot of the fixed supervisor model. The orchestration
+ * service persists this credential-free value separately from worker Agents.
  */
 export interface SupervisorModelAssignment {
   modelRef: ModelRef;
@@ -77,7 +76,7 @@ export interface OrchestrationServiceDependencies {
   /** Optional supervisor selector; omitted means deterministic defaults. */
   selectNextParticipant?: OrchestrationParticipantSelector;
   selectorFactory?: () => OrchestrationParticipantSelector;
-  /** Resolves an Agent's explicit model against the supervisor model scope. */
+  /** Resolves the centrally configured fixed supervisor model. */
   resolveSupervisorModel?: OrchestrationSupervisorModelResolver;
   supervisorTimeoutMs?: number;
   orchestrator?: Orchestrator;

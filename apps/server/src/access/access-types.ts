@@ -52,12 +52,7 @@ export type ResourceRef =
 
 export type AuthorizationDecision =
   | { result: "allow"; reason: string }
-  | { result: "deny"; reason: string; errorCode: "PERMISSION_DENIED" }
-  | {
-      result: "approval_required";
-      reason: string;
-      approvalRequestId: string;
-    };
+  | { result: "deny"; reason: string; errorCode: "PERMISSION_DENIED" };
 
 export type AuthorizationContext = {
   projectId?: string;
@@ -93,8 +88,9 @@ export interface CapabilityGrant {
 }
 
 /**
- * Permit-owned approval correlation.  This is deliberately only a UX/audit
- * projection: it never contains enough state to authorize a tool call.
+ * Legacy external-approval correlation retained only so old JSON/PostgreSQL
+ * snapshots and audit projections remain readable. It is never consulted for
+ * authorization and no new records are written.
  */
 export type PermitApprovalKind = "operation_approval" | "access_request";
 export type PermitApprovalStatus =

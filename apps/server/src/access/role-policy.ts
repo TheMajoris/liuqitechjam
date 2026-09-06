@@ -41,8 +41,7 @@ export function roleAllows(role: ProjectRole, permission: PermissionId): boolean
   if (permission === "preview.stop") return permissions.includes("project.preview.stop");
   // Tool permissions are distinct identifiers at the registry boundary but
   // inherit only the corresponding repository-owned role policy. ToolService
-  // applies the separate explicit Agent–Project grant/approval gate after
-  // this role check succeeds.
+  // applies its explicit Agent-role tool check after this role check succeeds.
   if (permission === "tool.execute:web.search") return permissions.includes("project.read");
   if (permission === "tool.execute:web.fetch") return permissions.includes("project.read");
   if (permission === "tool.execute:project.preview.inspect") {

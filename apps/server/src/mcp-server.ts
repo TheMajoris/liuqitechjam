@@ -4,11 +4,10 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { McpSessionContext } from "./tools/mcp-session-service.js";
 import { McpSessionService } from "./tools/mcp-session-service.js";
-import { ToolApprovalRequiredError, ToolError } from "./tools/tool-errors.js";
+import { ToolError } from "./tools/tool-errors.js";
 import { ToolService } from "./tools/tool-service.js";
 import type { SkillService } from "./skills/skill-service.js";
 import type { RoleService } from "./roles/role-service.js";
-import type { PermitApprovalService } from "./access/permit-approval-service.js";
 import type { AuditReader, AuditRecorder } from "./audit/audit-types.js";
 import { systemPrincipal } from "./access/access-types.js";
 import { correlationAttributes, type RuntimeTelemetry, type TelemetryCarrier } from "./telemetry/telemetry-types.js";
@@ -22,8 +21,6 @@ export interface McpRouteDependencies {
   skillService?: SkillService;
   /** Optional reusable Agent role-template control plane. */
   roleService?: RoleService;
-  /** Optional in isolated tests; production wires the Permit-backed service. */
-  approvalService?: PermitApprovalService;
   /**
    * Server-owned activity projection. Reads are the primary contract;
    * `record` is optional and used only by the HTTP route layer to append
@@ -71,17 +68,6 @@ function annotationsForRisk(
 }
 
 function safeToolError(error: unknown): { code: string; message: string } {
-  if (error instanceof ToolApprovalRequiredError) {
-    return {
-      code: error.code,
-      message:
-        "Approval required for Permit request " +
-        error.approvalRequestId +
-        ": " +
-        error.message +
-        ". Explicitly retry the tool after approval.",
-    };
-  }
   if (error instanceof ToolError) {
     return { code: error.code, message: error.message };
   }

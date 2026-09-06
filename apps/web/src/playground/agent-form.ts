@@ -52,7 +52,9 @@ export function formPayload(form: AgentForm): {
     instructions: form.instructions,
     skillIds: form.skillIds,
     fallbackModelRefs: form.fallbackModelRefs,
-    ...(form.globalRoleId ? { globalRoleId: form.globalRoleId } : {}),
+    // `null` is sent explicitly so clearing the role on an existing Agent
+    // reaches the server; only an absent field leaves the stored role alone.
+    ...(form.globalRoleId === undefined ? {} : { globalRoleId: form.globalRoleId }),
     ...(form.modelRef ? { modelRef: form.modelRef } : {}),
   };
 }

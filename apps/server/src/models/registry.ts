@@ -4,10 +4,12 @@ import { ModelListCache } from "./cache.js";
 import { ModelCatalogError } from "./errors.js";
 import { createWorkerModelResolver } from "./worker-model-resolver.js";
 import type { ModelCatalogReader } from "./catalog.js";
+import type { ArkLiveModelState } from "./ark-live-state.js";
 import type {
   ModelDescriptor,
   ModelProviderAdapter,
   ModelRef,
+  ModelResourceView,
   ModelRegistry,
   ModelScope,
   ProviderDescriptor,
@@ -20,6 +22,8 @@ export interface ModelRegistryOptions {
   workerResolver?: WorkerModelResolver;
   /** Live server-owned metadata source for the Ark provider/resolver. */
   catalog?: ModelCatalogReader;
+  /** Shared live ModelArk state used by selectors and resource telemetry. */
+  modelArkState?: ArkLiveModelState;
   cache?: ModelListCache<ModelDescriptor[]>;
   cacheTtlMs?: number;
 }
@@ -62,11 +66,12 @@ export class ModelRegistryService implements ModelRegistry {
   private readonly providerById: ReadonlyMap<string, ModelProviderAdapter>;
   private readonly cache: ModelListCache<ModelDescriptor[]>;
   private readonly cacheTtlMs: number;
+  private readonly modelArkState: ArkLiveModelState | undefined;
 
   constructor(
     providers: readonly ModelProviderAdapter[],
     workerResolver: WorkerModelResolver,
-    options: Pick<ModelRegistryOptions, "cache" | "cacheTtlMs"> = {},
+    options: Pick<ModelRegistryOptions, "cache" | "cacheTtlMs" | "modelArkState"> = {},
   ) {
     this.providers = [...providers];
     this.providerById = new Map(this.providers.map((provider) => [provider.id, provider]));
@@ -77,6 +82,7 @@ export class ModelRegistryService implements ModelRegistry {
       cacheTtlMs !== undefined && Number.isInteger(cacheTtlMs) && cacheTtlMs > 0
       ? cacheTtlMs
       : 600_000;
+    this.modelArkState = options.modelArkState;
   }
 
   async listProviders(scope: ModelScope): Promise<ProviderDescriptor[]> {
@@ -109,14 +115,21 @@ export class ModelRegistryService implements ModelRegistry {
     }
 
     const cacheKey = scope + ":" + normalizedProviderId;
-    const cached = this.cache.get(cacheKey);
+    // The shared live state owns the worker TTL/in-flight cache. Bypassing the
+    // registry's second cache here prevents a stopped endpoint from remaining
+    // selectable after that live snapshot expires.
+    const cached = scope === "worker" && this.modelArkState === undefined
+      ? this.cache.get(cacheKey)
+      : undefined;
     if (cached !== undefined) return cloneDescriptors(cached);
 
     let listed: ModelDescriptor[];
     try {
       listed = await provider.listModels({ scope });
     } catch (error) {
-      const stale = this.cache.getStale(cacheKey);
+      const stale = scope === "worker" && this.modelArkState !== undefined
+        ? undefined
+        : this.cache.getStale(cacheKey);
       if (stale !== undefined) return cloneDescriptors(stale);
       if (error instanceof ModelCatalogError) throw error;
       throw new ModelCatalogError(
@@ -154,8 +167,30 @@ export class ModelRegistryService implements ModelRegistry {
     this.workerModelResolver.resolve(modelRef);
   }
 
+  async refresh(force = false): Promise<void> {
+    if (!force) return;
+    this.cache.clear();
+    if (this.modelArkState !== undefined) {
+      await this.modelArkState.refresh({ force: true });
+    } else {
+      await this.workerModelResolver.refresh?.(true);
+    }
+  }
+
+  async modelResources(options: { force?: boolean } = {}): Promise<ModelResourceView> {
+    if (this.modelArkState === undefined) {
+      throw new ModelCatalogError(
+        "MODEL_PROVIDER_UNAVAILABLE",
+        503,
+        "ModelArk resource telemetry is not configured",
+      );
+    }
+    return this.modelArkState.modelResources(options);
+  }
+
   invalidate(): void {
     this.cache.clear();
+    this.modelArkState?.invalidate();
   }
 }
 
@@ -164,7 +199,6 @@ export function createModelRegistry(
     AppConfig,
     | "arkApiKey"
     | "arkBaseUrl"
-    | "arkModel"
     | "workerCuratedModels"
     | "workerModelListTimeoutMs"
     | "workerModelCacheTtlMs"
@@ -175,6 +209,13 @@ export function createModelRegistry(
     options.workerResolver ??
     createWorkerModelResolver(config, {
       ...(options.catalog === undefined ? {} : { catalog: options.catalog }),
+      ...(options.modelArkState === undefined
+        ? {}
+        : {
+            liveCatalog: options.modelArkState,
+            liveRefresh: (force = false) => options.modelArkState!.refresh({ force }),
+            liveRevision: () => options.modelArkState!.getCatalogRevision(),
+          }),
     });
   const providers =
     options.providers ?? [
@@ -184,10 +225,12 @@ export function createModelRegistry(
         curatedModelIds: config.workerCuratedModels,
         timeoutMs: config.workerModelListTimeoutMs,
         ...(options.catalog === undefined ? {} : { catalog: options.catalog }),
+        ...(options.modelArkState === undefined ? {} : { liveState: options.modelArkState }),
       }),
     ];
   return new ModelRegistryService(providers, workerResolver, {
     ...(options.cache === undefined ? {} : { cache: options.cache }),
+    ...(options.modelArkState === undefined ? {} : { modelArkState: options.modelArkState }),
     cacheTtlMs: options.cacheTtlMs ?? config.workerModelCacheTtlMs,
   });
 }

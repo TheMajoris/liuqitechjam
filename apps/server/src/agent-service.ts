@@ -45,7 +45,6 @@ import { AgentRuntimePromptComposer } from "./agent-runtime-prompt.js";
 import type { RuntimeTelemetry } from "./telemetry/telemetry-types.js";
 import type { AuditRecorder } from "./audit/audit-types.js";
 import type { McpSessionService } from "./tools/mcp-session-service.js";
-import type { PermitDirectoryReconciliationSink } from "./access/permit-directory-reconciler.js";
 import { buildUsageReport } from "./usage/usage-aggregator.js";
 import type { UsageReport, UsageReportOptions } from "./usage/usage-types.js";
 import { normalizeAppearance } from "./agent-appearance.js";
@@ -63,6 +62,8 @@ type AgentModelResolver = WorkerModelResolver & {
   /** Optional revision exposed by a live model catalog implementation. */
   getCatalogRevision?: () => string | number | undefined;
   catalogRevision?: () => string | number | undefined;
+  /** Refresh the live provider snapshot before validating an assignment. */
+  refresh?: () => Promise<void>;
 };
 
 interface AgentRuntimeModelPlan {
@@ -95,7 +96,6 @@ export class AgentService {
   private skillService: SkillService | undefined;
   private telemetry: RuntimeTelemetry | undefined;
   private audit: AuditRecorder | undefined;
-  private permitDirectory: PermitDirectoryReconciliationSink | undefined;
 
   constructor(
     private readonly config: AppConfig,
@@ -167,13 +167,6 @@ export class AgentService {
     this.audit = audit;
   }
 
-  /** Attach the Permit directory synchronization seam after app assembly. */
-  setPermitDirectoryReconciler(
-    reconciler: PermitDirectoryReconciliationSink,
-  ): void {
-    this.permitDirectory = reconciler;
-  }
-
   async initialize(): Promise<void> {
     await this.store.initialize();
     await this.skillService?.reconcileInstalledSkills(this.store);
@@ -193,16 +186,10 @@ export class AgentService {
           agent.updatedAt = now();
         }
 
-        // Materialize the configured default for legacy records. New Agents
-        // always persist an explicit primary model, but old stores may have
-        // omitted modelRef and must remain readable during a live upgrade.
-        if (agent.modelRef === undefined) {
-          const defaultModelRef = this.effectiveModelRef(undefined);
-          if (defaultModelRef !== undefined) {
-            agent.modelRef = defaultModelRef;
-            agent.updatedAt = now();
-          }
-        } else {
+        // Legacy Agents may not have a modelRef. Keep them readable, but do
+        // not silently assign a global/default model: they must be edited
+        // before they can be run.
+        if (agent.modelRef !== undefined) {
           // Normalize persisted whitespace/reasoning shape without resolving
           // it here: a removed catalog entry must remain visible and should
           // invalidate only new execution, not server startup.
@@ -308,6 +295,16 @@ export class AgentService {
     if (input.skillIds !== undefined) {
       await this.skillService?.authorizeAssignment([], input.skillIds, id);
     }
+    if (input.modelRef === undefined) {
+      throw new ModelCatalogError(
+        "MODEL_RUNTIME_CONFIGURATION_INVALID",
+        422,
+        "A primary worker model must be selected when creating an Agent.",
+      );
+    }
+    if (input.modelRef !== undefined || input.fallbackModelRefs !== undefined) {
+      await this.refreshWorkerModelCatalog();
+    }
     const modelRef = this.resolveModelRefForCreate(input.modelRef);
     const fallbackModelRefs = this.normalizeFallbackModelRefs(
       input.fallbackModelRefs,
@@ -342,12 +339,10 @@ export class AgentService {
       workspaceCreated = true;
       await this.store.mutate((database) => database.agents.push(agent));
       persisted = true;
-      await this.permitDirectory?.reconcile();
       return agent;
     } catch (error) {
-      // A directory failure must not leave a new repository identity behind
-      // without its Permit representation. Compensate the local mutation and
-      // archive the just-created workspace before surfacing the failure.
+      // Compensate any local mutation and archive the just-created workspace
+      // before surfacing a failed create.
       if (persisted) {
         await this.store.mutate((database) => {
           database.agents = database.agents.filter((item) => item.id !== id);
@@ -371,6 +366,16 @@ export class AgentService {
         input.skillIds,
         id,
       );
+    }
+    if (current.modelRef === undefined && input.modelRef === undefined) {
+      throw new ModelCatalogError(
+        "MODEL_RUNTIME_CONFIGURATION_INVALID",
+        422,
+        "This legacy Agent has no primary worker model; edit it before running or saving it.",
+      );
+    }
+    if (input.modelRef !== undefined || input.fallbackModelRefs !== undefined) {
+      await this.refreshWorkerModelCatalog();
     }
     const nextGlobalRoleId =
       input.globalRoleId === undefined
@@ -472,11 +477,10 @@ export class AgentService {
     });
     try {
       await this.workspaces.writeInstructions(updated, await this.runtimeSkillContext(updated));
-      await this.permitDirectory?.reconcile();
       return updated;
     } catch (error) {
-      // Restore both the JSON identity fact and generated instructions if the
-      // external authorization directory could not be synchronized.
+      // Restore both the persisted identity fact and generated instructions if
+      // writing the local workspace failed.
       await this.store.mutate((database) => {
         const stored = database.agents.find((item) => item.id === id);
         if (stored) Object.assign(stored, structuredClone(before));
@@ -492,9 +496,8 @@ export class AgentService {
    * Cosmetic character update.
    *
    * Deliberately not part of `updateAgent`: appearance is never in the runtime
-   * prompt and never in the authorization directory, so a recolour must not
-   * rewrite AGENTS.md, must not reconcile Permit, and must not be rolled back
-   * when either of those is unavailable. It is also allowed while the Agent is
+   * prompt, so a recolour must not rewrite AGENTS.md or be rolled back when
+   * workspace instructions are unavailable. It is also allowed while the Agent is
    * busy, because restyling a working Agent changes nothing about the run.
    */
   async updateAgentAppearance(
@@ -566,12 +569,10 @@ export class AgentService {
           (item) => item.agentId !== id,
         );
       });
-      await this.permitDirectory?.reconcile();
       return { archivedWorkspace };
     } catch (error) {
-      // Deletion is a privileged directory mutation. Reconstitute the Agent
-      // and its Project memberships if synchronization fails, then restore
-      // the physical workspace so the local facts and authority can retry.
+      // Reconstitute the Agent and its Project memberships if local cleanup
+      // fails, then restore the physical workspace so the operation can retry.
       await this.store.mutate((database) => {
         database.agents = database.agents.filter((item) => item.id !== id);
         const previousAgent = before.agents.find((item) => item.id === id);
@@ -707,6 +708,13 @@ export class AgentService {
     if (projectId !== undefined) {
       await this.requireProjectScope().assertRunnable(projectId, agentId);
     }
+    if (agentBeforeRun.modelRef === undefined) {
+      throw new ModelCatalogError(
+        "MODEL_RUNTIME_CONFIGURATION_INVALID",
+        422,
+        "This legacy Agent has no primary worker model; edit it before running.",
+      );
+    }
     if (!this.config.arkApiKey || this.config.arkApiKey.startsWith("replace-")) {
       throw new ModelCatalogError(
         "MODEL_RUNTIME_CONFIGURATION_INVALID",
@@ -717,6 +725,7 @@ export class AgentService {
     // Resolve the complete assignment before creating a queued Run. The
     // resolver is the catalog authority, so removed providers/models produce
     // a stable error and never leave an orphaned queued record behind.
+    await this.refreshWorkerModelCatalog();
     const modelPlan = this.resolveAgentModelPlan(agentBeforeRun);
     // Only direct Playground turns belong to a private conversation. Team turns
     // keep their own session scope and stay out of private history entirely.
@@ -836,7 +845,6 @@ export class AgentService {
     return {
       arkConfigured: isArkConfigured(this.config),
       arkBaseUrl: this.config.arkBaseUrl,
-      arkModel: this.config.arkModel || null,
       codexAvailable: await this.runner.isAvailable(),
       codexSandboxMode: this.config.codexSandboxMode,
       runtimeProvider: this.config.runtimeProvider,
@@ -909,16 +917,16 @@ export class AgentService {
     return structuredClone(effective);
   }
 
+  private async refreshWorkerModelCatalog(): Promise<void> {
+    await this.modelResolver.refresh?.();
+  }
+
   private effectiveModelRef(modelRef: ModelRef | undefined): ModelRef | undefined {
     if (this.modelResolver.effectiveModelRef) {
       return this.modelResolver.effectiveModelRef(modelRef);
     }
     if (modelRef !== undefined) return normalizeModelRef(modelRef);
-    if (!this.config.arkModel) return undefined;
-    return {
-      providerId: "volcengine_ark",
-      modelId: this.config.arkModel,
-    };
+    return undefined;
   }
 
   /**

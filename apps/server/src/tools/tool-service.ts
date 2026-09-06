@@ -2,25 +2,16 @@ import type { AuditEventType, AuditRecorder } from "../audit/audit-types.js";
 import type { RuntimeTelemetry } from "../telemetry/telemetry-types.js";
 import { correlationAttributes } from "../telemetry/telemetry-types.js";
 import {
-  DEMO_HUMAN_PRINCIPAL,
   agentPrincipal,
   type AuthorizationDecision,
   type AuthorizationService,
 } from "../access/authorization-service.js";
-import {
-  PermitApprovalError,
-  PermitApprovalService,
-  type PermitApprovalRecord,
-} from "../access/permit-approval-service.js";
 import type { PermissionId } from "../access/permission-types.js";
 import { redactSensitiveText } from "../orchestration/handoff.js";
 import type { Storage } from "../store.js";
 import type { ResourceRef } from "../access/access-types.js";
 import { ToolRegistry } from "./tool-registry.js";
-import {
-  ToolApprovalRequiredError,
-  ToolError,
-} from "./tool-errors.js";
+import { ToolError } from "./tool-errors.js";
 import type {
   ToolCapabilitiesView,
   ToolCapabilityView,
@@ -62,13 +53,6 @@ function toolResource(toolId: string): ResourceRef {
   return { kind: "tool", id: toolId };
 }
 
-export interface CreateCapabilityGrantInput {
-  agentId: string;
-  projectId: string;
-  toolId: string;
-  scope: "once" | "project";
-}
-
 export interface ProjectRoleToolResolver {
   /** Resolve the explicit Project override, then the Agent-global role. */
   getEffectiveRole(
@@ -77,26 +61,11 @@ export interface ProjectRoleToolResolver {
   ): { toolIds: string[] } | undefined;
 }
 
-export type ToolApprovalGateway = Pick<
-  PermitApprovalService,
-  | "isAvailable"
-  | "requestOperationApproval"
-  | "consumeOperationApproval"
-  | "listApprovals"
-  | "getApproval"
-  | "approve"
-  | "deny"
-  | "grantProjectAccess"
-  | "listProjectAccess"
-  | "revokeProjectAccess"
->;
-
 /**
- * Typed gateway for all registered executors. Permit remains the policy
- * authority for Project-scoped calls; an explicitly assigned Agent-global
- * role is the authority for direct network calls. The legacy store parameter
- * is retained for construction compatibility, but local approval/grant
- * collections are never read or written by this class.
+ * Typed gateway for all registered executors. Repository authorization is the
+ * policy authority for Project-scoped calls; an explicitly assigned
+ * Agent-global role is the authority for direct network calls. The store is
+ * used only to resolve trusted Agent roles and never grants capabilities.
  */
 export class ToolService {
   private roleTools?: ProjectRoleToolResolver;
@@ -104,7 +73,6 @@ export class ToolService {
     private readonly registry: ToolRegistry,
     private readonly authorization: AuthorizationService,
     private readonly _store: Storage,
-    private readonly approvals?: ToolApprovalGateway,
     private readonly audit?: AuditRecorder,
     private readonly telemetry?: RuntimeTelemetry,
   ) {}
@@ -239,8 +207,7 @@ export class ToolService {
       );
     // A direct Agent has no Project membership resource. Once the explicit
     // global role/tool/permission gate above succeeds, do not ask a
-    // Project-oriented policy adapter to invent one. The normal approval
-    // consumption gate below still runs with projectId omitted.
+    // Project-oriented policy adapter to invent one.
     const decision: AuthorizationDecision = directGlobalRole
       ? { result: "allow", reason: "Agent global role authorized " + toolId }
       : await this.authorization.decide({
@@ -250,60 +217,6 @@ export class ToolService {
           context: { ...contextForAuthorization(context), toolId },
         });
     if (decision.result !== "allow") {
-      // Network research tools are approval-eligible when a Permit policy
-      // requires a temporary grant. Their baseline
-      // Project read permission is checked independently, so an approval can
-      // never elevate an Agent without the underlying role.
-      if (
-        context.principal.kind === "agent" &&
-        (toolId === "web.search" || toolId === "web.fetch") &&
-        context.projectId !== undefined
-      ) {
-        const baseline = await this.authorization.decide({
-          principal: context.principal,
-          permission: "project.read",
-          resource: { kind: "project", id: context.projectId },
-          context: contextForAuthorization(context),
-        });
-        if (baseline.result === "allow") {
-          try {
-            const approval = await this.requestOperationApproval(context, toolId);
-            await this.recordToolEvent(
-              "tool_approval_required",
-              context,
-              definition,
-              "Permit approval required for " + toolId,
-              "failure",
-              { decision: "approval_required", permitRequestId: approval.id },
-              approval.id,
-            );
-            throw new ToolApprovalRequiredError(
-              approval.id,
-              safeReason("Permit approval required for " + toolId),
-            );
-          } catch (error) {
-            if (error instanceof ToolApprovalRequiredError) throw error;
-            await this.recordToolEvent(
-              "tool_failed",
-              context,
-              definition,
-              "Tool authorization failed: " + toolId,
-              "failure",
-              { phase: "authorization", errorCode: "PERMISSION_DENIED" },
-            );
-            throw error;
-          }
-        }
-        await this.recordToolEvent(
-          "tool_failed",
-          context,
-          definition,
-          "Tool authorization denied: " + toolId,
-          "failure",
-          { phase: "authorization", decision: "deny" },
-        );
-        throw new ToolError("PERMISSION_DENIED", 403, safeReason(baseline.reason));
-      }
       await this.recordToolEvent(
         "tool_failed",
         context,
@@ -317,74 +230,6 @@ export class ToolService {
         403,
         safeReason(decision.reason),
       );
-    }
-
-    // Permit Operation Approval grants the temporary `_Approved_` role.
-    // Consume that external role before the executor starts; if revocation
-    // is unavailable the tool must not run. This is deliberately not based
-    // on a local grant flag, and a normal standing Permit allow has no
-    // matching correlation so it is left untouched.
-    if (context.principal.kind === "agent") {
-      let approvalsAvailable = false;
-      try {
-        approvalsAvailable = this.approvals?.isAvailable() === true;
-      } catch {
-        // A broken gateway is indistinguishable from an unavailable Permit
-        // approval service at this enforcement seam.
-      }
-      if (!approvalsAvailable || !this.approvals) {
-        await this.recordToolEvent(
-          "tool_failed",
-          context,
-          definition,
-          "Permit approval unavailable for: " + toolId,
-          "failure",
-          { phase: "approval", errorCode: "PERMISSION_DENIED" },
-        );
-        throw new ToolError(
-          "PERMISSION_DENIED",
-          503,
-          "Permit approval is unavailable",
-        );
-      }
-      try {
-        const mayExecute = await this.approvals.consumeOperationApproval({
-          agentId: context.agentId,
-          ...(context.projectId === undefined ? {} : { projectId: context.projectId }),
-          runId: context.runId,
-          toolId,
-        });
-        if (!mayExecute) {
-          await this.recordToolEvent(
-            "tool_failed",
-            context,
-            definition,
-            "Permit approval was already consumed: " + toolId,
-            "failure",
-            { phase: "approval", errorCode: "PERMISSION_DENIED" },
-          );
-          throw new ToolError(
-            "PERMISSION_DENIED",
-            403,
-            "Permit approval has already been consumed",
-          );
-        }
-      } catch (error) {
-        if (error instanceof ToolError) throw error;
-        await this.recordToolEvent(
-          "tool_failed",
-          context,
-          definition,
-          "Permit approval unavailable for: " + toolId,
-          "failure",
-          { phase: "approval", errorCode: "PERMISSION_DENIED" },
-        );
-        throw new ToolError(
-          "PERMISSION_DENIED",
-          503,
-          "Permit approval is unavailable",
-        );
-      }
     }
 
     await this.recordToolEvent(
@@ -474,7 +319,6 @@ export class ToolService {
             tool,
             availability: "denied",
             reason: "A Project-scoped Agent capability is required",
-            grant: null,
           } satisfies ToolCapabilityView;
         }
         if (
@@ -490,7 +334,6 @@ export class ToolService {
             tool,
             availability: "denied",
             reason: "The assigned Agent role does not include this tool",
-            grant: null,
           } satisfies ToolCapabilityView;
         }
         const directGlobalRole =
@@ -521,40 +364,11 @@ export class ToolService {
             // Keep the fail-closed decision above.
           }
         }
-        if (decision.result === "approval_required") {
-          return {
-            tool,
-            availability: "approval_required",
-            reason: safeReason(decision.reason),
-            grant: null,
-          } satisfies ToolCapabilityView;
-        }
         if (decision.result === "deny") {
-          if (
-            (tool.id === "web.search" || tool.id === "web.fetch") &&
-            projectId !== undefined &&
-            this.approvals?.isAvailable()
-          ) {
-            const baseline = await this.authorization.decide({
-              principal: agentPrincipal(agentId),
-              permission: "project.read",
-              resource: { kind: "project", id: projectId },
-              context: { agentId, projectId, runId: "capability-preview", toolId: tool.id },
-            });
-            if (baseline.result === "allow") {
-              return {
-                tool,
-                availability: "approval_required",
-                reason: "Permit approval is required",
-                grant: null,
-              } satisfies ToolCapabilityView;
-            }
-          }
           return {
             tool,
             availability: "denied",
             reason: safeReason(decision.reason),
-            grant: null,
           } satisfies ToolCapabilityView;
         }
         if (agentId.length === 0) {
@@ -562,14 +376,12 @@ export class ToolService {
             tool,
             availability: "denied",
             reason: "An Agent identity is required",
-            grant: null,
           } satisfies ToolCapabilityView;
         }
         return {
           tool,
           availability: "available",
           reason: safeReason(decision.reason),
-          grant: null,
         } satisfies ToolCapabilityView;
       }),
     );
@@ -580,78 +392,6 @@ export class ToolService {
     };
   }
 
-  async listGrants(agentId: string, projectId?: string): Promise<PermitApprovalRecord[]> {
-    if (!this.approvals) return [];
-    return this.approvals.listProjectAccess(agentId, projectId);
-  }
-
-  async createGrant(
-    input: CreateCapabilityGrantInput,
-  ): Promise<PermitApprovalRecord> {
-    if (!this.registry.has(input.toolId)) {
-      throw new ToolError("TOOL_NOT_FOUND", 404, "The requested tool is not available");
-    }
-    await this.authorization.require({
-      principal: DEMO_HUMAN_PRINCIPAL,
-      permission: "project.members.manage",
-      projectId: input.projectId,
-      agentId: input.agentId,
-      resource: { kind: "project", id: input.projectId },
-    });
-    if (!this.approvals) throw new PermitApprovalError();
-    if (input.scope === "project") {
-      return this.approvals.grantProjectAccess({
-        agentId: input.agentId,
-        projectId: input.projectId,
-        toolId: input.toolId,
-      });
-    }
-    const approval = await this.approvals.requestOperationApproval({
-      agentId: input.agentId,
-      projectId: input.projectId,
-      toolId: input.toolId,
-    });
-    return this.approvals.approve(approval.id, "once");
-  }
-
-  async revokeGrant(
-    grantId: string,
-  ): Promise<PermitApprovalRecord> {
-    if (!this.approvals) throw new PermitApprovalError();
-    const current = await this.approvals.getApproval(grantId);
-    if (current.kind !== "access_request") {
-      throw new ToolError("TOOL_NOT_FOUND", 404, "Capability grant not found");
-    }
-    await this.authorization.require({
-      principal: DEMO_HUMAN_PRINCIPAL,
-      permission: "project.members.manage",
-      projectId: current.projectId ?? undefined,
-      agentId: current.agentId,
-      ...(current.projectId === null ? {} : { resource: { kind: "project", id: current.projectId } }),
-    });
-    return this.approvals.revokeProjectAccess(grantId);
-  }
-
-  private async requestOperationApproval(
-    context: ToolExecutionContext,
-    toolId: string,
-  ): Promise<PermitApprovalRecord> {
-    if (!this.approvals || !this.approvals.isAvailable()) {
-      throw new ToolError(
-        "PERMISSION_DENIED",
-        503,
-        "Permit approval is unavailable",
-      );
-    }
-    return this.approvals.requestOperationApproval({
-      agentId: context.agentId,
-      ...(context.projectId === undefined ? {} : { projectId: context.projectId }),
-      runId: context.runId,
-      toolId,
-      safeSummary: "Agent requested approval for " + toolId,
-    });
-  }
-
   private async recordToolEvent(
     type: AuditEventType,
     context: ToolExecutionContext,
@@ -659,7 +399,6 @@ export class ToolService {
     summary: string,
     status: "success" | "failure",
     metadata: Readonly<Record<string, unknown>>,
-    permitRequestId?: string,
   ): Promise<void> {
     await this.audit?.record({
       type,
@@ -670,7 +409,6 @@ export class ToolService {
       ...(context.projectId === undefined ? {} : { projectId: context.projectId }),
       runId: context.runId,
       ...(context.orchestrationId === undefined ? {} : { orchestrationId: context.orchestrationId }),
-      ...(permitRequestId === undefined ? {} : { permitRequestId }),
       permission: definition.requiredPermission,
       resource: { kind: "tool", id: definition.id },
       metadata,

@@ -8,7 +8,6 @@ import type { Storage } from "../store.js";
 import type { Agent, Database } from "../types.js";
 import type { SkillRuntimeContext } from "../skills/skill-types.js";
 import type { SkillService } from "../skills/skill-service.js";
-import type { PermitDirectoryReconciliationSink } from "../access/permit-directory-reconciler.js";
 import { ProjectError } from "./project-errors.js";
 import { ProjectWorkspaceManager } from "./project-workspace.js";
 import { ProjectWriteLeaseCoordinator } from "./project-write-lease-coordinator.js";
@@ -22,7 +21,6 @@ import {
   type UpdateProjectInput,
   ProjectRoleSchema,
 } from "./project-types.js";
-import { LEGACY_ROLE_IDS } from "../roles/role-types.js";
 
 const now = (): string => new Date().toISOString();
 const activeConversationStatuses = new Set(["queued", "running", "stopping"]);
@@ -71,7 +69,6 @@ export function publicProject(
       : {
           agentId: item.agentId,
           role: item.role ?? "editor",
-          ...(item.roleId === undefined ? {} : { roleId: item.roleId }),
         },
   );
   return {
@@ -117,7 +114,6 @@ function requireText(
 export class ProjectService {
   private readonly leaseCoordinator: ProjectWriteLeaseCoordinator;
   private skillService: SkillService | undefined;
-  private permitDirectory: PermitDirectoryReconciliationSink | undefined;
   private conversationLifecycle: ProjectConversationLifecycleCleanup | undefined;
 
   constructor(
@@ -155,13 +151,6 @@ export class ProjectService {
   /** Attach the code-owned skill composer after the app graph is assembled. */
   setSkillService(skillService: SkillService): void {
     this.skillService = skillService;
-  }
-
-  /** Attach the Permit directory synchronization seam after app assembly. */
-  setPermitDirectoryReconciler(
-    reconciler: PermitDirectoryReconciliationSink,
-  ): void {
-    this.permitDirectory = reconciler;
   }
 
   /**
@@ -211,12 +200,11 @@ export class ProjectService {
         database.projects.push(project);
       });
       persisted = true;
-      await this.permitDirectory?.reconcile();
       this.onEvent({ type: "project_created", projectId: id, status: "active" });
       return publicProject(project, []);
     } catch (error) {
-      // Keep a Project out of the repository when its Permit resource could
-      // not be created/synchronized; callers can retry the privileged action.
+      // Keep a Project out of the repository when local creation fails so the
+      // caller can retry the privileged action.
       if (persisted) {
         await this.store.mutate((database) => {
           database.projects = database.projects.filter((item) => item.id !== id);
@@ -287,7 +275,6 @@ export class ProjectService {
       return structuredClone(stored);
     });
     try {
-      await this.permitDirectory?.reconcile();
       return publicProject(updated, this.attachedMemberships(projectId));
     } catch (error) {
       await this.store.mutate((database) => {
@@ -326,7 +313,7 @@ export class ProjectService {
       this.assertNoActiveProjectPreview(projectId);
       this.leaseCoordinator.requireNoWriteLease(projectId);
       // Stop/finalization may persist terminal child state. Roll back to this
-      // safe snapshot if the subsequent filesystem or Permit operation fails;
+      // safe snapshot if the subsequent filesystem or local persistence fails;
       // restoring an active pre-stop record would create a phantom runner.
       const afterStop = this.store.snapshot();
       const archivedWorkspace = await this.workspaces.archive(project);
@@ -345,7 +332,6 @@ export class ProjectService {
             (item) => item.projectId !== projectId,
           );
         });
-        await this.permitDirectory?.reconcile();
         this.onEvent({ type: "project_archived", projectId, status: "archived" });
         return { archivedWorkspace };
       } catch (error) {
@@ -464,12 +450,11 @@ export class ProjectService {
             (item) => item.projectId !== projectId,
           );
         });
-        await this.permitDirectory?.reconcile();
         this.onEvent({ type: "project_deleted", projectId, status: "deleted" });
         return { deleted: true };
       } catch (error) {
-        // The JSON store mutation is atomic. If external Permit reconciliation
-        // fails, restore the last safe post-stop snapshot and put the moved
+        // The JSON store mutation is atomic. If local cleanup fails, restore
+        // the last safe post-stop snapshot and put the moved
         // workspace back. Restoration is best effort; the original stable
         // operation error remains the response if a host rename itself fails.
         await this.restoreProjectSnapshot(afterStop, projectId);
@@ -527,7 +512,6 @@ export class ProjectService {
       await this.store.mutate((database) => {
         database.projectAgents.push(attachment);
       });
-      await this.permitDirectory?.reconcile();
       this.onEvent({
         type: "project_agent_attached",
         projectId,
@@ -570,7 +554,6 @@ export class ProjectService {
           (item) => !(item.projectId === projectId && item.agentId === agentId),
         );
       });
-      await this.permitDirectory?.reconcile();
       this.onEvent({
         type: "project_agent_detached",
         projectId,
@@ -654,7 +637,6 @@ export class ProjectService {
     });
 
     try {
-      await this.permitDirectory?.reconcile();
       const newlyAttached = uniqueAgentIds.filter(
         (agentId) =>
           !before.projectAgents.some(
@@ -723,7 +705,6 @@ export class ProjectService {
       return structuredClone(stored);
     });
     try {
-      await this.permitDirectory?.reconcile();
       this.onEvent({
         type: "project_team_attached",
         projectId,
@@ -761,7 +742,6 @@ export class ProjectService {
       return structuredClone(stored);
     });
     try {
-      await this.permitDirectory?.reconcile();
       return publicProject(updated, this.attachedMemberships(projectId));
     } catch (error) {
       if (before) {
@@ -805,8 +785,8 @@ export class ProjectService {
           "That Agent is not attached to this Project",
         );
       }
+      // The membership level is independent of the Agent's role template.
       attachment.role = parsedRole.data;
-      attachment.roleId = LEGACY_ROLE_IDS[parsedRole.data];
       attachment.updatedAt = now();
       const project = database.projects.find((item) => item.id === projectId);
       if (!project) throw new ProjectError("PROJECT_NOT_FOUND", 404, "Project not found");
@@ -814,7 +794,6 @@ export class ProjectService {
       return structuredClone(project);
     });
     try {
-      await this.permitDirectory?.reconcile();
       this.onEvent({
         type: "project_agent_role_changed",
         projectId,
@@ -1104,7 +1083,6 @@ export class ProjectService {
       .map((item) => ({
         agentId: item.agentId,
         role: item.role ?? "editor",
-        ...(item.roleId === undefined ? {} : { roleId: item.roleId }),
       }));
   }
 

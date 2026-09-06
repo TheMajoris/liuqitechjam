@@ -35,6 +35,86 @@ export interface ModelDescriptor {
   };
 }
 
+/**
+ * Safe, provider-neutral projection of an inference endpoint. The provider
+ * status is normalized by the ModelArk adapter; only `running` is selectable
+ * by worker Agents.
+ */
+export type ModelEndpointStatus = "running" | "not_running" | "unknown";
+
+export interface ModelEndpointResource {
+  providerId: string;
+  modelId: string;
+  name: string | null;
+  foundationModel: { name: string; version: string } | null;
+  status: ModelEndpointStatus;
+  statusReason: string | null;
+  rateLimit: {
+    rpm: number | null;
+    tpm: number | null;
+  };
+  /** Usage for this endpoint only; never provider-wide totals. */
+  usage: ModelUsageCounters | null;
+  /** Free-token quota from the matching foundation-model activation record. */
+  quota: ModelQuotaSnapshot | null;
+  observedAt: string;
+}
+
+export type ModelUsageAvailability = "available" | "partial" | "unavailable";
+
+/** Provider usage counters preserve unknown values as null. */
+export interface ModelUsageCounters {
+  inputTokens: number | null;
+  cachedInputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  requests: number | null;
+}
+
+/** Normalized account quota for one foundation model. */
+export interface ModelQuotaSnapshot {
+  usedTokens: number;
+  totalTokens: number;
+  remainingTokens: number;
+}
+
+/** A provider usage row, optionally keyed by a ModelArk endpoint. */
+export interface ModelInferenceUsageRow extends ModelUsageCounters {
+  modelEndpoint: string | null;
+}
+
+/**
+ * ModelArk's GetInferenceUsage response exposes a bounded data count for the
+ * selected interval. It is deliberately not called a token count: the API's
+ * count is not a quota or context-window measurement.
+ */
+export interface ModelInferenceUsage {
+  availability: ModelUsageAvailability;
+  dataCount: number | null;
+  inputTokens: number | null;
+  cachedInputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  requests: number | null;
+  queryInterval: "Hour" | "Day";
+  startTime: string;
+  endTime: string;
+  observedAt: string | null;
+  rows: ModelInferenceUsageRow[];
+}
+
+/** Current server-owned ModelArk resource/usage view. */
+export interface ModelResourceView {
+  providerId: string;
+  availability: ModelUsageAvailability;
+  stale: boolean;
+  fetchedAt: string | null;
+  revision: number;
+  endpoints: ModelEndpointResource[];
+  inferenceUsage: ModelInferenceUsage | null;
+  error: string | null;
+}
+
 export interface ProviderDescriptor {
   id: string;
   label: string;
@@ -79,6 +159,8 @@ export interface WorkerModelResolver {
   /** Optional persistence helpers used to materialize defaults on new Agents. */
   defaultModelRef?(): ModelRef | undefined;
   effectiveModelRef?(modelRef?: ModelRef): ModelRef | undefined;
+  /** Optional live refresh used before Agent validation/run acceptance. */
+  refresh?(force?: boolean): Promise<void>;
 }
 
 export interface ModelRegistry {
@@ -88,4 +170,8 @@ export interface ModelRegistry {
   validateWorkerModelRef(modelRef: ModelRef): void;
   /** Drop dynamic discovery results after an operator catalog replacement. */
   invalidate?(): void;
+  /** Refresh dynamic discovery; `true` bypasses all live caches. */
+  refresh?(force?: boolean): Promise<void>;
+  /** Current safe ModelArk resource state, when the provider supports it. */
+  modelResources?(options?: { force?: boolean }): Promise<ModelResourceView>;
 }

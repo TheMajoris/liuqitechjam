@@ -834,11 +834,45 @@ textarea:focus {
 }
 
 .agent-skills-loading,
+.agent-skills-count,
 .agent-skills-note,
 .agent-skills-empty,
 .agent-skills-error {
   color: var(--muted);
   font-size: 10px;
+}
+
+/* Screen-reader-only label for the skill search field. */
+.visually-hidden {
+  position: absolute;
+  overflow: hidden;
+  clip-path: inset(50%);
+  width: 1px;
+  height: 1px;
+  white-space: nowrap;
+}
+
+.agent-skills-search input {
+  width: 100%;
+  border: 1px solid var(--orch-line, #e0ddd3);
+  border-radius: 8px;
+  padding: 6px 9px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+}
+
+.agent-skills-search input:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 1px;
+}
+
+/* A role's skill is active but not editable here, so it reads as settled
+   rather than as a control the reader failed to use. */
+.agent-skill-option[data-from-role="true"] > input {
+  cursor: default;
+  opacity: 0.75;
 }
 
 .agent-skills-note,
@@ -877,6 +911,22 @@ textarea:focus {
   display: grid;
   min-width: 0;
   gap: 3px;
+}
+
+/* A skill supplied by the Agent's role is already active; the checkbox tracks
+   only the Agent's own assignment, so the source is named explicitly. */
+.agent-skill-source {
+  display: inline-block;
+  margin-left: 6px;
+  border-radius: 999px;
+  padding: 1px 7px;
+  background: #ece8fb;
+  color: #5b47c4;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  vertical-align: middle;
 }
 
 .agent-skill-copy strong {
@@ -1000,11 +1050,6 @@ textarea:focus {
   color: #277756;
 }
 
-.capability-state-approval_required {
-  background: #fff0ce;
-  color: #96681c;
-}
-
 .capability-state-denied {
   background: #f6dfdc;
   color: #ac4343;
@@ -1025,6 +1070,19 @@ textarea:focus {
   align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
+}
+
+.worker-model-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+}
+
+.worker-model-refresh {
+  min-height: 27px;
+  padding: 0 8px;
+  font-size: 10px;
 }
 
 .worker-model-heading h3 {
@@ -1169,6 +1227,25 @@ textarea:focus {
 .worker-model-field-error {
   color: var(--red);
   font-weight: 600;
+}
+
+.worker-model-field-warning {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 1px;
+  color: #8a6a1f;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.worker-model-field-warning .button {
+  min-height: 24px;
+  padding: 0 7px;
+  color: #765b19;
+  background: #fffaf0;
+  font-size: 9px;
 }
 
 .agent-header-model {
@@ -4788,39 +4865,6 @@ textarea:focus {
   border-color: rgba(197, 83, 83, 0.32);
 }
 
-.ws-approval-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  border: 1px solid rgba(216, 154, 58, 0.4);
-  border-radius: var(--orch-radius-card);
-  padding: 10px 14px;
-  background: #fdf4e3;
-}
-
-.ws-approval-banner:focus-visible {
-  outline: 2px solid var(--purple);
-  outline-offset: 2px;
-}
-
-.ws-approval-banner strong {
-  display: block;
-  font-size: 13px;
-}
-
-.ws-approval-banner span {
-  color: #7a6234;
-  font-size: 12px;
-}
-
-.ws-approval-hint {
-  flex-shrink: 0;
-  color: #8a6f3a;
-  font-size: 11px;
-  font-weight: 600;
-}
-
 .ws-inline-error {
   margin: 0;
   border-radius: var(--orch-radius-control);
@@ -4969,6 +5013,92 @@ textarea:focus {
   white-space: nowrap;
 }
 
+.ws-plate-resource {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  max-width: 170px;
+  overflow: hidden;
+  color: var(--orch-muted);
+  font-size: 8.5px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-plate-resource-glyph {
+  flex: 0 0 auto;
+  font-size: 8px;
+}
+
+.ws-plate-resource[data-resource-tone="running"] {
+  color: var(--green);
+}
+
+.ws-plate-resource[data-resource-tone="degraded"] {
+  color: var(--muted);
+}
+
+.ws-plate-resource[data-resource-tone="unavailable"] {
+  color: var(--red);
+}
+
+.ws-plate-resource[data-resource-tone="stopped"] {
+  color: var(--muted);
+}
+
+.ws-plate-resource[data-resource-freshness="stale"] {
+  color: var(--muted);
+}
+
+.ws-plate-resource[data-resource-capacity-tone="warning"] {
+  color: #96681c;
+}
+
+.ws-plate-resource[data-resource-capacity-tone="critical"] {
+  color: var(--red);
+}
+
+/* Remaining free-token capacity, drawn only when the provider reports a quota. */
+.ws-plate-capacity-bar {
+  display: block;
+  justify-self: center;
+  overflow: hidden;
+  margin-top: 2px;
+  width: 100%;
+  max-width: 170px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(17, 17, 17, 0.1);
+}
+
+.ws-plate-capacity-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--muted);
+  transition: width 240ms ease;
+}
+
+.ws-plate-capacity-bar[data-resource-capacity-tone="healthy"] .ws-plate-capacity-fill {
+  background: var(--green);
+}
+
+.ws-plate-capacity-bar[data-resource-capacity-tone="warning"] .ws-plate-capacity-fill {
+  background: #d19a26;
+}
+
+.ws-plate-capacity-bar[data-resource-capacity-tone="critical"] .ws-plate-capacity-fill {
+  background: var(--red);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-plate-capacity-fill {
+    transition: none;
+  }
+}
+
 .ws-plate-glyph {
   font-size: 9px;
 }
@@ -4990,44 +5120,41 @@ textarea:focus {
   color: var(--muted);
 }
 
-.ws-metrics-card {
+.ws-resource-capacity-card {
   position: absolute;
   bottom: 100%;
   left: 50%;
   transform: translate(-50%, -8px);
-  display: grid;
-  gap: 2px;
-  min-width: 168px;
+  display: block;
+  min-width: max-content;
+  max-width: min(220px, calc(100vw - 24px));
   border: 1px solid var(--orch-line);
   border-radius: 9px;
-  padding: 7px 10px;
+  padding: 6px 9px;
   background: rgba(251, 250, 247, 0.97);
   backdrop-filter: var(--material-blur);
   box-shadow: var(--elevation-1);
-  text-align: left;
+  color: var(--orch-muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
   cursor: default;
+  pointer-events: none;
   z-index: 5;
 }
 
-.ws-metrics-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  font-size: 10.5px;
-  white-space: nowrap;
+.ws-resource-capacity-card[data-resource-capacity-tone="healthy"] {
+  color: var(--green);
 }
 
-.ws-metrics-label {
-  color: var(--orch-muted);
-  font-weight: 600;
+.ws-resource-capacity-card[data-resource-capacity-tone="warning"] {
+  color: #96681c;
 }
 
-.ws-metrics-value {
-  color: var(--orch-ink);
-  font-weight: 700;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.ws-resource-capacity-card[data-resource-capacity-tone="critical"] {
+  color: var(--red);
 }
 
 .ws-inspector-sparklines {
@@ -5041,6 +5168,37 @@ textarea:focus {
   margin: 8px 0 0;
   color: var(--orch-muted);
   font-size: 11px;
+}
+
+.ws-inspector-resource-status {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 9px;
+  color: var(--orch-ink);
+  font-size: 11px;
+}
+
+.ws-inspector-resource-status span {
+  color: var(--orch-muted);
+  font-size: 10px;
+}
+
+.ws-inspector-resource-status[data-tone="positive"] strong {
+  color: var(--green);
+}
+
+.ws-inspector-resource-status[data-tone="waiting"] strong {
+  color: #96681c;
+}
+
+.ws-inspector-resource-status[data-tone="danger"] strong {
+  color: var(--red);
+}
+
+.ws-inspector-resource-status[data-freshness="stale"] strong {
+  color: var(--muted);
 }
 
 /* The room's station controls sit above the stage, where they never collide
@@ -5335,47 +5493,6 @@ textarea:focus {
   background: var(--orch-surface-solid);
 }
 
-.ws-inspector-approvals {
-  border: 1px solid rgba(216, 154, 58, 0.4);
-  border-radius: var(--orch-radius-control);
-  padding: 11px;
-  background: #fdf4e3;
-}
-
-.ws-approval + .ws-approval {
-  margin-top: 10px;
-  border-top: 1px solid rgba(216, 154, 58, 0.3);
-  padding-top: 10px;
-}
-
-.ws-approval-summary {
-  margin: 0 0 4px;
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.ws-approval-tool {
-  margin: 0 0 8px;
-  color: #7a6234;
-  font-size: 11px;
-}
-
-.ws-approval-tool code {
-  font-size: 10.5px;
-}
-
-.ws-approval-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.ws-approval-actions .button {
-  min-height: 28px;
-  padding: 0 10px;
-  font-size: 11px;
-}
-
 .ws-inspector-actions {
   margin-top: auto;
   display: grid;
@@ -5447,6 +5564,10 @@ textarea:focus {
   min-height: 60vh;
   text-align: center;
   color: var(--muted);
+}
+
+.insights-error-panel {
+  min-height: 240px;
 }
 
 .insights-head {
@@ -5652,6 +5773,73 @@ textarea:focus {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+.usage-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.usage-section-head p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.model-resource-head .button {
+  min-height: 29px;
+  flex-shrink: 0;
+}
+
+.model-resource-state {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  color: #8a6a1f;
+  background: #f6eed6;
+  font-size: 11px;
+}
+
+.model-resource-table th,
+.model-resource-table td {
+  vertical-align: top;
+}
+
+.model-resource-agents {
+  overflow-wrap: anywhere;
+}
+
+.model-resource-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 650;
+}
+
+.model-resource-status.is-positive {
+  color: var(--green);
+}
+
+.model-resource-status.is-waiting {
+  color: #96681c;
+}
+
+.model-resource-status.is-danger {
+  color: var(--red);
+}
+
+.model-resource-status.is-muted,
+.model-resource-status.is-neutral {
+  color: var(--muted);
+}
+
+.model-resource-freshness {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .usage-empty {
@@ -6559,6 +6747,13 @@ button.assignment-archive:hover:not(:disabled) {
   font-weight: 600;
 }
 
+/* The role is read-only here: it belongs to the Agent, not to the Workspace. */
+.ws-roster-role-value {
+  color: var(--orch-ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .ws-roster select {
   width: 100%;
   min-width: 0;
@@ -6795,7 +6990,7 @@ button.assignment-archive:hover:not(:disabled) {
 .orch-workspace-context .orch-field-help { grid-column: 1 / -1; }
 
 /* Room density: the inspector is opt-in and the stage owns the width by
-   default. Selecting a plate or opening the approval door reveals details. */
+   default. Selecting a plate reveals details. */
 .ws-toolbar {
   display: flex;
   align-items: stretch;
@@ -6956,6 +7151,41 @@ button.assignment-archive:hover:not(:disabled) {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.trace-model-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+  box-shadow: var(--elevation-1);
+}
+
+.trace-model-evidence-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.trace-model-evidence-head h3 {
+  margin: 3px 0 0;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.trace-model-evidence-note {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.trace-model-value {
+  max-width: 190px;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .trace-panes {

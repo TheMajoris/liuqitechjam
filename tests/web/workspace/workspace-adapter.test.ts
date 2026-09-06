@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type {
   Agent,
   AgentMetrics,
-  ApprovalRecord,
   AuditEventRecord,
   OrchestrationSession,
   OrchestrationSessionDetail,
@@ -92,7 +91,6 @@ function build(
   detail: OrchestrationSessionDetail | null,
   overrides: {
     agents?: Agent[];
-    approvals?: ApprovalRecord[] | null;
     project?: Project | null;
     activity?: AuditEventRecord[];
     metrics?: Map<string, AgentMetrics>;
@@ -103,7 +101,6 @@ function build(
     detail,
     project: overrides.project ?? null,
     preview: null,
-    approvals: overrides.approvals === undefined ? null : overrides.approvals,
     selectedAgentId: null,
     activity: overrides.activity,
     metrics: overrides.metrics,
@@ -172,35 +169,6 @@ describe("workspace adapter", () => {
     );
 
     expect(activityOf(model, "a1")).toBe("working");
-  });
-
-  it("puts a pending approval ahead of every other state", () => {
-    const approvals: ApprovalRecord[] = [
-      {
-        id: "ap-1",
-        kind: "operation_approval",
-        scope: "once",
-        agentId: "a1",
-        projectId: "project-1",
-        runId: null,
-        toolId: "web.search",
-        safeSummary: "Fetch the public docs.",
-        status: "pending",
-        createdAt: NOW,
-        updatedAt: NOW,
-      },
-    ];
-    const model = build(
-      detailFor("running", {
-        currentParticipantId: "p-a1",
-        turns: [turn({ agentId: "a1", status: "dispatched" })],
-      }),
-      { approvals },
-    );
-
-    expect(activityOf(model, "a1")).toBe("blocked");
-    expect(model.pendingApprovals).toHaveLength(1);
-    expect(model.pendingApprovals[0]!.agentName).toBe("Alice");
   });
 
   it("adds Project members who are not in the Team roster", () => {

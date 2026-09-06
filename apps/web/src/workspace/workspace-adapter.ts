@@ -1,10 +1,10 @@
 import type {
   Agent,
   AgentMetrics,
-  ApprovalRecord,
   AuditEventRecord,
   ModelDescriptor,
   ModelProviderDescriptor,
+  ModelResourceSnapshot,
   OrchestrationEvent,
   OrchestrationParticipant,
   OrchestrationSessionDetail,
@@ -19,8 +19,6 @@ import { MAX_SEATS } from "./workspace-layout";
 import type {
   WorkspaceAgentActivity,
   WorkspaceAgentViewModel,
-  WorkspaceApprovalViewModel,
-  WorkspaceDoorState,
   WorkspaceHandoffViewModel,
   WorkspacePreviewActivity,
   WorkspaceSandboxActivity,
@@ -34,8 +32,6 @@ export interface WorkspaceSource {
   detail: OrchestrationSessionDetail | null;
   project: Project | null;
   preview: Preview | null;
-  /** `null` means the approvals API is not configured; the door stays dormant. */
-  approvals: ApprovalRecord[] | null;
   selectedAgentId: string | null;
   modelProviders?: ModelProviderDescriptor[];
   models?: ModelDescriptor[];
@@ -43,6 +39,8 @@ export interface WorkspaceSource {
   activity?: AuditEventRecord[];
   /** Live per-Agent telemetry, keyed by Agent ID; absent Agents get `null`. */
   metrics?: Map<string, AgentMetrics>;
+  /** Live model state keyed by `providerId:modelId`; read-only presentation data. */
+  modelResources?: Map<string, ModelResourceSnapshot>;
 }
 
 const SUMMARY_LIMIT = 160;
@@ -147,17 +145,14 @@ interface ActivityInput {
   agent: Agent | undefined;
   participant: OrchestrationParticipant | null;
   detail: OrchestrationSessionDetail | null;
-  hasPendingApproval: boolean;
 }
 
 export function resolveActivity({
   agent,
   participant,
   detail,
-  hasPendingApproval,
 }: ActivityInput): WorkspaceAgentActivity {
   if (!agent) return "stopped";
-  if (hasPendingApproval) return "blocked";
   if (agent.status === "stopped") return "stopped";
 
   const session = detail?.session ?? null;
@@ -222,9 +217,8 @@ function stationForSandbox(sandbox: WorkspaceSandboxActivity): WorkspaceStation 
  *
  * A live tool wins over the activity, because it is the more specific truth:
  * an Agent that is "working" *and* running `web.search` is at the shelves, not
- * at its desk. Approval and turn selection still outrank it — being stopped at
- * the boundary is the thing a viewer most needs to see. Sandbox activity is
- * the next-most-specific truth, but a platform tool still wins when both are
+ * at its desk. Turn selection still outranks it. Sandbox activity is the
+ * next-most-specific truth, but a platform tool still wins when both are
  * open: the tool call is what the Agent decided to do, the sandbox echo is
  * just how it is doing it.
  */
@@ -233,7 +227,6 @@ export function resolveStation(
   activeTool: WorkspaceToolActivity | null = null,
   sandboxActivity: WorkspaceSandboxActivity | null = null,
 ): WorkspaceStation {
-  if (activity === "blocked") return "door";
   if (activity === "thinking") return "board";
   if (activeTool !== null) {
     const station = stationForTool(activeTool.toolId);
@@ -386,20 +379,6 @@ export function resolveHandoff(
   };
 }
 
-export function resolveDoorState(approvals: ApprovalRecord[] | null): WorkspaceDoorState {
-  if (approvals === null) return "dormant";
-  if (approvals.some((approval) => approval.status === "pending")) return "waiting";
-  const latest = [...approvals].sort((left, right) =>
-    right.updatedAt.localeCompare(left.updatedAt),
-  )[0];
-  if (!latest) return "locked";
-  if (latest.status === "approved") return "open";
-  if (latest.status === "denied" || latest.status === "revoked" || latest.status === "expired") {
-    return "denied";
-  }
-  return "locked";
-}
-
 function previewActivity(preview: Preview | null): WorkspacePreviewActivity {
   if (!preview) return "not_started";
   return preview.status;
@@ -451,18 +430,6 @@ export function buildWorkspaceViewModel(source: WorkspaceSource): WorkspaceViewM
   const session = source.detail?.session ?? null;
   const events = source.detail?.events ?? [];
   const byId = new Map(source.agents.map((agent) => [agent.id, agent]));
-  const pendingApprovals: WorkspaceApprovalViewModel[] = (source.approvals ?? [])
-    .filter((approval) => approval.status === "pending")
-    .map((approval) => ({
-      id: approval.id,
-      agentId: approval.agentId,
-      agentName: agentName(source.agents, approval.agentId),
-      toolId: approval.toolId,
-      safeSummary: clip(approval.safeSummary) ?? "External access requested.",
-      status: approval.status,
-      createdAt: approval.createdAt,
-    }));
-  const blockedAgentIds = new Set(pendingApprovals.map((approval) => approval.agentId));
 
   const supervisorChoice = session && isOrchestrationActive(session.status)
     ? latestEventOfType(events, "supervisor_decision")?.agentId ?? null
@@ -492,7 +459,6 @@ export function buildWorkspaceViewModel(source: WorkspaceSource): WorkspaceViewM
         agent,
         participant,
         detail: source.detail,
-        hasPendingApproval: blockedAgentIds.has(agentId),
       });
       const turn = source.detail ? latestTurnFor(source.detail.turns, agentId) : null;
       const role = participant?.role.trim() || null;
@@ -514,6 +480,7 @@ export function buildWorkspaceViewModel(source: WorkspaceSource): WorkspaceViewM
         modelLabel: agent
           ? formatAgentWorkerModel(agent, source.modelProviders ?? [], source.models ?? [])
           : null,
+        modelAssigned: Boolean(agent?.modelRef?.providerId && agent.modelRef.modelId),
         projectRole: projectRoleFor(source.project, agentId),
         available: agent !== undefined,
         lifecycle: agent?.status ?? "unknown",
@@ -524,6 +491,10 @@ export function buildWorkspaceViewModel(source: WorkspaceSource): WorkspaceViewM
         typing: activeTool === null && sandboxActivity?.kind === "files",
         appearance: agent?.appearance ?? null,
         metrics: source.metrics?.get(agentId) ?? null,
+        modelResource:
+          agent?.modelRef?.providerId && agent.modelRef.modelId
+            ? source.modelResources?.get(`${agent.modelRef.providerId}:${agent.modelRef.modelId}`) ?? null
+            : null,
       };
     },
   );
@@ -556,7 +527,5 @@ export function buildWorkspaceViewModel(source: WorkspaceSource): WorkspaceViewM
     activeAgentId,
     selectedAgentId: source.selectedAgentId,
     latestHandoff: resolveHandoff(events),
-    pendingApprovals,
-    doorState: resolveDoorState(source.approvals),
   };
 }

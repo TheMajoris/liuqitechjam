@@ -63,7 +63,7 @@ async function makeStack(runner: AgentRunner = new FileWritingRunner()) {
     AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
     CODEX_HOME: path.join(root, "codex"),
     ARK_API_KEY: "test-key",
-    ARK_MODEL: "ep-test",
+    WORKER_CURATED_MODELS: "ep-test",
   });
   const store = new JsonStore(path.join(root, "data", "db.json"));
   const agentService = new AgentService(
@@ -98,8 +98,14 @@ describe("Shared Project collaboration", () => {
   it("lets a second Agent read and modify the first Agent's Project files", async () => {
     const runner = new FileWritingRunner();
     const { agentService, projectService } = await makeStack(runner);
-    const fe = await agentService.createAgent({ name: "fe" });
-    const builder = await agentService.createAgent({ name: "fe builder2" });
+    const fe = await agentService.createAgent({
+      name: "fe",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
+    const builder = await agentService.createAgent({
+      name: "fe builder2",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
     const project = await projectService.create({ name: "Todo App" });
     await projectService.attachAgent(project.id, fe.id);
     await projectService.attachAgent(project.id, builder.id);
@@ -143,7 +149,10 @@ describe("Shared Project collaboration", () => {
   it("keeps private and shared Codex sessions independent", async () => {
     const runner = new FileWritingRunner();
     const { agentService, projectService } = await makeStack(runner);
-    const fe = await agentService.createAgent({ name: "fe" });
+    const fe = await agentService.createAgent({
+      name: "fe",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
     const project = await projectService.create({ name: "Todo App" });
     await projectService.attachAgent(project.id, fe.id);
 
@@ -169,7 +178,10 @@ describe("Shared Project collaboration", () => {
 
   it("refuses a Project turn for an Agent that is not attached", async () => {
     const { agentService, projectService } = await makeStack();
-    const fe = await agentService.createAgent({ name: "fe" });
+    const fe = await agentService.createAgent({
+      name: "fe",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
     const project = await projectService.create({ name: "Todo App" });
 
     await expect(

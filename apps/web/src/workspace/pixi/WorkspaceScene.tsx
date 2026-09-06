@@ -5,12 +5,12 @@ import "./pixi-elements";
 import { AgentSprite } from "./AgentSprite";
 import { Desk, DeskChair } from "./Desk";
 import { HandoffToken } from "./HandoffToken";
-import { AccessDoor, BoardStation, PreviewStation } from "./Stations";
+import { BoardStation, PreviewStation } from "./Stations";
 import { Room } from "./Room";
 import { avatarLook } from "./art/avatar-look";
 import { agentPresentation } from "./agent-presentation";
 import { officeSeats, type StageTransform, type WorkspaceSeat } from "../workspace-layout";
-import { DOOR_STATE_LABEL, PREVIEW_ACTIVITY_LABEL } from "../workspace-view-model";
+import { PREVIEW_ACTIVITY_LABEL } from "../workspace-view-model";
 import type { WorkspaceViewModel } from "../workspace-view-model";
 
 export interface WorkspaceSceneProps {
@@ -23,7 +23,6 @@ export interface WorkspaceSceneProps {
   onHoverAgent: (agentId: string | null) => void;
   onOpenConversation: () => void;
   onOpenPreview: () => void;
-  onOpenApprovals: () => void;
   /** Reports where an Agent currently stands, so its HTML plate can follow. */
   onAgentPosition?: (agentId: string, x: number, y: number) => void;
 }
@@ -48,7 +47,6 @@ export function WorkspaceScene({
   onHoverAgent,
   onOpenConversation,
   onOpenPreview,
-  onOpenApprovals,
   onAgentPosition,
 }: WorkspaceSceneProps) {
   const seated = useMemo(
@@ -116,12 +114,6 @@ export function WorkspaceScene({
         onActivate={onOpenPreview}
         label={`Shared preview — ${PREVIEW_ACTIVITY_LABEL[viewModel.previewStatus]}`}
       />
-      <AccessDoor
-        state={viewModel.doorState}
-        onActivate={onOpenApprovals}
-        label={DOOR_STATE_LABEL[viewModel.doorState]}
-      />
-
       {/* One sorted layer, so walking in front of furniture just works. */}
       <pixiContainer sortableChildren>
         <BoardStation

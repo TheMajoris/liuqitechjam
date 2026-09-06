@@ -1,6 +1,12 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import {
+  DEFAULT_ARK_MANAGEMENT_BASE_URL,
+  DEFAULT_ARK_MANAGEMENT_MAX_RESPONSE_BYTES,
+  DEFAULT_ARK_MANAGEMENT_REGION,
+  DEFAULT_ARK_MANAGEMENT_TIMEOUT_MS,
+} from "./models/ark-management-client.js";
 
 export const DEFAULT_CODEX_TIMEOUT_MS = 600_000;
 export const MCP_TOKEN_GRACE_MS = 60_000;
@@ -8,19 +14,9 @@ export const DEFAULT_MCP_TOKEN_TTL_MS =
   DEFAULT_CODEX_TIMEOUT_MS + MCP_TOKEN_GRACE_MS;
 /** Keep accidental no-expiry deployments bounded while covering long runs. */
 export const MAX_MCP_TOKEN_TTL_MS = 86_400_000;
-export const DEFAULT_PERMIT_CHECK_TIMEOUT_MS = 5_000;
 export const DEFAULT_WEB_FETCH_TIMEOUT_MS = 15_000;
 export const DEFAULT_WEB_FETCH_MAX_RESPONSE_BYTES = 1_048_576;
 export const DEFAULT_WEB_FETCH_MAX_REDIRECTS = 3;
-
-const PERMIT_PRODUCTION_FIELDS = [
-  "PERMIT_API_KEY",
-  "PERMIT_PDP_URL",
-  "PERMIT_PROJECT_ID",
-  "PERMIT_ENVIRONMENT_ID",
-  "PERMIT_TENANT_KEY",
-  "PERMIT_OPERATION_APPROVAL_CONFIG_ID",
-] as const;
 
 const envSchema = z.object({
   HOST: z.string().default("0.0.0.0"),
@@ -69,7 +65,27 @@ const envSchema = z.object({
     .regex(/^[A-Za-z0-9._~-]*$/, "APP_AUTH_TOKEN must use URL-safe characters")
     .optional(),
   ARK_API_KEY: z.string().optional(),
-  ARK_MODEL: z.string().optional(),
+  /** Server-only BytePlus management credentials used for signed ModelArk calls. */
+  BYTEPLUS_ACCESS_KEY: z.string().trim().optional(),
+  BYTEPLUS_SECRET_KEY: z.string().trim().optional(),
+  BYTEPLUS_REGION: z.string().trim().min(1).max(64).default(DEFAULT_ARK_MANAGEMENT_REGION),
+  BYTEPLUS_MANAGEMENT_BASE_URL: z
+    .string()
+    .trim()
+    .url()
+    .default(DEFAULT_ARK_MANAGEMENT_BASE_URL),
+  BYTEPLUS_MANAGEMENT_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(120_000)
+    .default(DEFAULT_ARK_MANAGEMENT_TIMEOUT_MS),
+  BYTEPLUS_MANAGEMENT_MAX_RESPONSE_BYTES: z.coerce
+    .number()
+    .int()
+    .min(4_096)
+    .max(4 * 1024 * 1024)
+    .default(DEFAULT_ARK_MANAGEMENT_MAX_RESPONSE_BYTES),
   /** Comma-separated worker model IDs that are safe for the Codex runtime. */
   WORKER_CURATED_MODELS: z.string().default(""),
   WORKER_MODEL_LIST_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(10_000),
@@ -134,34 +150,10 @@ const envSchema = z.object({
   OTEL_SERVICE_NAME: z.string().trim().min(1).max(128).default("lqam-server"),
   /** Supply the complete OTLP/HTTP traces endpoint when using the OTLP path. */
   OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: z.string().trim().url().optional(),
-  /** Permit credentials are optional outside production, but never trusted when absent. */
-  PERMIT_API_KEY: z.string().trim().optional(),
-  PERMIT_PDP_URL: z.string().trim().url().optional(),
-  PERMIT_PROJECT_ID: z.string().trim().min(1).optional(),
-  PERMIT_ENVIRONMENT_ID: z.string().trim().min(1).optional(),
-  PERMIT_TENANT_KEY: z.string().trim().min(1).optional(),
-  /** Required in production so the Wave 11 approval path has an explicit policy target. */
-  PERMIT_OPERATION_APPROVAL_CONFIG_ID: z.string().trim().min(1).optional(),
-  /** API-only Access Request element config used for persistent grants. */
-  PERMIT_ACCESS_REQUEST_CONFIG_ID: z.string().trim().min(1).optional(),
-  /** Permit Cloud API base; PDP remains the separate decision endpoint. */
-  PERMIT_API_URL: z.string().trim().url().default("https://api.permit.io"),
-  PERMIT_CHECK_TIMEOUT_MS: z.coerce
-    .number()
-    .int()
-    .min(100)
-    .max(120_000)
-    .default(DEFAULT_PERMIT_CHECK_TIMEOUT_MS),
   ARK_BASE_URL: z
     .string()
     .url()
-    .default("https://ark.cn-beijing.volces.com/api/v3"),
-  /**
-   * Selects the authorization authority for the process. Permit remains the
-   * default for external-policy deployments; staging can explicitly opt into
-   * the repository-backed policy with AUTHORIZATION_MODE=local.
-   */
-  AUTHORIZATION_MODE: z.enum(["local", "permit"]).default("permit"),
+    .default("https://ark.ap-southeast.bytepluses.com/api/v3"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 
@@ -180,29 +172,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     } catch { /* Report configuration without exposing the connection secret. */ }
     if (!valid) throw new Error("PERSISTENCE_BACKEND=postgres requires a valid DATABASE_URL");
   }
-  if (env.AUTHORIZATION_MODE === "permit" && env.NODE_ENV === "production") {
-    const missing = PERMIT_PRODUCTION_FIELDS.filter((field) => {
-      const value = env[field];
-      return typeof value !== "string" || value.length === 0 || value.startsWith("replace-");
-    });
-    if (missing.length > 0) {
-      throw new Error(
-        "Permit authorization configuration is required in production: " +
-          missing.join(", "),
-      );
-    }
-  }
   const authToken = env.APP_AUTH_TOKEN?.trim() ?? "";
   const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"]);
-  if (
-    env.AUTHORIZATION_MODE === "local" &&
-    env.NODE_ENV !== "production" &&
-    !loopbackHosts.has(env.HOST)
-  ) {
-    throw new Error(
-      "AUTHORIZATION_MODE=local requires a loopback HOST outside production (127.0.0.1, ::1, or localhost)",
-    );
-  }
   if (env.NODE_ENV === "production" && !loopbackHosts.has(env.HOST)) {
     if (authToken.length < 24 || authToken.startsWith("replace-")) {
       throw new Error(
@@ -216,7 +187,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
       : "1000:1000";
   const workerCuratedModels = Array.from(
     new Set(
-      [env.ARK_MODEL ?? "", ...env.WORKER_CURATED_MODELS.split(",")]
+      env.WORKER_CURATED_MODELS.split(",")
         .map((value) => value.trim())
         .filter((value) => value.length > 0),
     ),
@@ -244,11 +215,16 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     runtimeInstanceId: env.RUNTIME_INSTANCE_ID,
     authToken,
     arkApiKey: env.ARK_API_KEY?.trim() ?? "",
-    arkModel: env.ARK_MODEL?.trim() ?? "",
+    byteplusAccessKey: env.BYTEPLUS_ACCESS_KEY?.trim() ?? "",
+    byteplusSecretKey: env.BYTEPLUS_SECRET_KEY?.trim() ?? "",
+    byteplusRegion: env.BYTEPLUS_REGION.trim(),
+    byteplusManagementBaseUrl: env.BYTEPLUS_MANAGEMENT_BASE_URL.replace(/\/+$/u, ""),
+    byteplusManagementTimeoutMs: env.BYTEPLUS_MANAGEMENT_TIMEOUT_MS,
+    byteplusManagementMaxResponseBytes: env.BYTEPLUS_MANAGEMENT_MAX_RESPONSE_BYTES,
     workerCuratedModels,
     workerModelListTimeoutMs: env.WORKER_MODEL_LIST_TIMEOUT_MS,
     workerModelCacheTtlMs: env.WORKER_MODEL_CACHE_TTL_MS,
-    supervisorModel: env.SUPERVISOR_MODEL?.trim() || env.ARK_MODEL?.trim() || "",
+    supervisorModel: env.SUPERVISOR_MODEL?.trim() || "",
     supervisorTimeoutMs: env.SUPERVISOR_TIMEOUT_MS,
     mcpPublicUrl:
       env.MCP_PUBLIC_URL?.trim() || `http://127.0.0.1:${env.PORT}/mcp`,
@@ -269,56 +245,15 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     telemetryExporter: env.OTEL_TRACES_EXPORTER,
     telemetryServiceName: env.OTEL_SERVICE_NAME,
     telemetryEndpoint: env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT?.trim() || "",
-    permitApiKey: env.PERMIT_API_KEY?.trim() ?? "",
-    permitPdpUrl: env.PERMIT_PDP_URL?.trim() ?? "",
-    permitProjectId: env.PERMIT_PROJECT_ID?.trim() ?? "",
-    permitEnvironmentId: env.PERMIT_ENVIRONMENT_ID?.trim() ?? "",
-    permitTenantKey: env.PERMIT_TENANT_KEY?.trim() ?? "",
-    permitOperationApprovalConfigId:
-      env.PERMIT_OPERATION_APPROVAL_CONFIG_ID?.trim() ?? "",
-    permitAccessRequestConfigId:
-      env.PERMIT_ACCESS_REQUEST_CONFIG_ID?.trim() ?? "",
-    permitApiUrl: env.PERMIT_API_URL.replace(/\/+$/, ""),
-    permitCheckTimeoutMs: env.PERMIT_CHECK_TIMEOUT_MS,
     arkBaseUrl: env.ARK_BASE_URL.replace(/\/+$/, ""),
-    authorizationMode: env.AUTHORIZATION_MODE,
     nodeEnv: env.NODE_ENV,
   };
-}
-
-/** Permit authorization/operation-approval configuration is all-or-nothing. */
-export function isPermitConfigured(config: AppConfig): boolean {
-  if (config.authorizationMode !== "permit") return false;
-  return (
-    config.permitApiKey.length > 0 &&
-    !config.permitApiKey.startsWith("replace-") &&
-    config.permitPdpUrl.length > 0 &&
-    config.permitProjectId.length > 0 &&
-    !config.permitProjectId.startsWith("replace-") &&
-    config.permitEnvironmentId.length > 0 &&
-    !config.permitEnvironmentId.startsWith("replace-") &&
-    config.permitTenantKey.length > 0 &&
-    !config.permitTenantKey.startsWith("replace-") &&
-    config.permitOperationApprovalConfigId.length > 0 &&
-    !config.permitOperationApprovalConfigId.startsWith("replace-")
-  );
-}
-
-/** Persistent project access is an optional Wave 11 extension. */
-export function isPermitAccessRequestConfigured(config: AppConfig): boolean {
-  return (
-    isPermitConfigured(config) &&
-    config.permitAccessRequestConfigId.length > 0 &&
-    !config.permitAccessRequestConfigId.startsWith("replace-")
-  );
 }
 
 export function isArkConfigured(config: AppConfig): boolean {
   return (
     config.arkApiKey.length > 0 &&
-    !config.arkApiKey.startsWith("replace-") &&
-    config.arkModel.length > 0 &&
-    !config.arkModel.includes("replace-")
+    !config.arkApiKey.startsWith("replace-")
   );
 }
 
@@ -336,7 +271,6 @@ export async function writeCodexConfig(config: AppConfig): Promise<void> {
   await mkdir(config.codexHome, { recursive: true });
   const toml = [
     "# Generated by Liu Qi Agent Management (LQAM). Edit environment variables, not this file.",
-    "model = " + JSON.stringify(config.arkModel || "ep-not-configured"),
     'model_provider = "volcengine_ark"',
     "",
     "[model_providers.volcengine_ark]",

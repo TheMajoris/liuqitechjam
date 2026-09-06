@@ -9,10 +9,10 @@ import { TraceDetailView } from "./components/trace/TraceDetailView";
 import { RolesAndSkillsView } from "./components/access/RolesAndSkillsView";
 import { AgentWorkspaceView } from "./components/playground/AgentWorkspaceView";
 import { CreateAgentModal } from "./components/playground/CreateAgentModal";
-import { ModelCatalogSettingsView } from "./components/playground/ModelCatalogSettingsView";
 import { useOrchestration } from "./components/orchestration/use-orchestration";
 import { emptyAgentForm, formFromAgent, formPayload, type AgentForm } from "./playground/agent-form";
 import { useModelCatalog } from "./playground/use-model-catalog";
+import { useModelResources } from "./playground/use-model-resources";
 import { useSkillCatalog } from "./playground/use-skill-catalog";
 import { useAgentWorkspace } from "./playground/use-agent-workspace";
 import type {
@@ -92,6 +92,9 @@ export default function App() {
 
   const skillCatalog = useSkillCatalog();
   const modelCatalog = useModelCatalog(form, selected, setForm);
+  const modelResources = useModelResources(
+    authRequired === false && (view === "workspace" || view === "insights"),
+  );
   const workspaceController = useAgentWorkspace({
     selectedId,
     refreshAgents,
@@ -255,7 +258,13 @@ export default function App() {
     setError(null);
     try {
       await api.updateAgent(selected.id, formPayload(form));
-      await refreshAgents();
+      // The role can change here, and the role supplies skills, so the
+      // effective skill view has to be re-read rather than left stale.
+      await Promise.all([
+        refreshAgents(),
+        modelResources.refresh(),
+        workspaceController.refreshAgentSkills(),
+      ]);
       setShowSettings(false);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -364,7 +373,6 @@ export default function App() {
           setView("traces");
         }}
         onSelectAccess={() => setView("access")}
-        onSelectModelCatalog={() => setView("model-catalog")}
         onSelectSession={(sessionId) => {
           orchestration.selectSession(sessionId);
           setView("workspace");
@@ -396,10 +404,7 @@ export default function App() {
       <main
         className={
           "main " +
-          (view === "insights" ||
-          view === "traces" ||
-          view === "access" ||
-          view === "model-catalog"
+          (view === "insights" || view === "traces" || view === "access"
             ? "main-insights"
             : view === "workspace"
               ? "main-chat"
@@ -415,7 +420,7 @@ export default function App() {
               <strong>Runtime configuration needed</strong>
               <p>
                 {!system?.arkConfigured
-                  ? "Set ARK_API_KEY and ARK_MODEL in .env before running Agents."
+                  ? "Configure the server's ModelArk management credentials before running Agents."
                   : system.runtimeProvider === "container"
                     ? "The local container engine or Agent Runtime image is unavailable. Rerun npm run poc."
                     : "Codex CLI was not found. Use the Docker image or install @openai/codex."}
@@ -433,22 +438,16 @@ export default function App() {
           </div>
         )}
 
-        {view === "model-catalog" ? (
-          <ModelCatalogSettingsView
-            onCatalogChanged={async () => {
-              await modelCatalog.refresh();
-              await refreshAgents();
-            }}
-          />
-        ) : view === "access" ? (
+        {view === "access" ? (
           <RolesAndSkillsView
             agents={agents}
             projects={projects}
-            onProjectsChanged={refreshProjects}
             onAgentsChanged={refreshAgents}
           />
         ) : view === "insights" ? (
           <InsightsView
+            agents={agents}
+            modelResources={modelResources}
             onSelectAgent={(agentId) => {
               setSelectedId(agentId);
               setView("agent");
@@ -471,6 +470,7 @@ export default function App() {
           <OrchestrationWorkspace
             agents={agents}
             modelProviders={modelCatalog.providers}
+            modelResources={modelResources.byKey}
             orchestration={orchestration}
             projects={projects}
             roles={roles}
@@ -497,6 +497,7 @@ export default function App() {
             skillLoading={skillCatalog.loading}
             skillError={skillCatalog.error ?? workspaceController.agentSkillsError}
             form={form}
+            roles={roles}
             showSettings={showSettings}
             previewPanelOpen={previewPanelOpen}
             busy={busy}

@@ -1,20 +1,13 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { AgentAppearance, ApprovalRecord } from "../types";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import type { AgentAppearance } from "../types";
 import { AgentInspector, type AgentLifecycleAction } from "./AgentInspector";
 import { WorkspaceStage } from "./WorkspaceStage";
-import {
-  DOOR_STATE_LABEL,
-  PREVIEW_ACTIVITY_LABEL,
-  type WorkspaceViewModel,
-} from "./workspace-view-model";
+import { PREVIEW_ACTIVITY_LABEL, type WorkspaceViewModel } from "./workspace-view-model";
 import type { PreviewAction } from "./use-project-preview";
 
 interface WorkspaceViewProps {
   viewModel: WorkspaceViewModel;
   replies: number;
-  approvals: ApprovalRecord[];
-  approvalBusyId: string | null;
-  approvalError: string | null;
   previewBusy: PreviewAction | null;
   lifecyclePending: AgentLifecycleAction | null;
   onSelectAgent: (agentId: string) => void;
@@ -23,8 +16,6 @@ interface WorkspaceViewProps {
   onOpenPreview: () => void;
   onOpenAgent: (agentId: string) => void;
   onPreviewAction: (action: PreviewAction) => void;
-  onApprove: (id: string, scope: "once" | "project") => void;
-  onDeny: (id: string) => void;
   onAppearanceChange?: (agentId: string, appearance: AgentAppearance) => Promise<void>;
   /** Room membership and Workspace roles; owned by the caller that has the Project. */
   roster?: ReactNode;
@@ -44,9 +35,6 @@ function readInspectorPreference(): boolean {
 export function WorkspaceView({
   viewModel,
   replies,
-  approvals,
-  approvalBusyId,
-  approvalError,
   previewBusy,
   lifecyclePending,
   onSelectAgent,
@@ -55,34 +43,15 @@ export function WorkspaceView({
   onOpenPreview,
   onOpenAgent,
   onPreviewAction,
-  onApprove,
-  onDeny,
   onAppearanceChange,
   roster,
 }: WorkspaceViewProps) {
-  const approvalsRef = useRef<HTMLDivElement>(null);
   const [inspectorOpen, setInspectorOpen] = useState(readInspectorPreference);
   const selected =
     viewModel.agents.find((agent) => agent.agentId === viewModel.selectedAgentId) ?? null;
-  const pending = viewModel.pendingApprovals;
   const previewRunning = viewModel.previewStatus === "running";
   const previewTransitioning =
     viewModel.previewStatus === "starting" || viewModel.previewStatus === "stopping";
-  const showExternalAccess =
-    viewModel.doorState === "waiting" ||
-    viewModel.doorState === "open" ||
-    viewModel.doorState === "denied";
-
-  /** The door hands you the decision it is standing in front of. */
-  const openApprovals = useCallback(() => {
-    const first = pending[0];
-    if (first) {
-      onSelectAgent(first.agentId);
-    }
-    setInspectorOpen(true);
-    approvalsRef.current?.focus();
-  }, [onSelectAgent, pending]);
-
   const selectAgent = useCallback((agentId: string) => {
     onSelectAgent(agentId);
     setInspectorOpen(true);
@@ -94,12 +63,6 @@ export function WorkspaceView({
       inspectorOpen ? "open" : "closed",
     );
   }, [inspectorOpen]);
-
-  // Focus follows the door: clicking it should land you on the decision.
-  useEffect(() => {
-    if (pending.length === 0) return;
-    approvalsRef.current?.setAttribute("tabindex", "-1");
-  }, [pending.length]);
 
   return (
     <div className="ws-view">
@@ -149,19 +112,6 @@ export function WorkspaceView({
               </div>
             )}
 
-            {showExternalAccess && (
-              <button
-                type="button"
-                className="ws-station"
-                data-state={viewModel.doorState}
-                onClick={openApprovals}
-              >
-                <span className="ws-station-name">External access</span>
-                <span className="ws-station-state">
-                  {DOOR_STATE_LABEL[viewModel.doorState]}
-                </span>
-              </button>
-            )}
           </div>
           <button
             type="button"
@@ -176,28 +126,6 @@ export function WorkspaceView({
         </div>
       </div>
 
-      {viewModel.doorState === "waiting" && pending.length > 0 && (
-        <div className="ws-approval-banner" role="alert" ref={approvalsRef}>
-          <div>
-            <strong>
-              {pending.length === 1
-                ? "An Agent is waiting for permission"
-                : `${pending.length} Agents are waiting for permission`}
-            </strong>
-            <span>
-              {pending[0]!.agentName} · {pending[0]!.safeSummary}
-            </span>
-          </div>
-          <span className="ws-approval-hint">Decide in the inspector →</span>
-        </div>
-      )}
-
-      {approvalError && (
-        <p className="ws-inline-error" role="alert">
-          {approvalError}
-        </p>
-      )}
-
       <div className={"ws-body " + (inspectorOpen ? "has-inspector" : "") }>
         <WorkspaceStage
           viewModel={viewModel}
@@ -205,20 +133,15 @@ export function WorkspaceView({
           onSelectAgent={selectAgent}
           onOpenConversation={onOpenConversation}
           onOpenPreview={onOpenPreview}
-          onOpenApprovals={openApprovals}
         />
         {inspectorOpen && (
           <AgentInspector
             agent={selected}
             projectName={viewModel.projectId ? viewModel.name : null}
             pending={lifecyclePending}
-            approvals={approvals}
-            approvalBusyId={approvalBusyId}
             onLifecycle={onLifecycle}
             onOpenConversation={onOpenConversation}
             onOpenAgent={onOpenAgent}
-            onApprove={onApprove}
-            onDeny={onDeny}
             onClose={() => setInspectorOpen(false)}
             {...(onAppearanceChange ? { onAppearanceChange } : {})}
           />

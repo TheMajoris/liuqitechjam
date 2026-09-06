@@ -31,6 +31,7 @@ export interface AgentWorkspaceController {
   previewActionError: PreviewActionError | null;
   agentSkills: AgentSkills | null;
   agentSkillsError: string | null;
+  refreshAgentSkills: () => Promise<void>;
   prompt: string;
   runInFlight: boolean;
   setPrompt: (value: string) => void;
@@ -177,6 +178,23 @@ export function useAgentWorkspace({
     };
   }, []);
 
+  /**
+   * The effective skill set includes the ones the Agent's role supplies, so it
+   * has to be re-read after the role or the Agent's own assignment changes.
+   */
+  const refreshAgentSkills = useCallback(async () => {
+    const agentId = selectedIdRef.current;
+    if (!agentId) return;
+    try {
+      const { skills } = await api.agentSkills(agentId);
+      if (mountedRef.current && selectedIdRef.current === agentId) setAgentSkills(skills);
+    } catch (reason) {
+      if (mountedRef.current && selectedIdRef.current === agentId) {
+        setAgentSkillsError(errorMessage(reason));
+      }
+    }
+  }, []);
+
   useEffect(() => {
     setActiveRun(null);
     setPreview(null);
@@ -218,17 +236,8 @@ export function useAgentWorkspace({
       }
     });
 
-    void api
-      .agentSkills(selectedId)
-      .then(({ skills }) => {
-        if (mountedRef.current && selectedIdRef.current === selectedId) setAgentSkills(skills);
-      })
-      .catch((reason) => {
-        if (mountedRef.current && selectedIdRef.current === selectedId) {
-          setAgentSkillsError(errorMessage(reason));
-        }
-      });
-  }, [pollRun, refreshMessages, refreshPreview, selectedId, setError]);
+    void refreshAgentSkills();
+  }, [pollRun, refreshAgentSkills, refreshMessages, refreshPreview, selectedId, setError]);
 
   useEffect(() => {
     if (!selectedId || !preview || (preview.status !== "starting" && preview.status !== "running")) {
@@ -409,6 +418,7 @@ export function useAgentWorkspace({
     previewActionError,
     agentSkills,
     agentSkillsError,
+    refreshAgentSkills,
     prompt,
     runInFlight: isRunActive(activeRun),
     setPrompt,

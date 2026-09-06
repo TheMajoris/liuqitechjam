@@ -6,7 +6,6 @@ import {
   auditExportFilename,
 } from "../audit/audit-export.js";
 import type { AgentService } from "../agent-service.js";
-import { humanPrincipal } from "../access/access-types.js";
 import { HttpError } from "../errors.js";
 import { recordHumanAction } from "./human-action-audit.js";
 import type { McpRouteDependencies } from "../mcp-server.js";
@@ -46,7 +45,7 @@ const MAX_DISCOVERY_DESCRIPTION_LENGTH = 1_000;
  * The HTTP seam for Agent Middleware control-plane routes.
  *
  * The module owns validation and response shaping for tools, skills,
- * Permit-backed approvals, and audit projections. It deliberately receives
+ * and audit projections. It deliberately receives
  * only the Agent operations needed by those routes; execution and policy
  * remain inside their respective server-owned modules.
  */
@@ -125,14 +124,6 @@ function boundedDiscoveryText(value: unknown, maxLength: number): string {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
 }
 
-function requireApprovalService(
-  dependencies: McpRouteDependencies | undefined,
-): NonNullable<McpRouteDependencies["approvalService"]> {
-  const approvalService = dependencies?.approvalService;
-  if (!approvalService) throw new HttpError(503, "Permit approvals are not configured");
-  return approvalService;
-}
-
 function requireAuditService(
   dependencies: McpRouteDependencies | undefined,
 ): AuditReader {
@@ -151,26 +142,11 @@ export function registerAgentMiddlewareRoutes(
   // the test action always supplies the deterministic human principal while
   // naming an explicit Agent/Project target.
   const capabilityProjectQuery = z.object({ projectId: z.string().uuid().optional() });
-  const capabilityGrantBody = z.object({
-    projectId: z.string().uuid(),
-    toolId: z.string().min(1),
-    scope: z.enum(["once", "project"]),
-  });
   const toolTestParams = z.object({ toolId: z.string().min(1) });
   const toolTestBody = z.object({
     agentId: z.string().uuid(),
     projectId: z.string().uuid().optional(),
     input: z.unknown().optional(),
-  });
-  const approvalIdParams = z.object({ id: z.string().min(1).max(256).regex(/^[^\\/\0\r\n]+$/) });
-  const approvalQuery = z.object({
-    agentId: z.string().uuid().optional(),
-    projectId: z.string().uuid().optional(),
-    status: z.enum(["pending", "approved", "denied", "expired", "consumed", "revoked", "unknown"]).optional(),
-    kind: z.enum(["operation_approval", "access_request"]).optional(),
-  });
-  const approvalDecisionBody = z.object({
-    scope: z.enum(["once", "project"]).optional(),
   });
 
   app.get("/api/tools", async () => ({
@@ -192,7 +168,7 @@ export function registerAgentMiddlewareRoutes(
 
   // Skills are declarative, code-owned guidance. The only mutable operation
   // below replaces an Agent's assignment; it cannot register or modify a
-  // skill definition and it never touches capability grants.
+  // skill definition and it never grants a capability.
   const skillIdParams = z.object({ id: z.string().min(1) });
   const agentSkillsQuery = z.object({ projectId: z.string().uuid().optional() });
   const updateAgentSkillsBody = z.object({
@@ -376,14 +352,10 @@ export function registerAgentMiddlewareRoutes(
   });
 
   // ------------------------------------------------------------- Role templates
-  // Role templates are reusable global presets. Assignment is deliberately a
-  // separate Project-scoped route so every Agent has at most one role per
-  // Project attachment.
+  // Role templates are reusable global presets. An Agent carries exactly one
+  // role, assigned on the Agent itself, so there is no Project-scoped
+  // assignment route and no per-Workspace override.
   const roleIdParams = z.object({ id: z.string().min(1).max(128) });
-  const roleProjectAgentParams = z.object({
-    projectId: z.string().uuid(),
-    agentId: z.string().uuid(),
-  });
   const createRoleBody = z.object({
     name: z.string().trim().min(1).max(80),
     description: z.string().trim().max(500).optional(),
@@ -398,7 +370,6 @@ export function registerAgentMiddlewareRoutes(
   const confirmedUpdateRoleBody = updateRoleBody.and(z.object({
     confirmPropagation: z.boolean().optional(),
   }));
-  const assignRoleBody = z.object({ roleId: z.string().min(1).max(128) });
 
   app.get("/api/roles", async () => ({
     roles: await requireRoleService(mcp).list(),
@@ -426,29 +397,6 @@ export function registerAgentMiddlewareRoutes(
     return requireRoleService(mcp).remove(id);
   });
 
-  app.get("/api/projects/:projectId/agents/:agentId/role", async (request) => {
-    const { projectId, agentId } = roleProjectAgentParams.parse(request.params);
-    const role = requireRoleService(mcp).getAssignedRole(projectId, agentId);
-    if (!role) throw new RoleError("ROLE_NOT_FOUND", "No role is assigned to this Project Agent");
-    return { role };
-  });
-
-  app.put("/api/projects/:projectId/agents/:agentId/role", async (request) => {
-    const { projectId, agentId } = roleProjectAgentParams.parse(request.params);
-    const { roleId } = assignRoleBody.parse(request.body);
-    return {
-      assignment: await requireRoleService(mcp).assign(projectId, agentId, roleId),
-    };
-  });
-
-  app.patch("/api/projects/:projectId/agents/:agentId/role", async (request) => {
-    const { projectId, agentId } = roleProjectAgentParams.parse(request.params);
-    const { roleId } = assignRoleBody.parse(request.body);
-    return {
-      assignment: await requireRoleService(mcp).assign(projectId, agentId, roleId),
-    };
-  });
-
   app.get("/api/agents/:id/capabilities", async (request) => {
     const { id } = agentIdParams.parse(request.params);
     const { projectId } = capabilityProjectQuery.parse(request.query);
@@ -456,109 +404,6 @@ export function registerAgentMiddlewareRoutes(
     return {
       capabilities: await requireToolService(mcp).listCapabilities(id, projectId),
     };
-  });
-
-  // Permit owns approval state. These routes expose only the local safe
-  // correlation projection and call Permit for every read/write; no request
-  // body can select a principal (the service uses human:demo-owner).
-  app.get("/api/approvals", async (request) => {
-    const query = approvalQuery.parse(request.query);
-    return {
-      approvals: await requireApprovalService(mcp).listApprovals(query),
-    };
-  });
-
-  app.get("/api/approvals/:id", async (request) => {
-    const { id } = approvalIdParams.parse(request.params);
-    return { approval: await requireApprovalService(mcp).getApproval(id) };
-  });
-
-  app.post("/api/approvals/:id/approve", async (request) => {
-    const { id } = approvalIdParams.parse(request.params);
-    const body = approvalDecisionBody.parse(request.body ?? {});
-    const approval = await requireApprovalService(mcp).approve(id, body.scope ?? "once");
-    await recordHumanAction(mcp?.auditService, {
-      type: "approval_decided",
-      status: "success",
-      summary: "Approval request approved",
-      principal: humanPrincipal(),
-      actorType: "human",
-      approvalRequestId: id,
-      permitRequestId: id,
-      agentId: approval.agentId,
-      ...(approval.projectId ? { projectId: approval.projectId } : {}),
-      resource: { kind: "tool", id: approval.toolId },
-      metadata: { decision: "approved", toolId: approval.toolId },
-    }, request.log);
-    return { approval };
-  });
-
-  app.post("/api/approvals/:id/grant", async (request) => {
-    const { id } = approvalIdParams.parse(request.params);
-    const approval = await requireApprovalService(mcp).approve(id, "project");
-    await recordHumanAction(mcp?.auditService, {
-      type: "approval_decided",
-      status: "success",
-      summary: "Approval request granted",
-      principal: humanPrincipal(),
-      actorType: "human",
-      approvalRequestId: id,
-      permitRequestId: id,
-      agentId: approval.agentId,
-      ...(approval.projectId ? { projectId: approval.projectId } : {}),
-      resource: { kind: "tool", id: approval.toolId },
-      metadata: { decision: "approved", toolId: approval.toolId },
-    }, request.log);
-    return { approval };
-  });
-
-  app.post("/api/approvals/:id/deny", async (request) => {
-    const { id } = approvalIdParams.parse(request.params);
-    const approval = await requireApprovalService(mcp).deny(id);
-    await recordHumanAction(mcp?.auditService, {
-      type: "approval_decided",
-      status: "success",
-      summary: "Approval request denied",
-      principal: humanPrincipal(),
-      actorType: "human",
-      approvalRequestId: id,
-      permitRequestId: id,
-      agentId: approval.agentId,
-      ...(approval.projectId ? { projectId: approval.projectId } : {}),
-      resource: { kind: "tool", id: approval.toolId },
-      metadata: { decision: "denied", toolId: approval.toolId },
-    }, request.log);
-    return { approval };
-  });
-
-  app.post("/api/approvals/:id/revoke", async (request) => {
-    const { id } = approvalIdParams.parse(request.params);
-    return { grant: await requireToolService(mcp).revokeGrant(id) };
-  });
-
-  app.get("/api/agents/:id/capabilities/grants", async (request) => {
-    const { id } = agentIdParams.parse(request.params);
-    const { projectId } = capabilityProjectQuery.parse(request.query);
-    service.getAgent(id);
-    return {
-      grants: await requireToolService(mcp).listGrants(id, projectId),
-    };
-  });
-
-  app.post("/api/agents/:id/capabilities/grants", async (request, reply) => {
-    const { id } = agentIdParams.parse(request.params);
-    const body = capabilityGrantBody.parse(request.body);
-    service.getAgent(id);
-    const grant = await requireToolService(mcp).createGrant({
-      agentId: id,
-      ...body,
-    });
-    return reply.code(201).send({ grant });
-  });
-
-  app.delete("/api/capability-grants/:id", async (request) => {
-    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-    return { grant: await requireToolService(mcp).revokeGrant(id) };
   });
 
   app.post("/api/tools/:toolId/test", async (request) => {

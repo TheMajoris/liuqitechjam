@@ -2,14 +2,12 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
-import {
-  isPermitConfigured,
-  loadConfig,
-  writeCodexConfig,
-} from "./config.js";
+import { isSupervisorConfigured, loadConfig, writeCodexConfig } from "./config.js";
 import { createRunner } from "./runner-factory.js";
 import {
   ArkModelCatalogService,
+  ArkLiveModelState,
+  ArkManagementClient,
   ModelCatalogError,
   createModelRegistry,
   createWorkerModelResolver,
@@ -28,21 +26,8 @@ import {
   ArkResponsesSupervisorProvider,
   createOrchestrationParticipantSelector,
 } from "./orchestration/supervisor/index.js";
-import {
-  createPermitAuthorizationAdapter,
-} from "./access/permit-authorization-adapter.js";
 import { RepositoryAuthorizationService } from "./access/repository-authorization-service.js";
 import { RoleTemplateAuthorizationService } from "./access/role-template-authorization-service.js";
-import { LocalPocApprovalGateway } from "./access/local-poc-approval-gateway.js";
-import { PermitSynchronizationGate } from "./access/permit-synchronization-gate.js";
-import {
-  createPermitDirectoryClient,
-  PermitDirectoryReconciler,
-} from "./access/permit-directory-reconciler.js";
-import {
-  createPermitApprovalClient,
-  PermitApprovalService,
-} from "./access/permit-approval-service.js";
 import { LocalContainerPreviewRuntime } from "./preview/local-container-preview-runtime.js";
 import { PreviewCommandResolver } from "./preview/preview-command-resolver.js";
 import { StorePreviewContextProvider } from "./preview/preview-context-provider.js";
@@ -77,6 +62,8 @@ for (const key of [
   "DATABASE_RUNTIME_PASSWORD",
   "POSTGRES_PASSWORD",
   "DATABASE_URL",
+  "BYTEPLUS_ACCESS_KEY",
+  "BYTEPLUS_SECRET_KEY",
 ]) {
   delete process.env[key];
 }
@@ -93,6 +80,20 @@ const workspaces = new WorkspaceManager(config.workspaceRoot);
 const { runner, healthSampler: containerHealthSampler } = createRunner(config);
 const mcpSessions = new McpSessionService(config.mcpTokenTtlMs, { audit });
 const modelCatalog = new ArkModelCatalogService(store);
+// ModelArk management credentials stay in this server-owned client/state and
+// are never copied into a worker environment or persisted catalog.
+const modelArkClient = new ArkManagementClient({
+  accessKey: config.byteplusAccessKey,
+  secretKey: config.byteplusSecretKey,
+  region: config.byteplusRegion,
+  baseUrl: config.byteplusManagementBaseUrl,
+  timeoutMs: config.byteplusManagementTimeoutMs,
+  maxResponseBytes: config.byteplusManagementMaxResponseBytes,
+});
+const modelArkState = new ArkLiveModelState({
+  client: modelArkClient,
+  ttlMs: config.workerModelCacheTtlMs,
+});
 // The live catalog must exist before AgentService.initialize() materializes
 // defaults for legacy Agent records.
 const hasDatabaseData = (database: Database): boolean =>
@@ -162,28 +163,24 @@ try {
 // Avoid writing the shared Codex runtime configuration until persistence
 // ownership and legacy-data checks have completed successfully.
 await writeCodexConfig(config);
-const seededModelIds = Array.from(new Set([
-  ...config.workerCuratedModels,
-  ...(config.arkModel.length === 0 ? [] : [config.arkModel]),
-]));
 await modelCatalog.initialize({
   provider: "volcengine_ark",
   baseUrl: config.arkBaseUrl,
   apiKeyEnv: "ARK_API_KEY",
-  models: seededModelIds,
-  defaultModelRef:
-    config.arkModel.length === 0
-      ? null
-      : { providerId: "volcengine_ark", modelId: config.arkModel },
+  models: [...config.workerCuratedModels],
+  defaultModelRef: null,
   revision: 1,
 });
-const permitSynchronizationGate = new PermitSynchronizationGate();
 const workerModelResolver = createWorkerModelResolver(config, {
   catalog: modelCatalog,
+  liveCatalog: modelArkState,
+  liveRefresh: () => modelArkState.refresh(),
+  liveRevision: () => modelArkState.getCatalogRevision(),
 });
 const modelRegistry = createModelRegistry(config, {
   workerResolver: workerModelResolver,
   catalog: modelCatalog,
+  modelArkState,
 });
 const service = new AgentService(
   config,
@@ -201,18 +198,7 @@ const agentMetrics = new AgentMetricsService({
   audit,
   ...(containerHealthSampler === undefined ? {} : { healthSampler: containerHealthSampler }),
 });
-const permitMode = config.authorizationMode === "permit";
-// Permit is the only authorization authority in the production graph. Local
-// POC mode uses the repository's fixed role policy and never constructs a
-// Permit adapter, directory reconciler, or external approval service.
-const policyAuthorization = permitMode
-  ? createPermitAuthorizationAdapter(
-      config,
-      permitSynchronizationGate,
-      audit,
-      telemetry,
-    )
-  : new RepositoryAuthorizationService(store);
+const policyAuthorization = new RepositoryAuthorizationService(store);
 const authorization = new RoleTemplateAuthorizationService(store, policyAuthorization);
 const projectWorkspaces = new ProjectWorkspaceManager(
   path.join(config.dataDirectory, "projects"),
@@ -223,24 +209,6 @@ const projectService = new ProjectService(
   service,
   authorization,
 );
-const permitDirectory = permitMode
-  ? new PermitDirectoryReconciler(
-      store,
-      createPermitDirectoryClient(config),
-      { tenantKey: config.permitTenantKey, synchronizationGate: permitSynchronizationGate },
-    )
-  : undefined;
-const permitApprovalService = permitMode
-  ? new PermitApprovalService(
-      store,
-      createPermitApprovalClient(config),
-      { tenantKey: config.permitTenantKey, audit, telemetry },
-    )
-  : undefined;
-if (permitDirectory !== undefined) {
-  service.setPermitDirectoryReconciler(permitDirectory);
-  projectService.setPermitDirectoryReconciler(permitDirectory);
-}
 const previewService = new PreviewService(
   store,
   service,
@@ -288,7 +256,6 @@ const toolService = new ToolService(
   toolRegistry,
   authorization,
   store,
-  permitApprovalService ?? new LocalPocApprovalGateway(),
   audit,
   telemetry,
 );
@@ -307,20 +274,9 @@ projectService.setSkillService(skillService);
 await service.initialize();
 await roleService.initialize();
 await projectService.initialize();
-// Reconcile existing repository facts before accepting privileged lifecycle
-// mutations. A development Permit graph may be inspected without credentials;
-// configured Permit deployments converge immediately, while production config
-// validation above guarantees this call has a usable client.
-if (
-  permitDirectory !== undefined &&
-  (config.nodeEnv === "production" || isPermitConfigured(config))
-) {
-  await permitDirectory.reconcile();
-}
 await previewService.initialize();
 
-const supervisorCredentialsConfigured =
-  config.arkApiKey.length > 0 && !config.arkApiKey.startsWith("replace-");
+const supervisorCredentialsConfigured = isSupervisorConfigured(config);
 const supervisorSelector = supervisorCredentialsConfigured
   ? createOrchestrationParticipantSelector(
       new ArkResponsesSupervisorProvider({
@@ -351,46 +307,21 @@ const orchestrationService = new OrchestrationService({
   ...(supervisorSelector === undefined
     ? {}
     : { selectNextParticipant: supervisorSelector }),
-  resolveSupervisorModel: async (agent) => {
-    if (agent.modelRef === undefined) {
+  resolveSupervisorModel: async () => {
+    if (!isSupervisorConfigured(config)) {
       throw new ModelCatalogError(
         "MODEL_RUNTIME_CONFIGURATION_INVALID",
-        422,
-        "Supervisor Agent must have an explicit primary model assignment",
+        503,
+        "SUPERVISOR_MODEL and the Ark inference key must be configured for supervisor routing",
       );
     }
-    const modelRef = normalizeModelRef(agent.modelRef);
-    const models = await modelRegistry.listModels(
-      modelRef.providerId,
-      "supervisor",
-    );
-    const descriptor = models.find((model) => model.id === modelRef.modelId);
-    if (
-      descriptor === undefined ||
-      !descriptor.capabilities.scopes.includes("supervisor")
-    ) {
-      throw new ModelCatalogError(
-        "MODEL_NOT_SUPPORTED_FOR_SUPERVISOR",
-        422,
-        "The Supervisor Agent model does not support supervisor routing",
-      );
-    }
-    if (
-      modelRef.reasoning?.effort !== undefined &&
-      (!descriptor.capabilities.reasoning ||
-        !descriptor.capabilities.reasoningEfforts?.includes(
-          modelRef.reasoning.effort,
-        ))
-    ) {
-      throw new ModelCatalogError(
-        "MODEL_REASONING_NOT_SUPPORTED",
-        422,
-        "The Supervisor Agent model does not support reasoning controls",
-      );
-    }
+    const modelRef = normalizeModelRef({
+      providerId: "volcengine_ark",
+      modelId: config.supervisorModel,
+    });
     return {
       modelRef,
-      modelId: descriptor.id,
+      modelId: modelRef.modelId,
       catalogRevision: modelCatalog.get().revision ?? 0,
     };
   },
@@ -419,7 +350,6 @@ const app = await createApp(
     toolService,
     skillService,
     roleService,
-    ...(permitApprovalService === undefined ? {} : { approvalService: permitApprovalService }),
     auditService: audit,
     searchProvider,
     webFetch,

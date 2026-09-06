@@ -6,6 +6,7 @@ import type {
   ProviderDescriptor,
 } from "./types.js";
 import type { ModelCatalogReader } from "./catalog.js";
+import type { ArkLiveModelState } from "./ark-live-state.js";
 
 export const ARK_WORKER_PROVIDER_ID = "volcengine_ark" as const;
 export const ARK_WORKER_PROVIDER_LABEL = "BytePlus ModelArk";
@@ -13,11 +14,15 @@ export const DEFAULT_MODEL_LIST_TIMEOUT_MS = 10_000;
 export const DEFAULT_MODEL_LIST_MAX_RESPONSE_BYTES = 256 * 1024;
 
 export interface ArkModelProviderOptions {
-  apiKey: string;
+  /** Retained for constructor compatibility; inference credentials are not
+   * used for management endpoint discovery. */
+  apiKey?: string;
   baseUrl: string;
-  curatedModelIds: readonly string[];
+  curatedModelIds?: readonly string[];
   /** Optional live metadata source; it contains no API key values. */
   catalog?: ModelCatalogReader;
+  /** Shared signed ListEndpoints state used by the worker resolver. */
+  liveState?: ArkLiveModelState;
   timeoutMs?: number;
   maxResponseBytes?: number;
   fetchImpl?: typeof fetch;
@@ -182,12 +187,13 @@ export class ArkModelProvider implements ModelProviderAdapter {
   private readonly timeoutMs: number;
   private readonly maxResponseBytes: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly liveState: ArkLiveModelState | undefined;
 
   constructor(options: ArkModelProviderOptions) {
-    this.apiKey = options.apiKey.trim();
+    this.apiKey = options.apiKey?.trim() ?? "";
     this.baseUrl = normalizeBaseUrl(options.baseUrl);
     this.curatedModelIds = Array.from(
-      new Set(options.curatedModelIds.map((value) => safeModelId(value)).filter(
+      new Set((options.curatedModelIds ?? []).map((value) => safeModelId(value)).filter(
         (value): value is string => value !== null,
       )),
     );
@@ -198,6 +204,7 @@ export class ArkModelProvider implements ModelProviderAdapter {
       DEFAULT_MODEL_LIST_MAX_RESPONSE_BYTES,
     );
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
+    this.liveState = options.liveState;
     if (typeof this.fetchImpl !== "function") {
       throw new ModelCatalogError(
         "MODEL_RUNTIME_CONFIGURATION_INVALID",
@@ -220,42 +227,40 @@ export class ArkModelProvider implements ModelProviderAdapter {
   }
 
   async listModels(input: { scope: ModelScope }): Promise<ModelDescriptor[]> {
+    if (input.scope === "worker") {
+      if (this.liveState === undefined) {
+        throw new ModelCatalogError(
+          "MODEL_PROVIDER_UNAVAILABLE",
+          503,
+          "ModelArk endpoint discovery is not configured",
+        );
+      }
+      // Refreshing the shared state makes ListEndpoints authoritative. The
+      // registry can still serve its own stale cache when this rejects, but a
+      // selector never receives a model that was not observed as Running.
+      await this.liveState.refreshEndpoints();
+      return this.liveState.listRunningDescriptors(input.scope);
+    }
+
+    // Supervisor routing remains a fixed, server-selected Responses path. It
+    // may use the OpenAI-compatible model list, but this branch is never used
+    // to make a worker model selectable.
     const catalog = this.catalog?.get();
-    const curatedModelIds = catalog?.models ?? this.curatedModelIds;
-    const curated = Array.from(
-      new Set(
-        curatedModelIds
-          .map((value) => safeModelId(value))
-          .filter((value): value is string => value !== null),
-      ),
-    ).map((id) => descriptor(id, input.scope));
     const apiKey = catalog === undefined
       ? this.apiKey
       : process.env[catalog.apiKeyEnv] ?? this.apiKey;
-    // Without credentials, the safe server-owned catalog is still useful for
-    // rendering/configuring an Agent; no provider request is attempted.
-    if (!apiKey) return curated;
-
-    let discovered: string[];
-    try {
-      discovered = await this.discoverModelIds(
-        catalog?.baseUrl ?? this.baseUrl,
-        apiKey,
+    if (!apiKey) {
+      throw new ModelCatalogError(
+        "MODEL_PROVIDER_UNAVAILABLE",
+        503,
+        "Supervisor model discovery credentials are not configured",
       );
-    } catch (error) {
-      // A configured allowlist is an intentional safe fallback. The registry
-      // may additionally serve a stale cached dynamic list.
-      if (curated.length > 0) return curated;
-      throw error;
     }
-
-    const allowed = new Set(curated.map((model) => model.id));
-    // The configured default/allowlist is the runtime proof. Provider output
-    // is intersected with it, and curated entries remain visible if discovery
-    // omits an endpoint that is known to be configured and executable.
-    const filtered = discovered.filter((id) => allowed.has(id));
-    const ids = new Set([...filtered, ...curated.map((model) => model.id)]);
-    return [...ids].map((id) => descriptor(id, input.scope));
+    const discovered = await this.discoverModelIds(
+      catalog?.baseUrl ?? this.baseUrl,
+      apiKey,
+    );
+    return discovered.map((id) => descriptor(id, input.scope));
   }
 
   private async discoverModelIds(baseUrl: string, apiKey: string): Promise<string[]> {

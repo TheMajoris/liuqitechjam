@@ -111,7 +111,6 @@ async function makeService(
   runner: AgentRunner = new FakeRunner(),
   options: {
     curatedModels?: string;
-    arkModel?: string;
     audit?: AuditRecorder;
   } = {},
 ): Promise<AgentService> {
@@ -123,8 +122,7 @@ async function makeService(
     AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
     CODEX_HOME: path.join(root, "codex"),
     ARK_API_KEY: "test-key",
-    ARK_MODEL: options.arkModel ?? "ep-test",
-    WORKER_CURATED_MODELS: options.curatedModels ?? "",
+    WORKER_CURATED_MODELS: ["ep-test", options.curatedModels].filter(Boolean).join(","),
   });
   const store = new JsonStore(path.join(root, "data", "db.json"));
   const service = new AgentService(
@@ -163,7 +161,10 @@ describe("Agent lifecycle", () => {
 
   it("creates, updates, stops, starts and deletes an Agent", async () => {
     const service = await makeService();
-    const agent = await service.createAgent({ name: "Builder" });
+    const agent = await service.createAgent({
+      name: "Builder",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
     expect(service.listAgents()).toHaveLength(1);
     expect((await service.updateAgent(agent.id, { description: "Builds apps" })).description)
       .toBe("Builds apps");
@@ -175,7 +176,10 @@ describe("Agent lifecycle", () => {
 
   it("writes the default response language policy to the Agent workspace", async () => {
     const service = await makeService();
-    const agent = await service.createAgent({ name: "English default" });
+    const agent = await service.createAgent({
+      name: "English default",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
     const instructions = await readFile(
       path.join(agent.workspacePath, "AGENTS.md"),
       "utf8",
@@ -188,7 +192,10 @@ describe("Agent lifecycle", () => {
 
   it("deletes an Agent when its workspace was removed externally", async () => {
     const service = await makeService();
-    const agent = await service.createAgent({ name: "Orphaned" });
+    const agent = await service.createAgent({
+      name: "Orphaned",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
     const { rm } = await import("node:fs/promises");
     await rm(agent.workspacePath, { recursive: true, force: true });
 
@@ -201,7 +208,10 @@ describe("Agent lifecycle", () => {
 
   it("persists a playground conversation", async () => {
     const service = await makeService();
-    const agent = await service.createAgent({ name: "Coder" });
+    const agent = await service.createAgent({
+      name: "Coder",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
     const { run } = await service.sendMessage(agent.id, "write hello world");
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
     const messages = service.getMessages(agent.id);
@@ -221,7 +231,10 @@ describe("Agent lifecycle", () => {
       isAvailable: async () => true,
     };
     const service = await makeService(runner);
-    const agent = await service.createAgent({ name: "Concurrent" });
+    const agent = await service.createAgent({
+      name: "Concurrent",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
     const attempts = await Promise.allSettled([
       service.sendMessage(agent.id, "first"),
       service.sendMessage(agent.id, "second"),
@@ -242,7 +255,10 @@ describe("Agent lifecycle", () => {
   it("cancels only the selected Run, leaves the Agent ready, and is idempotent", async () => {
     const runner = new DeferredRunner();
     const service = await makeService(runner);
-    const agent = await service.createAgent({ name: "Cancelable" });
+    const agent = await service.createAgent({
+      name: "Cancelable",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
     const { run } = await service.sendMessage(agent.id, "cancel this");
     await expect.poll(() => service.getRun(run.id).status).toBe("running");
 
@@ -261,7 +277,10 @@ describe("Run audit spans", () => {
   it("records a direct run as one span rooted at the Run id", async () => {
     const audit = new RecordingAudit();
     const service = await makeService(new FakeRunner(), { audit });
-    const agent = await service.createAgent({ name: "Traced" });
+    const agent = await service.createAgent({
+      name: "Traced",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
     const { run } = await service.sendMessage(agent.id, "trace this");
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
     await expect.poll(() => audit.ofType("run_completed").length).toBe(1);
@@ -287,7 +306,10 @@ describe("Run audit spans", () => {
       isAvailable: async () => true,
     };
     const service = await makeService(runner, { audit });
-    const agent = await service.createAgent({ name: "Failing" });
+    const agent = await service.createAgent({
+      name: "Failing",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
     const { run } = await service.sendMessage(agent.id, "fail this");
     await expect.poll(() => service.getRun(run.id).status).toBe("failed");
     await expect.poll(() => audit.ofType("run_failed").length).toBe(1);
@@ -319,7 +341,10 @@ describe("Run audit spans", () => {
       isAvailable: async () => true,
     };
     const service = await makeService(runner, { audit });
-    const agent = await service.createAgent({ name: "Observed" });
+    const agent = await service.createAgent({
+      name: "Observed",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
     const { run } = await service.sendMessage(agent.id, "observe this");
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
     await expect.poll(() => audit.ofType("sandbox_command").length).toBe(1);
@@ -350,6 +375,7 @@ describe("Run audit spans", () => {
     });
     const agent = await service.createAgent({
       name: "Fallback",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
       fallbackModelRefs: [{ providerId: "volcengine_ark", modelId: "ep-fallback" }],
     });
     const { run } = await service.sendMessage(agent.id, "retry this");

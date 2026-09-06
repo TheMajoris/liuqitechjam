@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../../api";
 import type { AuditEventRecord, AuditTrace, AuditTraceNode } from "../../types";
 import { Spinner } from "../playground/Spinner";
-import { formatDuration } from "../insights/usage-format";
+import { formatCount, formatDuration } from "../insights/usage-format";
 import {
   categoryColorVar,
   flattenTrace,
+  modelEvidenceFromSpans,
   pathToSpan,
   spanLabel,
   timelineBars,
@@ -70,17 +71,22 @@ export function TraceDetailView({ traceId, onBack }: TraceDetailViewProps) {
   const [highlighted, setHighlighted] = useState<string | null>(null);
   const nodeRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const pendingScroll = useRef<string | null>(null);
+  const requestSequence = useRef(0);
 
   const load = useCallback(async () => {
+    const requestId = ++requestSequence.current;
     setLoading(true);
     try {
       const result = await api.trace(traceId);
+      if (requestSequence.current !== requestId) return;
       setTrace(result.trace);
       setError(null);
     } catch (cause) {
-      setError(cause instanceof ApiError ? cause.message : "Could not load trace");
+      if (requestSequence.current === requestId) {
+        setError(cause instanceof ApiError ? cause.message : "Could not load trace");
+      }
     } finally {
-      setLoading(false);
+      if (requestSequence.current === requestId) setLoading(false);
     }
   }, [traceId]);
 
@@ -90,6 +96,7 @@ export function TraceDetailView({ traceId, onBack }: TraceDetailViewProps) {
 
   const spans = useMemo<FlatSpan[]>(() => (trace ? flattenTrace(trace) : []), [trace]);
   const bars = useMemo(() => (trace ? timelineBars(spans, trace) : []), [spans, trace]);
+  const modelEvidence = useMemo(() => modelEvidenceFromSpans(spans), [spans]);
 
   useEffect(() => {
     const target = pendingScroll.current;
@@ -209,6 +216,59 @@ export function TraceDetailView({ traceId, onBack }: TraceDetailViewProps) {
       </header>
 
       {error && <p className="trace-error">{error}</p>}
+
+      {modelEvidence.length > 0 && (
+        <section className="trace-model-evidence" aria-labelledby="trace-model-evidence-heading">
+          <div className="trace-model-evidence-head">
+            <div>
+              <span className="eyebrow">Execution evidence</span>
+              <h3 id="trace-model-evidence-heading">Models used in this run</h3>
+            </div>
+            <span className="trace-model-evidence-note">Server-reported values</span>
+          </div>
+          <div className="usage-table-scroll">
+            <table className="usage-table trace-model-evidence-table">
+              <caption className="sr-only">Per-run model and token evidence</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Run / Agent</th>
+                  <th scope="col">Provider</th>
+                  <th scope="col">Requested</th>
+                  <th scope="col">Resolved</th>
+                  <th scope="col">Tokens</th>
+                  <th scope="col">Fallback</th>
+                </tr>
+              </thead>
+              <tbody>
+                {modelEvidence.map((evidence) => {
+                  const tokenParts = [
+                    evidence.totalTokens === undefined ? null : `${formatCount(evidence.totalTokens)} total`,
+                    evidence.inputTokens === undefined ? null : `${formatCount(evidence.inputTokens)} in`,
+                    evidence.cachedInputTokens === undefined ? null : `${formatCount(evidence.cachedInputTokens)} cached`,
+                    evidence.outputTokens === undefined ? null : `${formatCount(evidence.outputTokens)} out`,
+                  ].filter((part): part is string => part !== null);
+                  return (
+                    <tr key={evidence.key}>
+                      <th scope="row">
+                        <span>{evidence.runId ?? "Run"}</span>
+                        {evidence.agentId && <span className="usage-row-meta">{evidence.agentId}</span>}
+                      </th>
+                      <td>{evidence.providerId ?? "—"}</td>
+                      <td className="trace-model-value">{evidence.requestedModel ?? "—"}</td>
+                      <td className="trace-model-value">{evidence.resolvedModel ?? "—"}</td>
+                      <td>{tokenParts.length > 0 ? tokenParts.join(" · ") : "Not reported"}</td>
+                      <td>
+                        {evidence.fallback ? "Used" : evidence.retried ? "Retry only" : "No"}
+                        {evidence.failed ? " · failed" : ""}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       <div className="trace-panes">
         <section className="trace-timeline" aria-label="Timeline">

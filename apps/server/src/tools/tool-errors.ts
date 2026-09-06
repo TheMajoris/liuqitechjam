@@ -6,7 +6,6 @@ export type ToolErrorCode =
   | "TOOL_OUTPUT_INVALID"
   | "TOOL_EXECUTION_FAILED"
   | "PERMISSION_DENIED"
-  | "APPROVAL_REQUIRED"
   | "MCP_AUTHENTICATION_REQUIRED";
 
 /** Stable, safe errors crossing the ToolService/MCP boundary. */
@@ -23,24 +22,6 @@ export class ToolError extends HttpError {
   }
 }
 
-export class ToolApprovalRequiredError extends ToolError {
-  /** Backward-compatible alias; this value is always a Permit request ID. */
-  public readonly permitRequestId: string;
-
-  constructor(
-    public readonly approvalRequestId: string,
-    reason: string,
-  ) {
-    super(
-      "APPROVAL_REQUIRED",
-      403,
-      reason,
-    );
-    this.name = "ToolApprovalRequiredError";
-    this.permitRequestId = approvalRequestId;
-  }
-}
-
 export function isToolError(error: unknown): error is ToolError {
   return error instanceof ToolError;
 }
@@ -52,7 +33,6 @@ export function toolErrorStatus(code: ToolErrorCode): number {
     case "TOOL_INVALID_INPUT":
       return 422;
     case "PERMISSION_DENIED":
-    case "APPROVAL_REQUIRED":
       return 403;
     case "MCP_AUTHENTICATION_REQUIRED":
       return 401;

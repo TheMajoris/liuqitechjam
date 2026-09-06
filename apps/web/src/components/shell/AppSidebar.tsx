@@ -18,8 +18,7 @@ export type ShellView =
   | "agent"
   | "insights"
   | "traces"
-  | "access"
-  | "model-catalog";
+  | "access";
 
 interface AppSidebarProps {
   collapsed: boolean;
@@ -35,7 +34,6 @@ interface AppSidebarProps {
   onSelectInsights: () => void;
   onSelectTraces: () => void;
   onSelectAccess: () => void;
-  onSelectModelCatalog: () => void;
   onSelectSession: (sessionId: string) => void;
   onSelectWorkspace: (workspaceId: string) => void;
   onArchiveWorkspace: (workspaceId: string) => void;
@@ -73,7 +71,6 @@ export function AppSidebar({
   onSelectInsights,
   onSelectTraces,
   onSelectAccess,
-  onSelectModelCatalog,
   onSelectSession,
   onSelectWorkspace,
   onArchiveWorkspace,
@@ -186,16 +183,6 @@ export function AppSidebar({
           </button>
           <button
             type="button"
-            className={"rail-item" + (view === "model-catalog" ? " is-active" : "")}
-            aria-label="Ark model catalog"
-            aria-current={view === "model-catalog" ? "page" : undefined}
-            onClick={onSelectModelCatalog}
-          >
-            <span aria-hidden="true">⌘</span>
-            <span className="rail-tip" aria-hidden="true">Ark model catalog</span>
-          </button>
-          <button
-            type="button"
             className={"rail-item" + (view === "insights" ? " is-active" : "")}
             aria-label="Insights"
             aria-current={view === "insights" ? "page" : undefined}
@@ -285,15 +272,6 @@ export function AppSidebar({
           >
             <span aria-hidden="true">⚙</span>
             Roles &amp; skills
-          </button>
-          <button
-            type="button"
-            className={"shell-nav-item" + (view === "model-catalog" ? " selected" : "")}
-            aria-current={view === "model-catalog" ? "page" : undefined}
-            onClick={onSelectModelCatalog}
-          >
-            <span aria-hidden="true">⌘</span>
-            Ark model catalog
           </button>
         </nav>
 
@@ -544,7 +522,7 @@ export function AppSidebar({
         <span className="eyebrow">Runtime</span>
         <strong>{system?.runtime ?? "Checking…"}</strong>
         <span>
-          {system?.arkModel ?? "Ark model not configured"}
+          Per-Agent model assignments
           {system?.containerEngine ? " · " + system.containerEngine : ""}
         </span>
       </div>

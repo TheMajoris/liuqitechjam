@@ -25,7 +25,6 @@ import {
   type AgentRoleView,
   type CreateRoleInput,
   type LegacyRoleName,
-  type ProjectRoleAssignmentView,
   type UpdateRoleInput,
 } from "./role-types.js";
 
@@ -88,15 +87,20 @@ function roleView(
   attachments: readonly ProjectAgentAttachment[],
   agents: readonly Pick<Agent, "id" | "globalRoleId">[] = [],
 ): AgentRoleView {
-  const assigned = attachments.filter((attachment) => attachment.roleId === role.id);
-  const assignedAgentIds = new Set(assigned.map((attachment) => attachment.agentId));
-  for (const agent of agents) {
-    if (agent.globalRoleId === role.id) assignedAgentIds.add(agent.id);
-  }
+  // An Agent carries exactly one role, so a Project reaches a role only
+  // through the Agents attached to it.
+  const assignedAgentIds = new Set(
+    agents.filter((agent) => agent.globalRoleId === role.id).map((agent) => agent.id),
+  );
+  const assignedProjectIds = new Set(
+    attachments
+      .filter((attachment) => assignedAgentIds.has(attachment.agentId))
+      .map((attachment) => attachment.projectId),
+  );
   return {
     ...cloneRole(role),
     assignedAgentCount: assignedAgentIds.size,
-    assignedProjectCount: new Set(assigned.map((attachment) => attachment.projectId)).size,
+    assignedProjectCount: assignedProjectIds.size,
   };
 }
 
@@ -113,9 +117,9 @@ function permissionListForLegacyRole(role: LegacyRoleName): PermissionId[] {
 }
 
 /**
- * Repository-backed reusable Agent role templates. Roles are global records;
- * each Project attachment stores one roleId, so editing a role automatically
- * changes every assignment that references it.
+ * Repository-backed reusable Agent role templates. Roles are global records
+ * referenced by one Agent field, so editing a role immediately changes every
+ * Agent that carries it, in every Workspace.
  */
 export class RoleService {
   constructor(
@@ -144,15 +148,12 @@ export class RoleService {
           updatedAt: timestamp,
         });
       }
+      // Per-Workspace role overrides were removed: an Agent's role is its own.
+      // Any stored override is dropped here so it cannot keep shadowing the
+      // Agent role. The legacy `role` membership level is untouched.
       for (const attachment of database.projectAgents) {
-        const roleId = attachment.roleId;
-        if (roleId && database.roles.some((role) => role.id === roleId)) continue;
-        // New attachments may intentionally omit both fields so the Agent's
-        // global role can apply. Only promote a legacy access role when the
-        // persisted record actually carried that legacy field.
-        if (attachment.role === undefined) continue;
-        const legacyName = attachment.role;
-        attachment.roleId = LEGACY_ROLE_IDS[legacyName];
+        if (attachment.roleId === undefined) continue;
+        delete attachment.roleId;
         attachment.updatedAt ??= attachment.attachedAt;
       }
       // A deleted or stale role reference must not make a legacy Agent
@@ -218,15 +219,9 @@ export class RoleService {
       throw new RoleError("ROLE_NOT_EDITABLE", "System roles cannot be edited");
     }
     const snapshot = this.store.snapshot();
-    const assignedAgentIds = new Set(
-      snapshot.projectAgents
-        .filter((attachment) => attachment.roleId === id)
-        .map((attachment) => attachment.agentId),
-    );
-    for (const agent of snapshot.agents) {
-      if (agent.globalRoleId === id) assignedAgentIds.add(agent.id);
-    }
-    const assignedCount = assignedAgentIds.size;
+    const assignedCount = snapshot.agents.filter(
+      (agent) => agent.globalRoleId === id,
+    ).length;
     if (assignedCount > 0 && input.confirmPropagation !== true) {
       throw new RoleError(
         "ROLE_IN_USE",
@@ -264,11 +259,8 @@ export class RoleService {
       throw new RoleError("ROLE_NOT_EDITABLE", "System roles cannot be removed");
     }
     const snapshot = this.store.snapshot();
-    if (
-      snapshot.projectAgents.some((attachment) => attachment.roleId === id) ||
-      snapshot.agents.some((agent) => agent.globalRoleId === id)
-    ) {
-      throw new RoleError("ROLE_IN_USE", "Role is assigned to a Project Agent");
+    if (snapshot.agents.some((agent) => agent.globalRoleId === id)) {
+      throw new RoleError("ROLE_IN_USE", "Role is assigned to an Agent");
     }
     await this.store.mutate((database) => {
       database.roles = database.roles.filter((role) => role.id !== id);
@@ -276,70 +268,20 @@ export class RoleService {
     return { removed: true };
   }
 
-  /** Assign exactly one reusable role to one existing Project membership. */
-  async assign(
-    projectId: string,
-    agentId: string,
-    roleId: string,
-    principal: Principal = DEMO_HUMAN_PRINCIPAL,
-  ): Promise<ProjectRoleAssignmentView> {
-    await this.authorization.require({
-      principal,
-      permission: "project.members.manage",
-      projectId,
-      agentId,
-      resource: { kind: "project", id: projectId },
-    });
-    const role = this.requireRole(roleId);
-    await this.store.mutate((database) => {
-      const project = database.projects.find((item) => item.id === projectId);
-      if (!project) throw new RoleError("PROJECT_NOT_FOUND", "Project not found");
-      if (project.status !== "active") throw new RoleError("PROJECT_NOT_FOUND", "Project is archived");
-      const attachment = database.projectAgents.find(
-        (item) => item.projectId === projectId && item.agentId === agentId,
-      );
-      if (!attachment) {
-        throw new RoleError("PROJECT_AGENT_NOT_ATTACHED", "That Agent is not attached to this Project");
-      }
-      attachment.roleId = roleId;
-      // Keep legacy policy consumers safe: custom roles never inherit a
-      // previous owner role through the fallback field.
-      attachment.role = this.legacyRoleForId(roleId) ?? "editor";
-      attachment.updatedAt = now();
-      project.updatedAt = now();
-    });
-    return {
-      projectId,
-      agentId,
-      roleId,
-      role: roleView(role, this.store.snapshot().projectAgents, this.store.snapshot().agents),
-    };
-  }
-
-  getAssignedRole(projectId: string, agentId: string): AgentRole | undefined {
-    return this.getEffectiveRole(agentId, projectId);
-  }
-
   /**
-   * Resolve the role that applies to an Agent in one execution scope.
+   * Resolve the role that applies to an Agent.
    *
-   * A Project attachment is an override only when it explicitly stores a
-   * roleId. Its legacy `role` field remains the independent membership/access
-   * level and is never promoted to the global role fallback.
+   * The Agent's own role is the only source: it applies identically in every
+   * Workspace. A Project attachment's legacy `role` field remains the
+   * independent membership/access level and is never read as a role template.
    */
   getEffectiveRole(
     agentId: string,
-    projectId?: string,
+    _projectId?: string,
     agent?: Pick<Agent, "id" | "globalRoleId">,
   ): AgentRole | undefined {
     const snapshot = this.store.snapshot();
-    const attachment = projectId === undefined
-      ? undefined
-      : snapshot.projectAgents.find(
-        (item) => item.projectId === projectId && item.agentId === agentId,
-      );
-    const roleId = attachment?.roleId ??
-      agent?.globalRoleId ??
+    const roleId = agent?.globalRoleId ??
       snapshot.agents.find((item) => item.id === agentId)?.globalRoleId;
     if (roleId === undefined) return undefined;
     const role = snapshot.roles.find((item) => item.id === roleId);
@@ -429,12 +371,6 @@ export class RoleService {
       .listMetadata()
       .filter((tool) => permissions.includes(tool.requiredPermission))
       .map((tool) => tool.id);
-  }
-
-  private legacyRoleForId(roleId: string): LegacyRoleName | undefined {
-    return (Object.keys(LEGACY_ROLE_IDS) as LegacyRoleName[]).find(
-      (role) => LEGACY_ROLE_IDS[role] === roleId,
-    );
   }
 
   private newRoleId(name: string): string {

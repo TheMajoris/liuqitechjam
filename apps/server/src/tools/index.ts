@@ -47,7 +47,6 @@ export type {
   MintedMcpSession,
 } from "./mcp-session-service.js";
 export {
-  ToolApprovalRequiredError,
   ToolError,
   isToolError,
 } from "./tool-errors.js";
@@ -61,8 +60,6 @@ export {
 export type {
   BuiltInToolDependencies,
   ToolFetchService,
-  CreateCapabilityGrantInput,
-  ToolApprovalGateway,
   ToolPreviewService,
   ToolSearchService,
 } from "./tool-service.js";

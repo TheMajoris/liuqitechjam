@@ -4,7 +4,7 @@ import type {
   CreateOrchestrationInput,
   ModelProvidersResponse,
   ModelCatalogResponse,
-  ModelCatalogUpdate,
+  ModelResourcesResponse,
   ModelRef,
   ModelScope,
   Message,
@@ -17,10 +17,7 @@ import type {
   ProviderModelsResponse,
   SystemInfo,
   AgentCapabilities,
-  CapabilityGrantView,
   AgentSkills,
-  ApprovalRecord,
-  ApprovalStatus,
   SkillMetadata,
   SkillCatalogEntry,
   SkillDiscoveryResult,
@@ -107,24 +104,25 @@ export const api = {
       "/api/usage" + (suffix ? "?" + suffix : ""),
     );
   },
-  listModelProviders: (scope: ModelScope = "worker") =>
-    request<ModelProvidersResponse>("/api/model-providers?scope=" + encodeURIComponent(scope)),
-  listProviderModels: (providerId: string, scope: ModelScope = "worker") =>
+  listModelProviders: (scope: ModelScope = "worker", refresh = false) =>
+    request<ModelProvidersResponse>(
+      "/api/model-providers?scope=" + encodeURIComponent(scope) +
+        (refresh ? "&refresh=true" : ""),
+    ),
+  listProviderModels: (providerId: string, scope: ModelScope = "worker", refresh = false) =>
     request<ProviderModelsResponse>(
-      "/api/model-providers/" + encodeURIComponent(providerId) + "/models?scope=" + encodeURIComponent(scope),
+      "/api/model-providers/" + encodeURIComponent(providerId) + "/models?scope=" +
+        encodeURIComponent(scope) + (refresh ? "&refresh=true" : ""),
     ),
   /**
-   * Operator-only catalog projection/update. The current runtime exposes the
-   * provider listings above; these endpoints are intentionally kept behind a
-   * narrow client seam so the settings view can use the atomic control-plane
-   * contract when enabled.
+   * Read-only catalog projection: the provider list, its worker models, and
+   * the default the create form pre-selects. Live ModelArk endpoints are the
+   * authority, so there is no operator-editable allowlist.
    */
   getModelCatalog: () => request<ModelCatalogResponse>("/api/model-catalog"),
-  updateModelCatalog: (body: ModelCatalogUpdate) =>
-    request<ModelCatalogResponse>("/api/model-catalog", {
-      method: "PUT",
-      body: JSON.stringify(body),
-    }),
+  modelResources: (refresh = false) => request<ModelResourcesResponse>(
+    "/api/model-resources" + (refresh ? "?refresh=true" : ""),
+  ),
   listAgents: () => request<{ agents: Agent[] }>("/api/agents"),
   projectActivity: (projectId: string, limit = 200) =>
     request<{ events: import("./types").AuditEventRecord[] }>(
@@ -223,11 +221,6 @@ export const api = {
     }),
   deleteRole: (id: string) =>
     request<{ removed: true }>("/api/roles/" + encodeURIComponent(id), { method: "DELETE" }),
-  assignProjectRole: (projectId: string, agentId: string, roleId: string) =>
-    request<{ assignment: { projectId: string; agentId: string; roleId: string; role: AgentRole } }>(
-      "/api/projects/" + encodeURIComponent(projectId) + "/agents/" + encodeURIComponent(agentId) + "/role",
-      { method: "PUT", body: JSON.stringify({ roleId }) },
-    ),
   getSkill: (id: string) =>
     request<{ skill: SkillMetadata }>("/api/skills/" + encodeURIComponent(id)),
   agentSkills: (id: string, projectId?: string) =>
@@ -245,23 +238,6 @@ export const api = {
       "/api/agents/" + id + "/capabilities" +
         (projectId ? "?projectId=" + encodeURIComponent(projectId) : ""),
     ),
-  capabilityGrants: (id: string, projectId?: string) =>
-    request<{ grants: CapabilityGrantView[] }>(
-      "/api/agents/" + id + "/capabilities/grants" +
-        (projectId ? "?projectId=" + encodeURIComponent(projectId) : ""),
-    ),
-  createCapabilityGrant: (
-    id: string,
-    body: { projectId: string; toolId: string; scope: "once" | "project" },
-  ) =>
-    request<{ grant: CapabilityGrantView }>("/api/agents/" + id + "/capabilities/grants", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  revokeCapabilityGrant: (id: string) =>
-    request<{ grant: CapabilityGrantView }>("/api/capability-grants/" + id, {
-      method: "DELETE",
-    }),
   testTool: (toolId: string, body: { agentId: string; projectId?: string; input?: unknown }) =>
     request<{ result: unknown }>("/api/tools/" + encodeURIComponent(toolId) + "/test", {
       method: "POST",
@@ -334,33 +310,6 @@ export const api = {
   getPreviewLogs: (id: string, tail = 100) =>
     request<{ preview: Preview; logs: string[]; truncated: boolean }>(
       "/api/agents/" + id + "/preview/logs?tail=" + encodeURIComponent(String(tail)),
-    ),
-  /**
-   * Approvals are Permit-backed. The server answers 503 when approvals are not
-   * configured, which callers treat as "feature dormant", never as "allowed".
-   */
-  listApprovals: (query: {
-    agentId?: string;
-    projectId?: string;
-    status?: ApprovalStatus;
-    kind?: "operation_approval" | "access_request";
-  } = {}) => {
-    const search = new URLSearchParams();
-    for (const [key, value] of Object.entries(query)) {
-      if (typeof value === "string" && value.length > 0) search.set(key, value);
-    }
-    const suffix = search.size > 0 ? "?" + search.toString() : "";
-    return request<{ approvals: ApprovalRecord[] }>("/api/approvals" + suffix);
-  },
-  approveApproval: (id: string, scope: "once" | "project" = "once") =>
-    request<{ approval: ApprovalRecord }>(
-      "/api/approvals/" + encodeURIComponent(id) + "/approve",
-      { method: "POST", body: JSON.stringify({ scope }) },
-    ),
-  denyApproval: (id: string) =>
-    request<{ approval: ApprovalRecord }>(
-      "/api/approvals/" + encodeURIComponent(id) + "/deny",
-      { method: "POST" },
     ),
   createProject: (body: { name: string; description?: string }) =>
     request<{ project: Project }>("/api/projects", {

@@ -19,8 +19,7 @@ import type { AgentMetricsService } from "./usage/agent-metrics.js";
 import { recordHumanAction } from "./http/human-action-audit.js";
 import { agentIdParams, auditQuery, runIdParams } from "./http/route-schemas.js";
 import { registerMcpRoute, type McpRouteDependencies } from "./mcp-server.js";
-import { ToolApprovalRequiredError, ToolError } from "./tools/tool-errors.js";
-import { PermitApprovalError } from "./access/permit-approval-service.js";
+import { ToolError } from "./tools/tool-errors.js";
 import { isSkillError } from "./skills/skill-service.js";
 import { isRoleError } from "./roles/role-service.js";
 import { isPreviewError } from "./preview/preview-service.js";
@@ -105,7 +104,6 @@ export interface PreviewServiceContract {
 /** Narrow operator-facing seam for the persisted Ark model catalog. */
 export interface ModelCatalogServiceContract {
   get(): ArkModelCatalogRecord;
-  updateSelection?(input: unknown): Promise<ArkModelCatalogRecord>;
 }
 
 /** Cosmetic only. Every field is optional; absent means the ID-derived look. */
@@ -132,6 +130,12 @@ const updateAgentBody = createAgentBody.partial().refine(
   (value) => Object.keys(value).length > 0,
   "At least one field is required",
 );
+const modelListingQuery = ModelScopeQuerySchema.extend({
+  refresh: z.literal("true").optional(),
+});
+const modelResourceQuery = z.object({
+  refresh: z.literal("true").optional(),
+});
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
   /** Omitted by legacy clients; the Agent's most recent conversation is used. */
@@ -332,7 +336,11 @@ export async function createApp(
   app.get("/api/auth", async () => ({ required: config.authToken.length > 0 }));
 
   app.get("/api/model-providers", async (request) => {
-    const { scope } = ModelScopeQuerySchema.parse(request.query);
+    const { scope, refresh } = modelListingQuery.parse(request.query);
+    if (refresh === "true") {
+      if (modelRegistry.refresh) await modelRegistry.refresh(true);
+      else modelRegistry.invalidate?.();
+    }
     let defaultModelRef = null;
     if (scope === "worker") {
       try {
@@ -353,10 +361,28 @@ export async function createApp(
 
   app.get("/api/model-providers/:providerId/models", async (request) => {
     const { providerId } = ModelProviderParamsSchema.parse(request.params);
-    const { scope } = ModelScopeQuerySchema.parse(request.query);
+    const { scope, refresh } = modelListingQuery.parse(request.query);
+    if (refresh === "true") {
+      if (modelRegistry.refresh) await modelRegistry.refresh(true);
+      else modelRegistry.invalidate?.();
+    }
     return {
       models: await modelRegistry.listModels(providerId, scope),
     };
+  });
+
+  // Provider credentials and raw management responses stay on the server;
+  // this route exposes only the bounded, normalized resource projection.
+  app.get("/api/model-resources", async (request) => {
+    const { refresh } = modelResourceQuery.parse(request.query);
+    if (modelRegistry.modelResources === undefined) {
+      throw new ModelCatalogError(
+        "MODEL_PROVIDER_UNAVAILABLE",
+        503,
+        "ModelArk resource telemetry is not configured",
+      );
+    }
+    return modelRegistry.modelResources({ force: refresh === "true" });
   });
 
   if (modelCatalog !== undefined) {
@@ -376,7 +402,7 @@ export async function createApp(
       );
       const models = Object.values(modelsByProvider).flat();
       let defaultModelRef = catalog.defaultModelRef;
-      if (defaultModelRef === undefined) {
+      if (defaultModelRef === undefined || defaultModelRef === null) {
         try {
           const resolved = modelRegistry.resolveWorkerModel();
           defaultModelRef = {
@@ -385,7 +411,12 @@ export async function createApp(
           };
         } catch (error) {
           if (!(error instanceof ModelCatalogError)) throw error;
-          defaultModelRef = null;
+          // No server-side default is configured, so offer the first live
+          // worker model. This is what the Agent create form pre-selects.
+          const firstModel = models[0];
+          defaultModelRef = firstModel
+            ? { providerId: firstModel.providerId, modelId: firstModel.id }
+            : null;
         }
       }
       return {
@@ -400,16 +431,10 @@ export async function createApp(
       };
     };
 
+    // Read-only: the operator allowlist/default editor was removed because
+    // live ListEndpoints is the authority for which models exist. This route
+    // remains the client's provider/model listing.
     app.get("/api/model-catalog", async () => aggregateModelCatalog());
-
-    app.put("/api/model-catalog", async (request) => {
-      if (typeof modelCatalog.updateSelection !== "function") {
-        throw new HttpError(503, "Model catalog updates are not configured");
-      }
-      const catalog = await modelCatalog.updateSelection(request.body);
-      modelRegistry.invalidate?.();
-      return aggregateModelCatalog(catalog);
-    });
 
   }
 
@@ -495,9 +520,6 @@ export async function createApp(
 
   app.post("/api/agents", async (request, reply) => {
     const body = parseAgentInput(createAgentBody, request.body);
-    if (body.modelRef !== undefined) {
-      modelRegistry.validateWorkerModelRef(body.modelRef);
-    }
     const agent = await service.createAgent(body);
     return reply.code(201).send({ agent });
   });
@@ -510,9 +532,6 @@ export async function createApp(
   app.patch("/api/agents/:id", async (request) => {
     const { id } = agentIdParams.parse(request.params);
     const body = parseAgentInput(updateAgentBody, request.body);
-    if (body.modelRef !== undefined) {
-      modelRegistry.validateWorkerModelRef(body.modelRef);
-    }
     return { agent: await service.updateAgent(id, body) };
   });
 
@@ -859,11 +878,9 @@ export async function createApp(
     };
   });
 
-  // The local POC launcher keeps NODE_ENV=production so the bundled web is
-  // served exactly like the deployable build, while authorization mode still
-  // controls whether Permit is assembled. Direct local-mode starts should
-  // serve it too; Permit development/test servers retain their API-only mode.
-  if (config.nodeEnv === "production" || config.authorizationMode === "local") {
+  // The bundled web is served in production. Development/test servers remain
+  // API-only and the separate web dev server handles the frontend.
+  if (config.nodeEnv === "production") {
     const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
     await app.register(fastifyStatic, {
       root: webRoot,
@@ -886,7 +903,6 @@ export async function createApp(
     const projectError = isProjectError(error) ? error : null;
     const skillError = isSkillError(error) ? error : null;
     const roleError = isRoleError(error) ? error : null;
-    const permitApprovalError = error instanceof PermitApprovalError ? error : null;
     const validationError = error instanceof z.ZodError;
     const details = validationError
       ? error.issues
@@ -924,14 +940,10 @@ export async function createApp(
       previewError?.code ??
       projectError?.code ??
       skillError?.code ??
-      roleError?.code ??
-      permitApprovalError?.code;
+      roleError?.code;
     return reply.code(statusCode).send({
       error: responseMessage,
       ...(errorCode === undefined ? {} : { errorCode }),
-      ...(toolError instanceof ToolApprovalRequiredError
-        ? { approvalRequestId: toolError.approvalRequestId }
-        : {}),
       ...(details !== undefined ? { details } : {}),
     });
   });

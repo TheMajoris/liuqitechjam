@@ -5,7 +5,6 @@ import type {
   ResourceRef,
 } from "../access/access-types.js";
 import type { PermissionId } from "../access/permission-types.js";
-import type { PermitApprovalStatus } from "../access/access-types.js";
 
 /** Risk is metadata for policy/UI; the service remains the enforcement point. */
 export type ToolRisk =
@@ -45,26 +44,12 @@ export interface ToolMetadata {
   requiredPermission: PermissionId;
 }
 
-export type ToolAvailability = "available" | "approval_required" | "denied";
+export type ToolAvailability = "available" | "denied";
 
 export interface ToolCapabilityView {
   tool: ToolMetadata;
   availability: ToolAvailability;
   reason: string;
-  /** Permit correlation only; local legacy grants are intentionally absent. */
-  approval?: {
-    id: string;
-    status: PermitApprovalStatus;
-    safeSummary: string;
-    updatedAt: string;
-  } | null;
-  grant: {
-    id: string;
-    scope: "once" | "project";
-    usesRemaining: number | null;
-    expiresAt: string | null;
-    revokedAt: string | null;
-  } | null;
 }
 
 export interface ToolCapabilitiesView {

@@ -100,4 +100,42 @@ describe("agent-metrics-format", () => {
     const elapsedRow = rows.find((row) => row.label === "Elapsed");
     expect(elapsedRow?.value).toBe("—");
   });
+
+  it("labels live token counters as awaiting provider usage instead of zero", () => {
+    const rows = metricsRows(baseMetrics({
+      currentRun: { id: "run-live", elapsedMs: 1_000, model: "gpt" },
+      tokens: {
+        lastRun: null,
+        session: { inputTokens: null, cachedInputTokens: null, outputTokens: null },
+        sessionAvailability: "unavailable",
+        tokensPerSecondLastRun: null,
+        tokensPerSecondAvg: null,
+      },
+    }));
+    expect(rows.find((row) => row.label === "Tok/s")?.value).toBe(
+      "Live — awaiting usage last / Live — awaiting usage avg",
+    );
+    expect(rows.find((row) => row.label === "Tokens in/out")?.value).toBe(
+      "Live — awaiting usage / Live — awaiting usage",
+    );
+  });
+
+  it("labels idle counters as not reported when no runtime evidence exists", () => {
+    const rows = metricsRows(baseMetrics({
+      currentRun: null,
+      tokens: {
+        lastRun: null,
+        session: { inputTokens: null, cachedInputTokens: null, outputTokens: null },
+        sessionAvailability: "unavailable",
+        tokensPerSecondLastRun: null,
+        tokensPerSecondAvg: null,
+      },
+    }));
+    expect(rows.find((row) => row.label === "Tok/s")?.value).toBe(
+      "Not reported last / Not reported avg",
+    );
+    expect(rows.find((row) => row.label === "Tokens in/out")?.value).toBe(
+      "Not reported / Not reported",
+    );
+  });
 });
