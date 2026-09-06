@@ -30,6 +30,12 @@ import {
   type AuditTimeline,
   type AuditTimelineQuery,
 } from "./audit-timeline.js";
+import {
+  findRunHistory,
+  listRunHistory,
+  type RunHistoryEntry,
+  type RunHistoryQuery,
+} from "./run-history.js";
 
 /** Deep server-owned audit module with one write seam and one query seam. */
 export class AuditService implements AuditRecorder, AuditReader {
@@ -72,6 +78,21 @@ export class AuditService implements AuditRecorder, AuditReader {
 
   traces(filter: AuditTraceListQuery = {}): AuditTraceSummary[] {
     return listTraces(this.readNormalized(), filter);
+  }
+
+  /**
+   * Historical Runs, newest first.
+   *
+   * Runs drive the list and audit events only decorate it, so a Run whose
+   * Agent has been deleted is still returned with its snapshotted identity.
+   */
+  runs(filter: RunHistoryQuery = {}): RunHistoryEntry[] {
+    return listRunHistory(this.runtime?.readRuns() ?? [], this.readNormalized(), filter);
+  }
+
+  /** One historical Run rollup, or null when no such Run was recorded. */
+  run(runId: string): RunHistoryEntry | null {
+    return findRunHistory(this.runtime?.readRuns() ?? [], this.readNormalized(), runId);
   }
 
   /** A run belonging to an orchestration resolves to the orchestration trace. */
@@ -170,6 +191,14 @@ export {
   type AuditTimelineQuery,
   type AuditTimelineSummary,
 } from "./audit-timeline.js";
+export {
+  findRunHistory,
+  listRunHistory,
+  DEFAULT_RUN_HISTORY_LIMIT,
+  MAX_RUN_HISTORY_LIMIT,
+  type RunHistoryEntry,
+  type RunHistoryQuery,
+} from "./run-history.js";
 export {
   JsonAuditStoreAdapter,
   StorageAuditStoreAdapter,

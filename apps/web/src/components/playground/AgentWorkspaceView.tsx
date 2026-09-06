@@ -1,6 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Agent, AgentRole, SkillMetadata, SystemInfo } from "../../types";
 import { MarkdownMessage } from "../MarkdownMessage";
+import { RunListView } from "../trace/RunListView";
+import { TraceDetailView } from "../trace/TraceDetailView";
 import { PreviewSidecar } from "../PreviewSidecar";
 import { StickyComposer } from "../StickyComposer";
 import { formatReasoningEffort, formatWorkerModelRef } from "../WorkerModelFields";
@@ -77,6 +79,10 @@ export function AgentWorkspaceView({
   onDeleteAgent,
 }: AgentWorkspaceViewProps) {
   const messageEnd = useRef<HTMLDivElement>(null);
+  // Which side of the Agent this pane shows: the live conversation, or the
+  // Agent's historical Runs and their evidence.
+  const [tab, setTab] = useState<"conversation" | "runs">("conversation");
+  const [openRunId, setOpenRunId] = useState<string | null>(null);
   const openConversation = controller.conversations.find(
     (conversation) => conversation.id === controller.conversationId,
   );
@@ -87,6 +93,11 @@ export function AgentWorkspaceView({
   useEffect(() => {
     messageEnd.current?.scrollIntoView({ behavior: "smooth" });
   }, [controller.messages, controller.activeRun]);
+
+  useEffect(() => {
+    setTab("conversation");
+    setOpenRunId(null);
+  }, [agent.id]);
 
   return (
     <div className="agent-workspace">
@@ -161,93 +172,141 @@ export function AgentWorkspaceView({
             onClose={onCloseSettings}
           />
         )}
-        <section className="conversation-pane" aria-label="Conversation">
+        <section
+          className="conversation-pane"
+          aria-label={tab === "runs" ? "Runs" : "Conversation"}
+        >
           <div className="playground-topbar">
             <div>
               <span className="eyebrow">Agent workspace</span>
-              <h2>{openConversation?.title ?? "New conversation"}</h2>
+              <h2>{tab === "runs" ? "Runs" : openConversation?.title ?? "New conversation"}</h2>
             </div>
-            <div className="session-info">
-              <span className="pulse" />
-              {/* Session continuity is per conversation, never per Agent. */}
-              {openConversation?.codexThreadId ? "Session connected" : "New session"}
+            <div className="agent-pane-tabs" role="group" aria-label="Agent workspace view">
+              <button
+                type="button"
+                className={"button" + (tab === "conversation" ? " is-active" : "")}
+                aria-pressed={tab === "conversation"}
+                onClick={() => setTab("conversation")}
+              >
+                Conversation
+              </button>
+              <button
+                type="button"
+                className={"button" + (tab === "runs" ? " is-active" : "")}
+                aria-pressed={tab === "runs"}
+                onClick={() => setTab("runs")}
+              >
+                Runs
+              </button>
             </div>
+            {tab === "conversation" && (
+              <div className="session-info">
+                <span className="pulse" />
+                {/* Session continuity is per conversation, never per Agent. */}
+                {openConversation?.codexThreadId ? "Session connected" : "New session"}
+              </div>
+            )}
           </div>
 
-          <div className="messages">
-            {controller.messages.length === 0 && !controller.activeRun ? (
-              <div className="welcome">
-                <div className="welcome-orbit">
-                  <div>⌁</div>
-                </div>
-                <h3>What should {agent.name} build?</h3>
-                <p>
-                  The Agent can inspect files, write code, run commands, and continue the same
-                  Codex session across messages.
-                </p>
-                <div className="prompt-grid">
-                  {starterPrompts.map((item) => (
-                    <button key={item} onClick={() => controller.setPrompt(item)}>
-                      <span>↗</span>
-                      {item}
-                    </button>
-                  ))}
-                </div>
+          {tab === "runs" ? (
+            // The Agent-centric path: Agent → Runs → Run detail → trace/audit,
+            // rendered by the same detail view the global explorer uses.
+            openRunId === null ? (
+              <div className="agent-runs-pane">
+                <RunListView
+                  agentId={agent.id}
+                  hideAgent
+                  onOpenRun={setOpenRunId}
+                  emptyMessage={"No runs recorded for " + agent.name + " yet."}
+                />
               </div>
             ) : (
-              controller.messages.map((message) => (
-                <article className={"message message-" + message.role} key={message.id}>
-                  <div className="message-meta">
-                    <strong>{message.role === "user" ? "You" : agent.name}</strong>
-                    <span>{formatTime(message.createdAt)}</span>
+              <div className="agent-runs-pane">
+                <TraceDetailView
+                  runId={openRunId}
+                  backLabel="Back to runs"
+                  onBack={() => setOpenRunId(null)}
+                />
+              </div>
+            )
+          ) : (
+            <>
+              <div className="messages">
+                {controller.messages.length === 0 && !controller.activeRun ? (
+                  <div className="welcome">
+                    <div className="welcome-orbit">
+                      <div>⌁</div>
+                    </div>
+                    <h3>What should {agent.name} build?</h3>
+                    <p>
+                      The Agent can inspect files, write code, run commands, and continue the same
+                      Codex session across messages.
+                    </p>
+                    <div className="prompt-grid">
+                      {starterPrompts.map((item) => (
+                        <button key={item} onClick={() => controller.setPrompt(item)}>
+                          <span>↗</span>
+                          {item}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                  {message.role === "assistant" ? (
-                    <MarkdownMessage className="message-body" content={message.content} />
-                  ) : (
-                    <div className="message-body">{message.content}</div>
+                ) : (
+                  controller.messages.map((message) => (
+                    <article className={"message message-" + message.role} key={message.id}>
+                      <div className="message-meta">
+                        <strong>{message.role === "user" ? "You" : agent.name}</strong>
+                        <span>{formatTime(message.createdAt)}</span>
+                      </div>
+                      {message.role === "assistant" ? (
+                        <MarkdownMessage className="message-body" content={message.content} />
+                      ) : (
+                        <div className="message-body">{message.content}</div>
+                      )}
+                    </article>
+                  ))
+                )}
+                {controller.activeRun &&
+                  (controller.activeRun.status === "queued" ||
+                    controller.activeRun.status === "running") && (
+                    <article className="message message-assistant thinking">
+                      <div className="message-meta">
+                        <strong>{agent.name}</strong>
+                        <span>working in the Agent workspace</span>
+                      </div>
+                      <div className="thinking-row">
+                        <Spinner />
+                        Codex is reading, editing, or running commands…
+                      </div>
+                    </article>
                   )}
-                </article>
-              ))
-            )}
-            {controller.activeRun &&
-              (controller.activeRun.status === "queued" ||
-                controller.activeRun.status === "running") && (
-                <article className="message message-assistant thinking">
-                  <div className="message-meta">
-                    <strong>{agent.name}</strong>
-                    <span>working in the Agent workspace</span>
-                  </div>
-                  <div className="thinking-row">
-                    <Spinner />
-                    Codex is reading, editing, or running commands…
-                  </div>
-                </article>
-              )}
-            {controller.activeRun?.status === "failed" && (
-              <article className="run-error">
-                <strong>Run failed</strong>
-                <span>{controller.activeRun.error}</span>
-              </article>
-            )}
-            <div ref={messageEnd} />
-          </div>
+                {controller.activeRun?.status === "failed" && (
+                  <article className="run-error">
+                    <strong>Run failed</strong>
+                    <span>{controller.activeRun.error}</span>
+                  </article>
+                )}
+                <div ref={messageEnd} />
+              </div>
 
-          <StickyComposer
-            value={controller.prompt}
-            placeholder={
-              agent.status === "stopped"
-                ? "Start this Agent to continue…"
-                : "Describe what you want the Agent to do…"
-            }
-            hint={
-              "Enter to send · Shift + Enter for newline · " +
-              (system?.codexSandboxMode ?? "checking sandbox")
-            }
-            disabled={agent.status === "stopped" || agent.status === "busy"}
-            sending={controller.runInFlight}
-            onChange={controller.setPrompt}
-            onSubmit={controller.sendMessage}
-          />
+              <StickyComposer
+                value={controller.prompt}
+                placeholder={
+                  agent.status === "stopped"
+                    ? "Start this Agent to continue…"
+                    : "Describe what you want the Agent to do…"
+                }
+                hint={
+                  "Enter to send · Shift + Enter for newline · " +
+                  (system?.codexSandboxMode ?? "checking sandbox")
+                }
+                disabled={agent.status === "stopped" || agent.status === "busy"}
+                sending={controller.runInFlight}
+                onChange={controller.setPrompt}
+                onSubmit={controller.sendMessage}
+              />
+            </>
+          )}
         </section>
 
         <PreviewSidecar

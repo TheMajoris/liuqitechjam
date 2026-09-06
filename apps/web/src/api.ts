@@ -25,12 +25,20 @@ import type {
   AgentMetrics,
   AuditTrace,
   AuditTraceSummary,
+  RunHistoryEntry,
+  RunStatus,
 } from "./types";
 
 export interface AuditTraceQuery {
   agentId?: string;
   projectId?: string;
   status?: "success" | "failure";
+  limit?: number;
+}
+
+export interface RunHistoryQuery {
+  agentId?: string;
+  status?: RunStatus;
   limit?: number;
 }
 
@@ -146,6 +154,23 @@ export const api = {
   },
   trace: (traceId: string) =>
     request<{ trace: AuditTrace }>("/api/audit/traces/" + encodeURIComponent(traceId)),
+  /**
+   * Historical Runs. The same projection backs the Agent's Runs tab and the
+   * global observability explorer, including Runs of deleted Agents.
+   */
+  runHistory: (query: RunHistoryQuery = {}) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (typeof value === "string" && value.length > 0) params.set(key, value);
+      else if (typeof value === "number") params.set(key, String(value));
+    }
+    const suffix = params.toString();
+    return request<{ runs: RunHistoryEntry[] }>(
+      "/api/audit/runs" + (suffix ? "?" + suffix : ""),
+    );
+  },
+  runSummary: (runId: string) =>
+    request<{ run: RunHistoryEntry }>("/api/audit/runs/" + encodeURIComponent(runId)),
   runTrace: (runId: string) =>
     request<{ trace: AuditTrace }>("/api/runs/" + encodeURIComponent(runId) + "/trace"),
   /**

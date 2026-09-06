@@ -7346,3 +7346,73 @@ button.assignment-archive:hover:not(:disabled) {
 @media (max-width: 900px) {
   .trace-panes { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* --- Run-centric observability -------------------------------------- */
+
+.run-list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.run-table td strong {
+  display: block;
+}
+
+.trace-deleted-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--line);
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.trace-agent-label {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 8px;
+}
+
+.trace-run-title {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+
+.agent-pane-tabs {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* The Runs tab reuses the observability tables inside the Agent pane, so it
+   scrolls on its own rather than growing the conversation column. */
+.agent-runs-pane {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 20px 24px;
+}
+
+.agent-runs-pane .insights-view {
+  padding: 0;
+}
+
+.trace-audit {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+  padding: 14px 16px;
+}
+
+.trace-audit-head h3 {
+  margin: 3px 0 10px;
+  font-size: 14px;
+}

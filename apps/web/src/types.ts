@@ -369,6 +369,11 @@ export interface Message {
 export interface AgentRun {
   id: string;
   agentId: string;
+  /** The Agent's name when the Run started; absent on legacy Runs. */
+  agentName?: string;
+  /** Set once the owning Agent is deleted; the Run itself is retained. */
+  agentDeletedAt?: string;
+  traceId?: string;
   status: RunStatus;
   prompt: string;
   output: string | null;
@@ -378,7 +383,34 @@ export interface AgentRun {
     cachedInputTokens?: number;
     outputTokens?: number;
   } | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
   createdAt: string;
+}
+
+/**
+ * A historical Run rollup from the observability API.
+ *
+ * It carries its own Agent identity, so a Run remains fully readable after
+ * its Agent has been deleted.
+ */
+export interface RunHistoryEntry {
+  runId: string;
+  agentId: string;
+  agentName: string;
+  agentDeleted: boolean;
+  agentDeletedAt: string | null;
+  status: RunStatus;
+  title: string;
+  traceId: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  durationMs: number | null;
+  eventCount: number;
+  errorCount: number;
+  failed: boolean;
+  error: string | null;
 }
 
 export type OrchestrationStatus =
@@ -725,6 +757,8 @@ export interface AuditEventRecord {
   runId?: string;
   orchestrationId?: string;
   permission?: string;
+  /** Who or what performed the action; the attribution half of the record. */
+  principal?: { kind: string; id: string };
   resource?: { kind: string; id: string };
   /** Redacted, allow-listed evidence for the event (e.g. sandbox_command, workspace_file_change). */
   metadata?: Record<string, string | number | boolean | null>;

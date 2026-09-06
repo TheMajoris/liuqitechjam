@@ -15,6 +15,7 @@ import {
   auditExportQuery,
   auditTraceIdParams,
   auditTraceListQuery,
+  runHistoryQuery,
   runIdParams,
 } from "./route-schemas.js";
 import { RoleError, type RoleService } from "../roles/role-service.js";
@@ -470,6 +471,23 @@ export function registerAgentMiddlewareRoutes(
     const trace = audit.trace(traceId);
     if (!trace) throw new HttpError(404, "Trace not found");
     return { trace };
+  });
+
+  // The Run-centric observability list. One projection serves both the
+  // Agent's own Runs tab (agentId filter) and the global explorer.
+  app.get("/api/audit/runs", async (request) => {
+    const audit = requireAuditService(mcp);
+    if (!audit.runs) throw new HttpError(503, "Run history is not configured");
+    return { runs: audit.runs(runHistoryQuery.parse(request.query)) };
+  });
+
+  app.get("/api/audit/runs/:id", async (request) => {
+    const audit = requireAuditService(mcp);
+    if (!audit.run) throw new HttpError(503, "Run history is not configured");
+    const { id } = runIdParams.parse(request.params);
+    const run = audit.run(id);
+    if (!run) throw new HttpError(404, "Run not found");
+    return { run };
   });
 
   app.get("/api/runs/:id/trace", async (request) => {
