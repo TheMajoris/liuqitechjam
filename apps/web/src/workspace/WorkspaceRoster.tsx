@@ -1,11 +1,10 @@
-import type { AgentRole } from "../types";
 import { AgentAvatar } from "../components/orchestration/AgentAvatar";
 
 export interface WorkspaceRosterMember {
   agentId: string;
   name: string;
-  /** Role applied inside this Workspace, already resolved from the membership. */
-  roleId: string;
+  /** The Agent's own role, which applies in every Workspace. */
+  roleName: string | null;
   statusLabel: string;
   /** False when the membership points at an Agent that no longer exists. */
   available: boolean;
@@ -19,11 +18,9 @@ export interface WorkspaceRosterAddable {
 interface WorkspaceRosterProps {
   projectName: string;
   members: WorkspaceRosterMember[];
-  roles: AgentRole[];
   addableAgents: WorkspaceRosterAddable[];
   busy: boolean;
   error: string | null;
-  onAssignRole: (agentId: string, roleId: string) => void;
   onRemove: (agentId: string) => void;
   onAdd: (agentId: string) => void;
   onSelectAgent: (agentId: string) => void;
@@ -32,18 +29,16 @@ interface WorkspaceRosterProps {
 /**
  * Who is in the room and what each of them is allowed to do.
  *
- * The same Workspace override the Assignments tab edits, surfaced where the
- * work happens. Every control here calls a route the backend already exposes;
- * the panel never decides access on its own, it only shows and forwards.
+ * Membership is editable here; the role is not. An Agent carries one role,
+ * edited on the Agent itself, so this panel reports it and links to the Agent
+ * rather than offering a per-Workspace override.
  */
 export function WorkspaceRoster({
   projectName,
   members,
-  roles,
   addableAgents,
   busy,
   error,
-  onAssignRole,
   onRemove,
   onAdd,
   onSelectAgent,
@@ -53,7 +48,7 @@ export function WorkspaceRoster({
       <header className="ws-roster-head">
         <div>
           <span className="ws-roster-kicker">In this room</span>
-          <h3>Workspace roles</h3>
+          <h3>Workspace members</h3>
         </div>
         <span className="ws-roster-count">
           {members.length} Agent{members.length === 1 ? "" : "s"}
@@ -83,21 +78,10 @@ export function WorkspaceRoster({
                   <span className="ws-roster-status">{member.statusLabel}</span>
                 </span>
               </button>
-              <label className="ws-roster-role">
-                <span className="ws-roster-role-label">Workspace role</span>
-                <select
-                  aria-label={`Workspace role for ${member.name} in ${projectName}`}
-                  value={member.roleId}
-                  disabled={busy || roles.length === 0 || !member.available}
-                  onChange={(event) => onAssignRole(member.agentId, event.target.value)}
-                >
-                  {roles.map((role) => (
-                    <option value={role.id} key={role.id}>
-                      {role.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <span className="ws-roster-role">
+                <span className="ws-roster-role-label">Agent role</span>
+                <span className="ws-roster-role-value">{member.roleName ?? "No role"}</span>
+              </span>
               <button
                 type="button"
                 className="button button-ghost ws-roster-remove"

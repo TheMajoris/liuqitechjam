@@ -1,8 +1,7 @@
-import type { Agent, AgentRole, AgentSkills, SkillMetadata } from "../../types";
+import type { AgentRole, AgentSkills, SkillMetadata } from "../../types";
 import type { AgentForm } from "../../playground/agent-form";
 import type { ModelCatalogController } from "../../playground/use-model-catalog";
 import { AgentSkillsPanel } from "../AgentSkillsPanel";
-import { CapabilitiesPanel } from "../CapabilitiesPanel";
 import { WorkerModelFields } from "../WorkerModelFields";
 
 type ModelFields = Pick<
@@ -12,6 +11,9 @@ type ModelFields = Pick<
   | "loadingByProvider"
   | "selectedFormModels"
   | "providersLoading"
+  | "catalogRefreshing"
+  | "providerErrors"
+  | "providerStale"
   | "selectedFormModelsLoading"
   | "error"
   | "changeProvider"
@@ -21,6 +23,7 @@ type ModelFields = Pick<
   | "removeFallbackModel"
   | "changeFallbackProvider"
   | "changeFallbackModel"
+  | "refresh"
   | "retry"
 >;
 
@@ -33,7 +36,6 @@ interface AgentFormFieldsProps {
   assignedSkills: AgentSkills | null;
   disabled: boolean;
   skillsDisabled?: boolean;
-  agent?: Agent;
   isNew?: boolean;
   roles?: AgentRole[];
   onChange: (changes: Partial<AgentForm>) => void;
@@ -49,7 +51,6 @@ export function AgentFormFields({
   assignedSkills,
   disabled,
   skillsDisabled = disabled,
-  agent,
   isNew = false,
   roles = [],
   onChange,
@@ -77,23 +78,24 @@ export function AgentFormFields({
             maxLength={500}
           />
         </label>
-        {isNew && (
-          <label className="agent-form-role-field">
-            <span>Agent role <em>Optional</em></span>
-            <select
-              aria-label="Global Agent role"
-              value={form.globalRoleId ?? ""}
-              onChange={(event) => onChange({ globalRoleId: event.target.value || null })}
-              disabled={disabled}
-            >
-              <option value="">No role</option>
-              {roles.map((role) => (
-                <option value={role.id} key={role.id}>{role.name}</option>
-              ))}
-            </select>
-            <small>Supplies the Agent&apos;s skills and tools when no Workspace override applies.</small>
-          </label>
-        )}
+        {/* The role is editable for the life of the Agent, not only at
+            creation: it is the Agent's own source of truth for skills and
+            tools, so changing it must not require recreating the Agent. */}
+        <label className="agent-form-role-field">
+          <span>Agent role <em>Optional</em></span>
+          <select
+            aria-label="Global Agent role"
+            value={form.globalRoleId ?? ""}
+            onChange={(event) => onChange({ globalRoleId: event.target.value || null })}
+            disabled={disabled}
+          >
+            <option value="">No role</option>
+            {roles.map((role) => (
+              <option value={role.id} key={role.id}>{role.name}</option>
+            ))}
+          </select>
+          <small>Supplies this Agent&apos;s skills and permissions in every Workspace.</small>
+        </label>
       </div>
       <label>
         {isNew ? "Instructions" : "System instructions"}
@@ -112,7 +114,10 @@ export function AgentFormFields({
         value={form.modelRef}
         fallbackValues={form.fallbackModelRefs}
         loadingProviders={modelCatalog.providersLoading}
+        catalogRefreshing={modelCatalog.catalogRefreshing}
         loadingModels={modelCatalog.selectedFormModelsLoading}
+        providerErrors={modelCatalog.providerErrors}
+        providerStale={modelCatalog.providerStale}
         catalogError={modelCatalog.error}
         disabled={disabled}
         isNew={isNew}
@@ -123,6 +128,7 @@ export function AgentFormFields({
         onRemoveFallback={modelCatalog.removeFallbackModel}
         onFallbackProviderChange={modelCatalog.changeFallbackProvider}
         onFallbackModelChange={modelCatalog.changeFallbackModel}
+        onRefresh={modelCatalog.refresh}
         onRetry={modelCatalog.retry}
       />
       <AgentSkillsPanel
@@ -134,7 +140,6 @@ export function AgentFormFields({
         disabled={skillsDisabled}
         onChange={(skillIds) => onChange({ skillIds })}
       />
-      {agent && <CapabilitiesPanel agent={agent} />}
     </>
   );
 }

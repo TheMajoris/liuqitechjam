@@ -1,4 +1,4 @@
-import type { Agent, AgentSkills, SkillMetadata } from "../../types";
+import type { Agent, AgentRole, AgentSkills, SkillMetadata } from "../../types";
 import type { AgentForm } from "../../playground/agent-form";
 import type { ModelCatalogController } from "../../playground/use-model-catalog";
 import { AgentFormFields } from "./AgentFormFields";
@@ -15,6 +15,7 @@ interface AgentSettingsPanelProps {
   disabled: boolean;
   skillsDisabled: boolean;
   invalidModel: boolean;
+  roles?: AgentRole[];
   onChange: (changes: Partial<AgentForm>) => void;
   onSubmit: (event: React.FormEvent) => void;
   onClose: () => void;
@@ -31,6 +32,7 @@ export function AgentSettingsPanel({
   disabled,
   skillsDisabled,
   invalidModel,
+  roles = [],
   onChange,
   onSubmit,
   onClose,
@@ -54,7 +56,7 @@ export function AgentSettingsPanel({
           assignedSkills={assignedSkills}
           disabled={disabled}
           skillsDisabled={skillsDisabled}
-          agent={agent}
+          roles={roles}
           onChange={onChange}
         />
       </div>

@@ -27,6 +27,22 @@ export interface TimelineBar {
   widthPct: number;
 }
 
+export interface TraceModelEvidence {
+  key: string;
+  runId: string | null;
+  agentId: string | null;
+  providerId: string | null;
+  requestedModel: string | null;
+  resolvedModel: string | null;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  fallback: boolean;
+  retried: boolean;
+  failed: boolean;
+}
+
 const MIN_BAR_WIDTH_PCT = 0.5;
 
 function metadataString(
@@ -55,12 +71,94 @@ export function spanLabel(event: AuditEventRecord): string {
     return metadataString(event, "toolId") ?? event.summary;
   }
   if (type.startsWith("run_")) {
-    return "run " + (metadataString(event, "model") ?? "");
+    const model =
+      metadataString(event, "resolvedModel") ??
+      metadataString(event, "modelUsed") ??
+      metadataString(event, "model") ??
+      "";
+    const provider = metadataString(event, "providerId");
+    return "run " + model + (provider ? ` · ${provider}` : "");
   }
   if (type.startsWith("orchestration_")) {
     return event.summary;
   }
   return type;
+}
+
+function firstMetadataString(
+  events: readonly AuditEventRecord[],
+  keys: readonly string[],
+): string | null {
+  for (const event of events) {
+    for (const key of keys) {
+      const value = metadataString(event, key);
+      if (value) return value;
+    }
+  }
+  return null;
+}
+
+function latestMetadataNumber(
+  events: readonly AuditEventRecord[],
+  keys: readonly string[],
+): number | undefined {
+  let result: number | undefined;
+  for (const event of events) {
+    for (const key of keys) {
+      const value = metadataNumber(event, key);
+      if (value !== undefined) result = value;
+    }
+  }
+  return result;
+}
+
+/**
+ * Compact per-run model evidence for Trace. Values are copied from the
+ * server-redacted audit metadata; this function never derives a quota or
+ * invents a total from partial counters.
+ */
+export function modelEvidenceFromSpans(spans: readonly FlatSpan[]): TraceModelEvidence[] {
+  const grouped = new Map<string, AuditEventRecord[]>();
+  for (const span of spans) {
+    const events = span.events.filter(
+      (event) =>
+        event.type.startsWith("run_") ||
+        event.type === "model_fallback" ||
+        event.type === "run_retried" ||
+        event.category === "model_call" ||
+        metadataString(event, "model") !== undefined ||
+        metadataString(event, "modelUsed") !== undefined,
+    );
+    if (events.length === 0) continue;
+    const key = span.runId ?? span.spanId;
+    const current = grouped.get(key) ?? [];
+    current.push(...events);
+    grouped.set(key, current);
+  }
+
+  return Array.from(grouped, ([key, events]) => {
+    const fallback = events.some(
+      (event) =>
+        event.type === "model_fallback" ||
+        event.metadata?.fallbackUsed === true ||
+        typeof event.metadata?.fallbackIndex === "number",
+    );
+    return {
+      key,
+      runId: events.find((event) => event.runId)?.runId ?? null,
+      agentId: events.find((event) => event.agentId)?.agentId ?? null,
+      providerId: firstMetadataString(events, ["providerId"]),
+      requestedModel: firstMetadataString(events, ["requestedModel", "model"]),
+      resolvedModel: firstMetadataString(events, ["resolvedModel", "modelUsed"]),
+      inputTokens: latestMetadataNumber(events, ["inputTokens"]),
+      cachedInputTokens: latestMetadataNumber(events, ["cachedInputTokens"]),
+      outputTokens: latestMetadataNumber(events, ["outputTokens"]),
+      totalTokens: latestMetadataNumber(events, ["totalTokens"]),
+      fallback,
+      retried: events.some((event) => event.type === "run_retried"),
+      failed: events.some((event) => event.status === "failure"),
+    };
+  });
 }
 
 function spanEnd(events: AuditEventRecord[], fallback: string): string {

@@ -1,6 +1,5 @@
 import type {
   ToolAvailability,
-  ToolCapabilityView,
   ToolMetadata,
 } from "../tools/tool-types.js";
 
@@ -51,7 +50,6 @@ export interface SkillToolCapability {
   toolId: string;
   availability: ToolAvailability;
   reason: string;
-  grant: ToolCapabilityView["grant"];
 }
 
 export interface AssignedSkillView extends SkillMetadata {

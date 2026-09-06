@@ -12,5 +12,6 @@ fi
 mkdir -p data workspaces codex-home
 
 echo "Next:"
-echo "  1. Fill ARK_API_KEY and ARK_MODEL in .env"
-echo "  2. Run: docker compose up --build"
+echo "  1. Fill ARK_API_KEY, SUPERVISOR_MODEL, BYTEPLUS_ACCESS_KEY, and BYTEPLUS_SECRET_KEY in .env"
+echo "  2. Run: npm run poc (provisions local PostgreSQL and starts the full POC)"
+echo "     For Compose against an existing database, set DATABASE_URL, run the documented migration/provision steps, then: docker compose up --build"

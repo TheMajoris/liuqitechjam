@@ -6,8 +6,8 @@ export function formatElapsed(ms: number): string {
   return formatDuration(ms);
 }
 
-export function formatTokensPerSecond(value: number | null): string {
-  if (value === null || !Number.isFinite(value)) return "—";
+export function formatTokensPerSecond(value: number | null, missingLabel = "—"): string {
+  if (value === null || !Number.isFinite(value)) return missingLabel;
   return value.toFixed(1) + " tok/s";
 }
 
@@ -35,8 +35,8 @@ export function formatPct(value: number): string {
   return (value < 10 ? value.toFixed(1) : Math.round(value)) + "%";
 }
 
-function formatTokenCount(value: number | undefined): string {
-  return typeof value === "number" ? String(value) : "0";
+function formatTokenCount(value: number | null | undefined, missingLabel: string): string {
+  return typeof value === "number" ? String(value) : missingLabel;
 }
 
 export interface AgentMetricsRow {
@@ -65,17 +65,28 @@ export function metricsRows(metrics: AgentMetrics | null): AgentMetricsRow[] {
   rows.push({
     label: "Tok/s",
     value:
-      formatTokensPerSecond(metrics.tokens.tokensPerSecondLastRun) +
+      formatTokensPerSecond(
+        metrics.tokens.tokensPerSecondLastRun,
+        metrics.currentRun ? "Live — awaiting usage" : "Not reported",
+      ) +
       " last / " +
-      formatTokensPerSecond(metrics.tokens.tokensPerSecondAvg) +
+      formatTokensPerSecond(
+        metrics.tokens.tokensPerSecondAvg,
+        metrics.currentRun ? "Live — awaiting usage" : "Not reported",
+      ) +
       " avg",
   });
+  const missingTokenLabel = metrics.tokens.sessionAvailability === "unavailable"
+    ? metrics.currentRun
+      ? "Live — awaiting usage"
+      : "Not reported"
+    : "—";
   rows.push({
     label: "Tokens in/out",
     value:
-      formatTokenCount(metrics.tokens.session.inputTokens) +
+      formatTokenCount(metrics.tokens.session.inputTokens, missingTokenLabel) +
       " / " +
-      formatTokenCount(metrics.tokens.session.outputTokens),
+      formatTokenCount(metrics.tokens.session.outputTokens, missingTokenLabel),
   });
   rows.push({
     label: "Tools",

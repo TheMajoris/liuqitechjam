@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { AgentMetrics } from "../types";
 
-/** Fast enough to feel live in the hover card; slow enough to stay cheap. */
-const POLL_MS = 3000;
+/** Keep active/selected Agents visibly live without turning the room into a busy loop. */
+const POLL_MS = 1000;
 
 /**
  * Per-Agent runtime telemetry for the workspace.

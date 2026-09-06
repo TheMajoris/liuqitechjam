@@ -120,8 +120,7 @@ function safeReason(reason: string): string {
 
 function capabilityStateLabel(capability: SkillToolCapability): string {
   if (capability.availability === "available") return "available";
-  if (capability.availability === "approval_required") return "approval required";
-  return "unavailable";
+  return "denied";
 }
 
 function metadataFor(definition: SkillDefinition): AssignedSkillView {
@@ -524,7 +523,6 @@ export class SkillService {
             reason: toolMetadata.has(toolId)
               ? "Capability state is unavailable"
               : "Required capability is not registered",
-            grant: null,
           } satisfies SkillToolCapability;
         }
         return {
@@ -532,7 +530,6 @@ export class SkillService {
           toolId,
           availability: capability.availability,
           reason: safeReason(capability.reason),
-          grant: capability.grant,
         } satisfies SkillToolCapability;
       });
       return skill;
@@ -584,7 +581,7 @@ export class SkillService {
         }
       }
       lines.push(
-        "Skill assignment does not grant tools. Use only capabilities marked available; approval-required capabilities need a human approval and an explicit retry.",
+        "Skill assignment does not grant tools. Use only capabilities marked available; denied capabilities must be enabled by the assigned role.",
       );
       lines.push("</platform_skills>");
     }

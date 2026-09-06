@@ -160,45 +160,6 @@ export const ArkModelCatalogSchema = z
 
 export type ArkModelCatalogInput = z.input<typeof ArkModelCatalogSchema>;
 
-const catalogSelectionSchema = z
-  .object({
-    modelIds: z.array(modelIdSchema).min(1).max(256),
-    defaultModelRef: ModelRefSchema,
-    revision: revisionSchema.optional(),
-  })
-  .strict()
-  .superRefine((value, context) => {
-    if (new Set(value.modelIds).size !== value.modelIds.length) {
-      context.addIssue({
-        code: "custom",
-        path: ["modelIds"],
-        message: "modelIds must not contain duplicate IDs",
-      });
-    }
-    if (value.defaultModelRef.providerId !== ARK_WORKER_PROVIDER_ID) {
-      context.addIssue({
-        code: "custom",
-        path: ["defaultModelRef", "providerId"],
-        message: "The Ark catalog default must use the Ark provider",
-      });
-    }
-    if (value.defaultModelRef.reasoning?.effort !== undefined) {
-      context.addIssue({
-        code: "custom",
-        path: ["defaultModelRef", "reasoning"],
-        message: "The Ark catalog default cannot include reasoning controls",
-      });
-    }
-    if (!value.modelIds.includes(value.defaultModelRef.modelId)) {
-      context.addIssue({
-        code: "custom",
-        path: ["defaultModelRef", "modelId"],
-        message: "The default model must be enabled in modelIds",
-      });
-    }
-  });
-
-export type ArkModelCatalogSelection = z.output<typeof catalogSelectionSchema>;
 
 export function cloneArkModelCatalog(
   catalog: ArkModelCatalogRecord,
@@ -228,16 +189,6 @@ export function parseArkModelCatalog(value: unknown): ArkModelCatalogRecord {
     "MODEL_CATALOG_INVALID",
     422,
     "The Ark model catalog is invalid",
-  );
-}
-
-function parseCatalogSelection(value: unknown): ArkModelCatalogSelection {
-  const parsed = catalogSelectionSchema.safeParse(value);
-  if (parsed.success) return parsed.data;
-  throw new ModelCatalogError(
-    "MODEL_CATALOG_INVALID",
-    422,
-    "The Ark model catalog selection is invalid",
   );
 }
 
@@ -347,40 +298,4 @@ export class ArkModelCatalogService implements ModelCatalogReader {
     });
   }
 
-  /** Atomically update enabled IDs/default with optimistic revisioning. */
-  async updateSelection(value: unknown): Promise<ArkModelCatalogRecord> {
-    const selection = parseCatalogSelection(value);
-    return this.store.mutate((database) => {
-      const current = database.modelCatalog;
-      if (current === null || current === undefined) {
-        throw new ModelCatalogError(
-          "MODEL_CATALOG_UNAVAILABLE",
-          503,
-          "The Ark model catalog is not initialized",
-        );
-      }
-      const currentRevision = current.revision ?? 0;
-      if (
-        selection.revision !== undefined &&
-        selection.revision !== currentRevision
-      ) {
-        throw new ModelCatalogError(
-          "MODEL_CATALOG_CONFLICT",
-          409,
-          "The Ark model catalog changed; reload it and try again",
-        );
-      }
-      const next: ArkModelCatalogRecord = {
-        ...cloneArkModelCatalog(current),
-        models: [...selection.modelIds],
-        defaultModelRef: {
-          providerId: selection.defaultModelRef.providerId,
-          modelId: selection.defaultModelRef.modelId,
-        },
-        revision: currentRevision + 1,
-      };
-      database.modelCatalog = next;
-      return cloneArkModelCatalog(next);
-    });
-  }
 }

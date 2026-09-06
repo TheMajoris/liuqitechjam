@@ -42,7 +42,6 @@ export interface CorrelationIds {
   projectId?: string | undefined;
   runId?: string | undefined;
   orchestrationId?: string | undefined;
-  permitRequestId?: string | undefined;
 }
 
 /** Convert trusted server correlation IDs into bounded span attributes. */
@@ -57,9 +56,6 @@ export function correlationAttributes(
   if (ids.runId !== undefined) attributes["run.id"] = ids.runId;
   if (ids.orchestrationId !== undefined) {
     attributes["orchestration.id"] = ids.orchestrationId;
-  }
-  if (ids.permitRequestId !== undefined) {
-    attributes["permit.request_id"] = ids.permitRequestId;
   }
   return attributes;
 }

@@ -1,10 +1,18 @@
-import type { AgentAppearance, ApprovalRecord } from "../types";
+import type { AgentAppearance } from "../types";
 import { AgentAvatar } from "../components/orchestration/AgentAvatar";
 import { AgentSkinEditor } from "./AgentSkinEditor";
 import { MarkdownMessage } from "../components/MarkdownMessage";
 import { UsageSparkline } from "../components/insights/UsageSparkline";
 import { formatBytes, formatPct, metricsRows } from "./agent-metrics-format";
 import { useMetricsHistory } from "./use-metrics-history";
+import {
+  modelResourceObservedLabel,
+  modelResourceRateLimitLabel,
+  modelResourceStatusLabel,
+  modelResourceStatusTone,
+  modelResourceUsageRows,
+  modelResourceUsageScopeLabel,
+} from "../model-resource-format";
 import {
   WORKSPACE_ACTIVITY,
   type WorkspaceAgentViewModel,
@@ -23,14 +31,10 @@ interface AgentInspectorProps {
   agent: WorkspaceAgentViewModel | null;
   projectName: string | null;
   pending: AgentLifecycleAction | null;
-  approvals: ApprovalRecord[];
-  approvalBusyId: string | null;
   onLifecycle: (agentId: string, action: AgentLifecycleAction) => void;
   onOpenConversation: () => void;
   onOpenAgent: (agentId: string) => void;
   onClose?: () => void;
-  onApprove: (id: string, scope: "once" | "project") => void;
-  onDeny: (id: string) => void;
   /** Cosmetic-only character edit; absent hides the appearance controls. */
   onAppearanceChange?: (agentId: string, appearance: AgentAppearance) => Promise<void>;
 }
@@ -39,21 +43,18 @@ interface AgentInspectorProps {
  * The Agent control surface.
  *
  * Every button here calls an API the backend already exposes — Agent
- * start/stop, and the Permit approve/deny routes. Nothing in the room can act
- * on its own: the canvas only decides which Agent this panel is describing.
+ * lifecycle controls and cosmetic appearance updates. Nothing in the room
+ * can act on its own: the canvas only decides which Agent this panel is
+ * describing.
  */
 export function AgentInspector({
   agent,
   projectName,
   pending,
-  approvals,
-  approvalBusyId,
   onLifecycle,
   onOpenConversation,
   onOpenAgent,
   onClose = () => undefined,
-  onApprove,
-  onDeny,
   onAppearanceChange,
 }: AgentInspectorProps) {
   const history = useMetricsHistory(agent?.agentId ?? null, agent?.metrics ?? null);
@@ -73,9 +74,6 @@ export function AgentInspector({
   const descriptor = WORKSPACE_ACTIVITY[agent.activity];
   const stopped = agent.lifecycle === "stopped";
   const action: AgentLifecycleAction = stopped ? "start" : "stop";
-  const agentApprovals = approvals.filter(
-    (approval) => approval.agentId === agent.agentId && approval.status === "pending",
-  );
 
   return (
     <aside className="ws-inspector" aria-label={`Inspector for ${agent.name}`}>
@@ -129,6 +127,51 @@ export function AgentInspector({
         </section>
       )}
 
+      <section className="ws-inspector-block ws-inspector-resource" aria-label="Model resource">
+        <h4>Model resource</h4>
+        {agent.modelResource ? (
+          <>
+            <div
+              className="ws-inspector-resource-status"
+              data-tone={modelResourceStatusTone(agent.modelResource.endpointStatus)}
+              data-freshness={agent.modelResource.freshness}
+            >
+              <strong>{modelResourceStatusLabel(agent.modelResource.endpointStatus)}</strong>
+              <span>{modelResourceObservedLabel(agent.modelResource)}</span>
+            </div>
+            <dl className="ws-inspector-facts">
+              {modelResourceUsageRows(agent.modelResource).map((row) => (
+                <div key={row.label}>
+                  <dt>{row.label}</dt>
+                  <dd>{row.value}</dd>
+                </div>
+              ))}
+            </dl>
+            {agent.modelResource.usage && (
+              <p className="ws-inspector-muted">
+                {modelResourceUsageScopeLabel(agent.modelResource)}; counters are not a quota.
+              </p>
+            )}
+            {modelResourceRateLimitLabel(agent.modelResource) && (
+              <p className="ws-inspector-muted">
+                {modelResourceRateLimitLabel(agent.modelResource)}
+              </p>
+            )}
+            {agent.modelResource.freshness !== "fresh" && (
+              <p className="ws-inspector-muted">
+                This is the last observed resource state; a newer check is not available yet.
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="ws-inspector-muted">
+            {agent.modelAssigned
+              ? "Live resource data is unavailable for this Agent's persisted model assignment."
+              : "Select and save a worker model before this Agent can run."}
+          </p>
+        )}
+      </section>
+
       {agent.metrics && (
         <section className="ws-inspector-block">
           <h4>Metrics</h4>
@@ -176,7 +219,7 @@ export function AgentInspector({
         </div>
         <div>
           <dt>Model</dt>
-          <dd>{agent.modelLabel ?? "Runtime default"}</dd>
+          <dd>{agent.modelLabel ?? "Model assignment required"}</dd>
         </div>
         {projectName && (
           <div>
@@ -189,46 +232,6 @@ export function AgentInspector({
           <dd className="ws-inspector-mono">{agent.currentRunId ?? "None"}</dd>
         </div>
       </dl>
-
-      {agentApprovals.length > 0 && (
-        <section className="ws-inspector-block ws-inspector-approvals">
-          <h4>Waiting at the boundary</h4>
-          {agentApprovals.map((approval) => (
-            <div className="ws-approval" key={approval.id}>
-              <p className="ws-approval-summary">{approval.safeSummary}</p>
-              <p className="ws-approval-tool">
-                Tool <code>{approval.toolId}</code>
-              </p>
-              <div className="ws-approval-actions">
-                <button
-                  type="button"
-                  className="button button-primary"
-                  disabled={approvalBusyId !== null}
-                  onClick={() => onApprove(approval.id, "once")}
-                >
-                  Approve once
-                </button>
-                <button
-                  type="button"
-                  className="button button-ghost"
-                  disabled={approvalBusyId !== null}
-                  onClick={() => onApprove(approval.id, "project")}
-                >
-                  Approve for Workspace
-                </button>
-                <button
-                  type="button"
-                  className="button button-danger"
-                  disabled={approvalBusyId !== null}
-                  onClick={() => onDeny(approval.id)}
-                >
-                  Deny
-                </button>
-              </div>
-            </div>
-          ))}
-        </section>
-      )}
 
       <footer className="ws-inspector-actions">
         <button

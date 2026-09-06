@@ -22,7 +22,10 @@ export interface ModelCatalogController {
   providers: ModelProviderDescriptor[];
   modelsByProvider: Record<string, ModelDescriptor[]>;
   providersLoading: boolean;
+  catalogRefreshing: boolean;
   loadingByProvider: Record<string, boolean>;
+  providerErrors: Record<string, string | null>;
+  providerStale: Record<string, boolean>;
   error: string | null;
   defaultWorkerModel: ModelRef | null;
   selectedFormModels: ModelDescriptor[];
@@ -39,7 +42,7 @@ export interface ModelCatalogController {
   removeFallbackModel: (index: number) => void;
   changeFallbackProvider: (index: number, providerId: string) => void;
   changeFallbackModel: (index: number, modelId: string) => void;
-  retry: () => void;
+  retry: () => Promise<void>;
   clearError: () => void;
 }
 
@@ -67,11 +70,17 @@ function isInvalidModelRef(
   modelRef: ModelRef | undefined,
   modelsByProvider: Record<string, ModelDescriptor[]>,
   loadingByProvider: Record<string, boolean>,
-  error: string | null,
+  providerIds: ReadonlySet<string>,
 ): boolean {
   if (!modelRef?.providerId || !modelRef.modelId) return true;
-  if (loadingByProvider[modelRef.providerId] || error) return true;
-  const model = (modelsByProvider[modelRef.providerId] ?? []).find(
+  if (loadingByProvider[modelRef.providerId]) return true;
+  if (!providerIds.has(modelRef.providerId)) return true;
+  const models = modelsByProvider[modelRef.providerId];
+  // A provider with no successful list yet is not a valid selection. This is
+  // intentionally strict for both Create and Edit: the server must persist an
+  // explicit, currently catalogued modelRef rather than a hidden legacy default.
+  if (!models) return true;
+  const model = models.find(
     (candidate) => candidate.id === modelRef.modelId && candidate.providerId === modelRef.providerId,
   );
   if (!model) return true;
@@ -96,32 +105,44 @@ export function useModelCatalog(
   const [defaultModelRef, setDefaultModelRef] = useState<ModelRef | null>(null);
   const [modelsByProvider, setModelsByProvider] = useState<Record<string, ModelDescriptor[]>>({});
   const [providersLoading, setProvidersLoading] = useState(false);
+  const [catalogRefreshing, setCatalogRefreshing] = useState(false);
   const [loadingByProvider, setLoadingByProvider] = useState<Record<string, boolean>>({});
+  const [providerErrors, setProviderErrors] = useState<Record<string, string | null>>({});
+  const [providerStale, setProviderStale] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const [catalogEpoch, setCatalogEpoch] = useState(0);
   const requests = useRef(new Map<string, number>());
   const requestSequence = useRef(0);
+  const catalogRequestSequence = useRef(0);
   const loadedProviders = useRef(new Set<string>());
 
   const refresh = useCallback(async () => {
+    const requestId = ++catalogRequestSequence.current;
     setProvidersLoading(true);
+    setCatalogRefreshing(true);
     setError(null);
-    // Provider metadata and per-provider model lists share the same server
-    // catalog. Invalidate both caches so an operator update is visible in
-    // already-open Agent forms as well as in newly mounted forms.
-    setModelsByProvider({});
-    setLoadingByProvider({});
+    // Keep cached lists visible while the control plane is checked again. This
+    // prevents a refresh from turning an otherwise valid assignment into a
+    // transient "unavailable" state.
+    setProviderStale((current) =>
+      Object.fromEntries(Object.keys(current).map((providerId) => [providerId, true])),
+    );
     loadedProviders.current.clear();
     requests.current.clear();
+    setLoadingByProvider({});
     setCatalogEpoch((current) => current + 1);
     try {
-      const response = await api.listModelProviders();
+      const response = await api.listModelProviders("worker", true);
+      if (catalogRequestSequence.current !== requestId) return;
       setProviders(response.providers);
       setDefaultModelRef(response.defaultModelRef);
     } catch (reason) {
-      setError(errorMessage(reason));
+      if (catalogRequestSequence.current === requestId) setError(errorMessage(reason));
     } finally {
-      setProvidersLoading(false);
+      if (catalogRequestSequence.current === requestId) {
+        setProvidersLoading(false);
+        setCatalogRefreshing(false);
+      }
     }
   }, []);
 
@@ -135,9 +156,10 @@ export function useModelCatalog(
     const requestId = ++requestSequence.current;
     requests.current.set(normalizedProviderId, requestId);
     setLoadingByProvider((current) => ({ ...current, [normalizedProviderId]: true }));
+    setProviderErrors((current) => ({ ...current, [normalizedProviderId]: null }));
     setError(null);
     try {
-      const response = await api.listProviderModels(normalizedProviderId);
+      const response = await api.listProviderModels(normalizedProviderId, "worker", force);
       const models = response.models.filter(
         (model) =>
           model.providerId === normalizedProviderId &&
@@ -147,11 +169,15 @@ export function useModelCatalog(
       // not let that stale response repopulate the Agent form cache.
       if (requests.current.get(normalizedProviderId) === requestId) {
         setModelsByProvider((current) => ({ ...current, [normalizedProviderId]: models }));
+        setProviderStale((current) => ({ ...current, [normalizedProviderId]: false }));
+        setProviderErrors((current) => ({ ...current, [normalizedProviderId]: null }));
         loadedProviders.current.add(normalizedProviderId);
       }
     } catch (reason) {
       if (requests.current.get(normalizedProviderId) === requestId) {
-        setError(errorMessage(reason));
+        const message = errorMessage(reason);
+        setProviderErrors((current) => ({ ...current, [normalizedProviderId]: message }));
+        setProviderStale((current) => ({ ...current, [normalizedProviderId]: true }));
       }
     } finally {
       if (requests.current.get(normalizedProviderId) === requestId) {
@@ -162,6 +188,10 @@ export function useModelCatalog(
   }, []);
 
   const supportedProviders = useMemo(() => workerProviders(providers), [providers]);
+  const supportedProviderIds = useMemo(
+    () => new Set(supportedProviders.map((provider) => provider.id)),
+    [supportedProviders],
+  );
   const defaultWorkerModel = useMemo<ModelRef | null>(() => {
     const providerIds = new Set(supportedProviders.map((provider) => provider.id));
     return defaultModelRef && providerIds.has(defaultModelRef.providerId) ? defaultModelRef : null;
@@ -188,10 +218,10 @@ export function useModelCatalog(
     form.modelRef,
     modelsByProvider,
     loadingByProvider,
-    error,
+    supportedProviderIds,
   );
   const fallbackModelSelectionInvalid = fallbackModelRefs.some((modelRef) =>
-    isInvalidModelRef(modelRef, modelsByProvider, loadingByProvider, error),
+    isInvalidModelRef(modelRef, modelsByProvider, loadingByProvider, supportedProviderIds),
   );
   const modelSelectionInvalid = primaryModelSelectionInvalid || fallbackModelSelectionInvalid;
 
@@ -321,14 +351,14 @@ export function useModelCatalog(
     [setForm],
   );
 
-  const retry = useCallback(() => {
-    void refresh();
+  const retry = useCallback(async () => {
+    await refresh();
     const providerIds = new Set<string>();
     if (form.modelRef?.providerId) providerIds.add(form.modelRef.providerId);
     for (const modelRef of form.fallbackModelRefs ?? []) {
       if (modelRef.providerId) providerIds.add(modelRef.providerId);
     }
-    for (const providerId of providerIds) void loadProviderModels(providerId, true);
+    await Promise.all(Array.from(providerIds, (providerId) => loadProviderModels(providerId, true)));
   }, [form.fallbackModelRefs, form.modelRef?.providerId, loadProviderModels, refresh]);
 
   const clearError = useCallback(() => setError(null), []);
@@ -337,7 +367,10 @@ export function useModelCatalog(
     providers,
     modelsByProvider,
     providersLoading,
+    catalogRefreshing,
     loadingByProvider,
+    providerErrors,
+    providerStale,
     error,
     defaultWorkerModel,
     selectedFormModels,

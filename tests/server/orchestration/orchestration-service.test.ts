@@ -53,6 +53,7 @@ function makeAgent(id: string, status: Agent["status"] = "ready"): Agent {
     name: `Agent ${id.slice(0, 4)}`,
     description: "Test Agent",
     instructions: "Do the assigned work.",
+    modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
     status,
     workspacePath: `/tmp/launchpad-${id}`,
     codexThreadId: null,
@@ -202,8 +203,7 @@ async function makePlatformAgentService(
     AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
     CODEX_HOME: path.join(root, "codex"),
     ARK_API_KEY: "test-key",
-    ARK_MODEL: "ep-test",
-    WORKER_CURATED_MODELS: "",
+    WORKER_CURATED_MODELS: "ep-test",
   });
   const store = new JsonStore(path.join(root, "data", "db.json"));
   const service = new AgentService(
@@ -547,8 +547,14 @@ describe("OrchestrationService", () => {
   it("audits one span tree rooted at the orchestration for every child Run", async () => {
     const audit = new RecordingAudit();
     const { service: agentService, store } = await makePlatformAgentService(audit);
-    const planner = await agentService.createAgent({ name: "Planner" });
-    const builder = await agentService.createAgent({ name: "Builder" });
+    const planner = await agentService.createAgent({
+      name: "Planner",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
+    const builder = await agentService.createAgent({
+      name: "Builder",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
     const service = new OrchestrationService({ store, agentService, audit });
     const created = await service.createSession({
       name: "Traced pipeline",

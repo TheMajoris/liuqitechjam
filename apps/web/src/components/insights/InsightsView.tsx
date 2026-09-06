@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../../api";
 import type { UsageReport } from "../../types";
 import { Spinner } from "../playground/Spinner";
 import { UsageSparkline } from "./UsageSparkline";
 import { UsageBreakdownTable, type UsageBreakdownRow } from "./UsageBreakdownTable";
+import { ModelResourceTable } from "./ModelResourceTable";
+import type { Agent } from "../../types";
+import type { ModelResourcesController } from "../../playground/use-model-resources";
 import {
   availabilityLabel,
   formatCount,
@@ -20,6 +23,8 @@ const RANGES = [
 ] as const;
 
 interface InsightsViewProps {
+  agents: Agent[];
+  modelResources: ModelResourcesController;
   onSelectAgent: (agentId: string) => void;
   onSelectSession: (sessionId: string) => void;
 }
@@ -28,22 +33,27 @@ function windowStart(days: number): string {
   return new Date(Date.now() - days * 86_400_000).toISOString();
 }
 
-export function InsightsView({ onSelectAgent }: InsightsViewProps) {
+export function InsightsView({ agents, modelResources, onSelectAgent }: InsightsViewProps) {
   const [days, setDays] = useState<number>(30);
   const [report, setReport] = useState<UsageReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const requestSequence = useRef(0);
 
   const load = useCallback(async (windowDays: number, showSpinner: boolean) => {
+    const requestId = ++requestSequence.current;
     if (showSpinner) setLoading(true);
     try {
       const result = await api.usage({ since: windowStart(windowDays), days: windowDays });
+      if (requestSequence.current !== requestId) return;
       setReport(result.usage);
       setError(null);
     } catch (cause) {
-      setError(cause instanceof ApiError ? cause.message : "Could not load usage");
+      if (requestSequence.current === requestId) {
+        setError(cause instanceof ApiError ? cause.message : "Could not load usage");
+      }
     } finally {
-      setLoading(false);
+      if (requestSequence.current === requestId) setLoading(false);
     }
   }, []);
 
@@ -91,12 +101,22 @@ export function InsightsView({ onSelectAgent }: InsightsViewProps) {
 
   if (report === null) {
     return (
-      <div className="insights-view insights-centered">
-        <h2>Usage is unavailable</h2>
-        <p>{error ?? "No usage has been recorded yet."}</p>
-        <button className="button button-primary" onClick={() => void load(days, true)}>
-          Retry
-        </button>
+      <div className="insights-view">
+        <header className="insights-head">
+          <div>
+            <span className="eyebrow">Observability</span>
+            <h2>Insights</h2>
+            <p>Current model resources remain available even when historical usage is unavailable.</p>
+          </div>
+        </header>
+        <ModelResourceTable agents={agents} modelResources={modelResources} />
+        <section className="insights-centered insights-error-panel">
+          <h2>Usage is unavailable</h2>
+          <p>{error ?? "No usage has been recorded yet."}</p>
+          <button className="button button-primary" onClick={() => void load(days, true)}>
+            Retry
+          </button>
+        </section>
       </div>
     );
   }
@@ -170,8 +190,7 @@ export function InsightsView({ onSelectAgent }: InsightsViewProps) {
           <span className="usage-tile-label">Tool calls</span>
           <strong>{formatCount(totals.activity.toolCalls)}</strong>
           <span className="usage-tile-foot">
-            {totals.activity.toolFailures} failed ·{" "}
-            {totals.activity.approvalsRequired} needed approval
+            {totals.activity.toolFailures} failed
           </span>
         </article>
 
@@ -197,6 +216,8 @@ export function InsightsView({ onSelectAgent }: InsightsViewProps) {
         <UsageSparkline points={report.daily} metric="totalTokens" label="Tokens" />
         <UsageSparkline points={report.daily} metric="toolCalls" label="Tool calls" />
       </div>
+
+      <ModelResourceTable agents={agents} modelResources={modelResources} />
 
       <UsageBreakdownTable
         caption="By Agent"

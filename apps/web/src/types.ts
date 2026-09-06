@@ -68,6 +68,133 @@ export interface ModelDescriptor {
   capabilities: ModelCapabilities;
 }
 
+/**
+ * Live endpoint state is intentionally separate from the model catalogue.
+ * A descriptor says that a model can be selected; this says what the control
+ * plane last observed about the deployed endpoint.
+ */
+export type ModelEndpointStatus =
+  | "running"
+  | "stopped"
+  | "degraded"
+  | "unavailable"
+  | "unknown";
+
+export type ModelResourceFreshness = "fresh" | "stale" | "unavailable";
+
+/** Provider-reported counters from GetInferenceUsage. Missing means unknown. */
+export interface ModelUsageSnapshot {
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  requests?: number;
+  /** ModelArk GetInferenceUsage data count; it is not a token count. */
+  dataCount?: number;
+  /** Usage is provider-wide unless the backend explicitly scopes it to a model. */
+  scope?: "provider" | "model";
+  availability?: "available" | "partial" | "unavailable";
+  queryInterval?: "Hour" | "Day";
+  windowStart?: string | null;
+  windowEnd?: string | null;
+}
+
+/** A quota is optional because many ModelArk responses expose usage only. */
+export interface ModelQuotaSnapshot {
+  usedTokens: number;
+  totalTokens: number;
+  remainingTokens: number;
+}
+
+/** Server-normalized endpoint projection from ListEndpoints. */
+export interface ModelEndpointResource {
+  providerId: string;
+  modelId: string;
+  name: string | null;
+  foundationModel: { name: string; version: string } | null;
+  status: "running" | "not_running" | "unknown";
+  statusReason: string | null;
+  rateLimit: { rpm: number | null; tpm: number | null };
+  /** Usage for this endpoint only; null means ModelArk reported no row. */
+  usage: {
+    inputTokens: number | null;
+    cachedInputTokens: number | null;
+    outputTokens: number | null;
+    totalTokens: number | null;
+    requests: number | null;
+  } | null;
+  /** Account free-token quota for the matching foundation model, when known. */
+  quota?: ModelQuotaSnapshot | null;
+  observedAt: string;
+}
+
+export interface ModelInferenceUsageRow {
+  modelEndpoint: string | null;
+  inputTokens: number | null;
+  cachedInputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  requests: number | null;
+}
+
+export interface ModelInferenceUsage {
+  availability: "available" | "partial" | "unavailable";
+  dataCount: number | null;
+  inputTokens: number | null;
+  cachedInputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  requests: number | null;
+  queryInterval: "Hour" | "Day";
+  startTime: string;
+  endTime: string;
+  observedAt: string | null;
+  rows: ModelInferenceUsageRow[];
+}
+
+/** Current server-owned provider projection, when returned by the API. */
+export interface ModelResourceView {
+  providerId: string;
+  availability: "available" | "partial" | "unavailable";
+  stale: boolean;
+  fetchedAt: string | null;
+  revision: number;
+  endpoints: ModelEndpointResource[];
+  inferenceUsage: ModelInferenceUsage | null;
+  error: string | null;
+}
+
+/** Normalized live state used by the workspace and Insights surfaces. */
+export interface ModelResourceSnapshot {
+  providerId: string;
+  modelId: string;
+  name?: string | null;
+  foundationModel?: { name: string; version: string } | null;
+  statusReason?: string | null;
+  rateLimit?: { rpm: number | null; tpm: number | null };
+  endpointStatus: ModelEndpointStatus;
+  usage: ModelUsageSnapshot | null;
+  quota?: ModelQuotaSnapshot | null;
+  freshness: ModelResourceFreshness;
+  observedAt: string | null;
+}
+
+export interface ModelResourcesResponse {
+  /** Flat response accepted for a future provider-neutral resource route. */
+  resources?: ModelResourceSnapshot[];
+  generatedAt?: string;
+  /** Current server ModelArk projection may be returned directly or wrapped. */
+  resource?: ModelResourceView;
+  providerId?: string;
+  availability?: "available" | "partial" | "unavailable";
+  stale?: boolean;
+  fetchedAt?: string | null;
+  revision?: number;
+  endpoints?: ModelEndpointResource[];
+  inferenceUsage?: ModelInferenceUsage | null;
+  error?: string | null;
+}
+
 export interface ModelProviderCapabilities {
   worker: boolean;
   supervisor: boolean;
@@ -103,11 +230,6 @@ export interface ModelCatalogResponse extends ModelProvidersResponse {
 }
 
 /** Atomic operator catalog update. Credentials are never part of this shape. */
-export interface ModelCatalogUpdate {
-  defaultModelRef: ModelRef | null;
-  modelIds: string[];
-  revision?: number;
-}
 
 export type AgentAccessory = "none" | "glasses" | "headset" | "cap";
 
@@ -141,37 +263,8 @@ export interface Agent {
   updatedAt: string;
 }
 
-export type ApprovalKind = "operation_approval" | "access_request";
-
-export type ApprovalStatus =
-  | "pending"
-  | "approved"
-  | "denied"
-  | "expired"
-  | "consumed"
-  | "revoked"
-  | "unknown";
-
-/**
- * Safe projection of one Permit approval. Permit owns the decision; this
- * record only mirrors it so the UI can show and act on what already exists.
- */
-export interface ApprovalRecord {
-  id: string;
-  kind: ApprovalKind;
-  scope: "once" | "project";
-  agentId: string;
-  projectId: string | null;
-  runId: string | null;
-  toolId: string;
-  safeSummary: string;
-  status: ApprovalStatus;
-  createdAt: string;
-  updatedAt: string;
-}
-
 export type ToolRisk = "read" | "write" | "network" | "external_write" | "high_cost";
-export type ToolAvailability = "available" | "approval_required" | "denied";
+export type ToolAvailability = "available" | "denied";
 
 export interface ToolMetadata {
   id: string;
@@ -181,19 +274,10 @@ export interface ToolMetadata {
   requiredPermission: string;
 }
 
-export interface CapabilityGrantView {
-  id: string;
-  scope: "once" | "project";
-  usesRemaining: number | null;
-  expiresAt: string | null;
-  revokedAt: string | null;
-}
-
 export interface ToolCapabilityView {
   tool: ToolMetadata;
   availability: ToolAvailability;
   reason: string;
-  grant: CapabilityGrantView | null;
 }
 
 export interface AgentCapabilities {
@@ -247,7 +331,6 @@ export interface SkillToolCapability {
   toolId: string;
   availability: ToolAvailability;
   reason: string;
-  grant: CapabilityGrantView | null;
 }
 
 export interface AssignedSkill extends SkillMetadata {
@@ -493,7 +576,6 @@ export interface ContinueOrchestrationInput {
 export interface SystemInfo {
   arkConfigured: boolean;
   arkBaseUrl: string;
-  arkModel: string | null;
   codexAvailable: boolean;
   codexSandboxMode: string;
   runtimeProvider: "local-process" | "container";
@@ -609,7 +691,10 @@ export interface AgentMetrics {
       cachedInputTokens?: number;
       outputTokens?: number;
     } | null;
-    session: { inputTokens: number; cachedInputTokens: number; outputTokens: number };
+    /** Null means the runtime has not reported that counter yet. */
+    session: { inputTokens: number | null; cachedInputTokens: number | null; outputTokens: number | null };
+    /** Provider truth for the session counters; never infer unknown as zero. */
+    sessionAvailability?: "available" | "partial" | "unavailable";
     tokensPerSecondLastRun: number | null;
     tokensPerSecondAvg: number | null;
   };

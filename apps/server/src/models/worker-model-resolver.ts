@@ -346,43 +346,51 @@ export class WorkerModelResolver implements WorkerModelResolverContract {
 }
 
 export interface ArkWorkerModelResolverOptions {
-  defaultModelId?: string;
   allowedModelIds?: readonly string[];
   /** Live server-owned Ark metadata; it never contains credentials. */
   catalog?: ModelCatalogReader;
+  /** Authoritative live endpoint catalog (Running endpoints only). */
+  liveCatalog?: WorkerModelCatalog;
+  /** Refreshes the shared live endpoint snapshot before validation. */
+  liveRefresh?: (force?: boolean) => Promise<void>;
+  /** Revision of the shared live endpoint snapshot. */
+  liveRevision?: () => string | number | undefined;
 }
 
 /** Worker resolver configured for the current Ark/ModelArk runtime. */
 export class ArkWorkerModelResolver extends WorkerModelResolver {
   private readonly liveCatalog: ModelCatalogReader | undefined;
+  private readonly liveEndpointCatalog: WorkerModelCatalog | undefined;
+  private readonly liveRefresh: ((force?: boolean) => Promise<void>) | undefined;
+  private readonly liveRevision: (() => string | number | undefined) | undefined;
 
   constructor(options: ArkWorkerModelResolverOptions = {}) {
-    const defaultModelId = options.defaultModelId?.trim() ?? "";
-    const defaultModelRef = defaultModelId
-      ? { providerId: DEFAULT_WORKER_PROVIDER_ID, modelId: defaultModelId }
-      : undefined;
     super({
-      ...(defaultModelRef === undefined ? {} : { defaultModelRef }),
-      ...(options.catalog === undefined
-        ? {}
-        : {
-            defaultModelRefReader: () => {
-              const liveDefault = options.catalog?.get().defaultModelRef;
-              return liveDefault === undefined ? defaultModelRef : liveDefault;
-            },
-          }),
-      catalog: createAllowlistedCatalog(
-        defaultModelRef,
+      catalog: options.liveCatalog ?? createAllowlistedCatalog(
+        undefined,
         options.allowedModelIds,
         options.catalog,
       ),
     });
     this.liveCatalog = options.catalog;
+    this.liveEndpointCatalog = options.liveCatalog;
+    this.liveRefresh = options.liveRefresh;
+    this.liveRevision = options.liveRevision;
+  }
+
+  async refresh(force = false): Promise<void> {
+    await this.liveRefresh?.(force);
   }
 
   /** Revision used to reject a catalog update racing with Run acceptance. */
   getCatalogRevision(): number | undefined {
-    return this.liveCatalog?.get().revision;
+    const revision = this.liveRevision?.() ??
+      (this.liveEndpointCatalog === undefined
+        ? this.liveCatalog?.get().revision
+        : undefined);
+    return typeof revision === "number" && Number.isFinite(revision)
+      ? revision
+      : undefined;
   }
 }
 
@@ -395,12 +403,17 @@ export function createDefaultWorkerModelResolver(
 }
 
 export function createWorkerModelResolver(
-  config: Pick<AppConfig, "arkModel" | "workerCuratedModels">,
-  options: Pick<ArkWorkerModelResolverOptions, "catalog"> = {},
+  config: Pick<AppConfig, "workerCuratedModels">,
+  options: Pick<
+    ArkWorkerModelResolverOptions,
+    "catalog" | "liveCatalog" | "liveRefresh" | "liveRevision"
+  > = {},
 ): ArkWorkerModelResolver {
   return new ArkWorkerModelResolver({
-    defaultModelId: config.arkModel,
     allowedModelIds: config.workerCuratedModels,
     ...(options.catalog === undefined ? {} : { catalog: options.catalog }),
+    ...(options.liveCatalog === undefined ? {} : { liveCatalog: options.liveCatalog }),
+    ...(options.liveRefresh === undefined ? {} : { liveRefresh: options.liveRefresh }),
+    ...(options.liveRevision === undefined ? {} : { liveRevision: options.liveRevision }),
   });
 }

@@ -5,6 +5,7 @@ import type {
   AgentAppearance,
   AgentRole,
   ModelProviderDescriptor,
+  ModelResourceSnapshot,
   Project,
   ProjectMembership,
   ProjectRole,
@@ -23,18 +24,10 @@ import type { UseOrchestrationResult } from "./use-orchestration";
 import { buildWorkspaceViewModel } from "../../workspace/workspace-adapter";
 import { WorkspaceView } from "../../workspace/WorkspaceView";
 import { useProjectPreview } from "../../workspace/use-project-preview";
-import { useWorkspaceApprovals } from "../../workspace/use-workspace-approvals";
 import { useWorkspaceActivity } from "../../workspace/use-workspace-activity";
 import { useAgentMetrics } from "../../workspace/use-agent-metrics";
 import type { AgentLifecycleAction } from "../../workspace/AgentInspector";
 import { WorkspaceRoster, type WorkspaceRosterMember } from "../../workspace/WorkspaceRoster";
-
-/** Memberships written before named roles existed still resolve to a preset. */
-const LEGACY_ROLE_IDS: Record<ProjectRole, string> = {
-  owner: "legacy-owner",
-  editor: "legacy-editor",
-  viewer: "legacy-viewer",
-};
 
 const AGENT_STATUS_LABEL: Record<string, string> = {
   busy: "Working",
@@ -58,6 +51,7 @@ interface OrchestrationWorkspaceProps {
   onComposerOpenChange: (open: boolean) => void;
   onComposerModeChange: (mode: "workspace" | "conversation") => void;
   modelProviders?: ModelProviderDescriptor[];
+  modelResources?: Map<string, ModelResourceSnapshot>;
   /** Lets the room's controls refresh the shell's Agent list after start/stop. */
   onAgentsChanged: () => Promise<void>;
   /** Jump to an Agent's own workspace from the room. */
@@ -74,6 +68,7 @@ export function OrchestrationWorkspace({
   onComposerOpenChange,
   onComposerModeChange,
   modelProviders = [],
+  modelResources,
   onAgentsChanged,
   onOpenAgent,
 }: OrchestrationWorkspaceProps) {
@@ -101,7 +96,6 @@ export function OrchestrationWorkspace({
 
   const sessionActive = detail ? isOrchestrationActive(detail.session.status) : false;
   const previewController = useProjectPreview(projectId);
-  const approvalsController = useWorkspaceApprovals(projectId, sessionActive);
   const activity = useWorkspaceActivity(projectId, sessionActive);
 
   const roomAgentIds = useMemo(() => {
@@ -115,7 +109,7 @@ export function OrchestrationWorkspace({
   // WorkspaceStage; rather than lift it across a prop, polling stays live
   // while something is actually running or an Agent is selected for the
   // inspector, and falls back to a single fetch once the room goes quiet.
-  const metricsActive = anyAgentBusy || selectedAgentId !== null;
+  const metricsActive = sessionActive || anyAgentBusy || selectedAgentId !== null;
   const metrics = useAgentMetrics({
     projectId,
     agentIds: roomAgentIds,
@@ -152,19 +146,19 @@ export function OrchestrationWorkspace({
         detail,
         project: workspaceProject,
         preview: previewController.preview,
-        approvals: approvalsController.approvals,
         selectedAgentId,
         modelProviders,
+        modelResources,
         activity,
         metrics,
       }),
     [
       activity,
       agents,
-      approvalsController.approvals,
       detail,
       metrics,
       modelProviders,
+      modelResources,
       previewController.preview,
       workspaceProject,
       selectedAgentId,
@@ -248,16 +242,18 @@ export function OrchestrationWorkspace({
       : workspaceProject.agentIds.map((agentId) => ({ agentId, role: "editor" as ProjectRole }));
     return source.map((membership) => {
       const agent = agents.find((item) => item.id === membership.agentId);
-      const roleId = membership.roleId ?? LEGACY_ROLE_IDS[membership.role];
+      const role = agent?.globalRoleId
+        ? roles.find((item) => item.id === agent.globalRoleId)
+        : undefined;
       return {
         agentId: membership.agentId,
         name: agent?.name ?? "Unavailable Agent",
-        roleId,
+        roleName: role?.name ?? null,
         statusLabel: agent ? AGENT_STATUS_LABEL[agent.status] ?? "Available" : "No longer exists",
         available: Boolean(agent),
       };
     });
-  }, [agents, workspaceProject]);
+  }, [agents, roles, workspaceProject]);
 
   const addableAgents = useMemo(() => {
     const assigned = new Set(rosterMembers.map((member) => member.agentId));
@@ -350,11 +346,9 @@ export function OrchestrationWorkspace({
     <WorkspaceRoster
       projectName={workspaceProject.name}
       members={rosterMembers}
-      roles={roles}
       addableAgents={addableAgents}
       busy={rosterBusy}
       error={rosterError}
-      onAssignRole={(agentId, roleId) => void runRosterTask(() => api.assignProjectRole(workspaceProject.id, agentId, roleId))}
       onRemove={(agentId) => void runRosterTask(() => api.detachProjectAgent(workspaceProject.id, agentId))}
       onAdd={(agentId) => void runRosterTask(() => api.attachProjectAgent(workspaceProject.id, agentId))}
       onSelectAgent={setSelectedAgentId}
@@ -365,9 +359,6 @@ export function OrchestrationWorkspace({
     <WorkspaceView
       viewModel={viewModel}
       replies={replyCount}
-      approvals={approvalsController.approvals ?? []}
-      approvalBusyId={approvalsController.busyId}
-      approvalError={approvalsController.error}
       previewBusy={previewController.busy}
       lifecyclePending={lifecyclePending}
       onSelectAgent={setSelectedAgentId}
@@ -379,8 +370,6 @@ export function OrchestrationWorkspace({
       onOpenPreview={openPreview}
       onOpenAgent={onOpenAgent}
       onPreviewAction={(action) => void previewController.act(action)}
-      onApprove={(id, scope) => void approvalsController.approve(id, scope)}
-      onDeny={(id) => void approvalsController.deny(id)}
       onAppearanceChange={handleAppearanceChange}
       roster={roster}
     />

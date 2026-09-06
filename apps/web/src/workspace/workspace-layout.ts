@@ -37,7 +37,6 @@ export interface WorldRect {
 export type StationName =
   | "desk"
   | "board"
-  | "door"
   | "library"
   | "server"
   | "lounge";
@@ -83,8 +82,6 @@ export const ZONES = {
 
 export const BOARD = { x: 180, y: 76, width: 84, height: 28 } as const;
 export const PREVIEW_SCREEN = { x: 340, y: 150, width: 56, height: 30 } as const;
-/** The permission boundary sits in the open strip below the lower zones. */
-export const DOOR = { x: 355, y: 230, width: 30, height: 30 } as const;
 export const DESK = { width: 40, height: 20 } as const;
 
 /** Bookshelves the library zone draws, and that a researching Agent faces. */
@@ -97,7 +94,6 @@ export const SHELVES: readonly WorldRect[] = [
 /** Where an Agent stands when it leaves its desk. Each sits inside its zone. */
 export const STATION_POINTS: Record<Exclude<StationName, "desk">, WorldPoint> = {
   board: { x: BOARD.x, y: 98 },
-  door: { x: DOOR.x, y: 232 },
   library: { x: 55, y: 96 },
   server: { x: 340, y: 190 },
   lounge: { x: 228, y: 188 },

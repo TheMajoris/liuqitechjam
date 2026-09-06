@@ -34,7 +34,6 @@ const PRESENTATION: Record<WorkspaceAgentActivity, AgentPresentation> = {
   reviewing: { face: "focus", typing: false, breathing: "calm", indicator: "page", dimmed: false, celebrate: false, slumped: false },
   testing: { face: "focus", typing: true, breathing: "calm", indicator: "flask", dimmed: false, celebrate: false, slumped: false },
   waiting: { face: "neutral", typing: false, breathing: "slow", indicator: "pause", dimmed: false, celebrate: false, slumped: false },
-  blocked: { face: "worried", typing: false, breathing: "slow", indicator: "alert", dimmed: false, celebrate: false, slumped: false },
   success: { face: "happy", typing: false, breathing: "calm", indicator: "check", dimmed: false, celebrate: true, slumped: false },
   failed: { face: "worried", typing: false, breathing: "slow", indicator: "alert", dimmed: false, celebrate: false, slumped: true },
   stopped: { face: "sleep", typing: false, breathing: "none", indicator: "sleep", dimmed: true, celebrate: false, slumped: false },

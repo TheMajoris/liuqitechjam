@@ -43,7 +43,11 @@ export interface ProjectAgentAttachment {
   attachedAt: string;
   /** Missing legacy roles are normalized to `editor`. */
   role?: ProjectRole;
-  /** Reusable role-template reference. Missing on legacy attachments. */
+  /**
+   * Legacy per-Workspace role-template override. The feature was removed: an
+   * Agent's role now applies in every Workspace. The field is kept only so a
+   * stored value can be recognized and deleted at boot; nothing writes it.
+   */
   roleId?: string;
   /** Reserved for later capability grants; never inferred from a role. */
   toolGrants?: string[];
@@ -81,6 +85,9 @@ export const ProjectAgentAttachmentSchema = z.object({
   codexThreadId: z.string().nullable(),
   attachedAt: z.string(),
   role: ProjectRoleSchema.optional(),
+  // `roleId` was a per-Workspace role-template override. It is no longer
+  // written; stored values are dropped at boot. Parsing stays permissive so an
+  // older database still loads.
   roleId: z.string().min(1).optional(),
   toolGrants: z.array(z.string()).optional(),
   updatedAt: z.string().optional(),
@@ -110,8 +117,6 @@ export interface ProjectView {
 export interface ProjectMembershipView {
   agentId: string;
   role: ProjectRole;
-  /** Reusable role-template reference when one is assigned. */
-  roleId?: string;
 }
 
 export interface CreateProjectInput {

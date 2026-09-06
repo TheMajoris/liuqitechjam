@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { HttpError } from "../errors.js";
 import type { Agent } from "../types.js";
-import type { ModelRef } from "../models/types.js";
 import type { Storage } from "../store.js";
 import {
   ContinueOrchestrationSchema,
@@ -84,14 +83,6 @@ export const EMPTY_ORCHESTRATION_START_MESSAGE =
 
 function lifecycleConflict(message: string): HttpError {
   return new HttpError(409, message);
-}
-
-function modelRefMatches(left: ModelRef | undefined, right: ModelRef): boolean {
-  return (
-    left?.providerId === right.providerId &&
-    left?.modelId === right.modelId &&
-    left?.reasoning?.effort === right.reasoning?.effort
-  );
 }
 
 function participantsMatch(
@@ -406,17 +397,6 @@ export class OrchestrationService {
         session.supervisorAgentId = prepared.supervisorAgentId;
       }
       if (supervisorModel !== undefined) {
-        const supervisorAgent = database.agents.find(
-          (agent) => agent.id === session.supervisorAgentId,
-        );
-        if (
-          !supervisorAgent ||
-          !modelRefMatches(supervisorAgent.modelRef, supervisorModel.modelRef)
-        ) {
-          throw lifecycleConflict(
-            "Supervisor Agent model assignment changed; retry the orchestration",
-          );
-        }
         session.supervisorModelRef = structuredClone(supervisorModel.modelRef);
         if (supervisorModel.catalogRevision === undefined) {
           delete session.supervisorModelCatalogRevision;
@@ -505,17 +485,6 @@ export class OrchestrationService {
         );
       }
       if (supervisorModel !== undefined) {
-        const supervisorAgent = database.agents.find(
-          (agent) => agent.id === session.supervisorAgentId,
-        );
-        if (
-          !supervisorAgent ||
-          !modelRefMatches(supervisorAgent.modelRef, supervisorModel.modelRef)
-        ) {
-          throw lifecycleConflict(
-            "Supervisor Agent model assignment changed; retry the orchestration",
-          );
-        }
         session.supervisorModelRef = structuredClone(supervisorModel.modelRef);
         if (supervisorModel.catalogRevision === undefined) {
           delete session.supervisorModelCatalogRevision;
@@ -938,6 +907,12 @@ export class OrchestrationService {
         );
       }
       this.assertAgentAvailable(agent, true);
+      if (agent.modelRef === undefined) {
+        throw new HttpError(
+          422,
+          "Agent " + participant.agentId + " has no worker model; edit it before starting this Conversation",
+        );
+      }
     }
   }
 

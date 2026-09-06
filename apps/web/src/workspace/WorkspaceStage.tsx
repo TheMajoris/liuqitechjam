@@ -11,7 +11,12 @@ import {
   WORKSPACE_ACTIVITY,
   type WorkspaceViewModel,
 } from "./workspace-view-model";
-import { metricsRows } from "./agent-metrics-format";
+import {
+  modelResourceCapacityLabel,
+  modelResourceQuotaPercent,
+  modelResourceQuotaTone,
+  modelResourceStatusGlyph,
+} from "../model-resource-format";
 
 /**
  * Pixi is only fetched when a room is actually shown, so opening the product
@@ -34,7 +39,6 @@ interface WorkspaceStageProps {
   onSelectAgent: (agentId: string) => void;
   onOpenConversation: () => void;
   onOpenPreview: () => void;
-  onOpenApprovals: () => void;
 }
 
 /**
@@ -51,7 +55,6 @@ export function WorkspaceStage({
   onSelectAgent,
   onOpenConversation,
   onOpenPreview,
-  onOpenApprovals,
 }: WorkspaceStageProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -142,7 +145,6 @@ export function WorkspaceStage({
             onHoverAgent={setHovered}
             onOpenConversation={onOpenConversation}
             onOpenPreview={onOpenPreview}
-            onOpenApprovals={onOpenApprovals}
             onAgentPosition={handleAgentPosition}
           />
         </Suspense>
@@ -178,8 +180,15 @@ export function WorkspaceStage({
             x: seat.anchor.x + PLATE_OFFSET.x,
             y: seat.anchor.y + PLATE_OFFSET.y,
           });
-          const metricsCardId = `ws-metrics-${agent.agentId}`;
-          const showMetrics = hovered === agent.agentId && agent.metrics !== null;
+          const capacityLabel = agent.modelResource
+            ? modelResourceCapacityLabel(agent.modelResource)
+            : agent.modelAssigned
+              ? "Quota unavailable"
+              : "Model assignment required";
+          const capacityCardId = `ws-capacity-${agent.agentId}`;
+          const showCapacity = hovered === agent.agentId;
+          const capacityPercent = modelResourceQuotaPercent(agent.modelResource);
+          const capacityTone = modelResourceQuotaTone(agent.modelResource);
           return (
             <button
               key={agent.agentId}
@@ -200,7 +209,8 @@ export function WorkspaceStage({
                   : undefined
               }
               aria-pressed={agent.isSelected}
-              aria-describedby={showMetrics ? metricsCardId : undefined}
+              aria-describedby={showCapacity ? capacityCardId : undefined}
+              title={capacityLabel}
               onClick={() => onSelectAgent(agent.agentId)}
               onMouseEnter={() => setHovered(agent.agentId)}
               onMouseLeave={() => setHovered(null)}
@@ -213,15 +223,40 @@ export function WorkspaceStage({
                 {descriptor.label}
                 {agent.isCurrentParticipant ? " · this turn" : ""}
               </span>
-              {showMetrics && (
-                <div className="ws-metrics-card" role="tooltip" id={metricsCardId}>
-                  {metricsRows(agent.metrics).map((row) => (
-                    <div className="ws-metrics-row" key={row.label}>
-                      <span className="ws-metrics-label">{row.label}</span>
-                      <span className="ws-metrics-value">{row.value}</span>
-                    </div>
-                  ))}
-                </div>
+              <span
+                className="ws-plate-resource"
+                data-resource-tone={agent.modelResource?.endpointStatus ?? "unknown"}
+                data-resource-freshness={agent.modelResource?.freshness ?? "unavailable"}
+                data-resource-capacity-tone={capacityTone}
+              >
+                <span className="ws-plate-resource-glyph" aria-hidden="true">
+                  {agent.modelResource
+                    ? modelResourceStatusGlyph(agent.modelResource.endpointStatus)
+                    : "?"}
+                </span>
+                {capacityLabel}
+              </span>
+              {capacityPercent !== null && (
+                <span
+                  className="ws-plate-capacity-bar"
+                  data-resource-capacity-tone={capacityTone}
+                  aria-hidden="true"
+                >
+                  <span
+                    className="ws-plate-capacity-fill"
+                    style={{ width: `${capacityPercent}%` }}
+                  />
+                </span>
+              )}
+              {showCapacity && (
+                <span
+                  className="ws-resource-capacity-card"
+                  data-resource-capacity-tone={capacityTone}
+                  role="tooltip"
+                  id={capacityCardId}
+                >
+                  {capacityLabel}
+                </span>
               )}
             </button>
           );

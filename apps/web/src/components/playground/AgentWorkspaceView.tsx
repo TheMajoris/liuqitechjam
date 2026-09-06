@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { Agent, SkillMetadata, SystemInfo } from "../../types";
+import type { Agent, AgentRole, SkillMetadata, SystemInfo } from "../../types";
 import { MarkdownMessage } from "../MarkdownMessage";
 import { PreviewSidecar } from "../PreviewSidecar";
 import { StickyComposer } from "../StickyComposer";
@@ -41,6 +41,7 @@ interface AgentWorkspaceViewProps {
   skillLoading: boolean;
   skillError: string | null;
   form: AgentForm;
+  roles?: AgentRole[];
   showSettings: boolean;
   previewPanelOpen: boolean;
   busy: boolean;
@@ -63,6 +64,7 @@ export function AgentWorkspaceView({
   skillLoading,
   skillError,
   form,
+  roles = [],
   showSettings,
   previewPanelOpen,
   busy,
@@ -153,6 +155,7 @@ export function AgentWorkspaceView({
             disabled={busy}
             skillsDisabled={busy || agent.status === "busy"}
             invalidModel={modelCatalog.modelSelectionInvalid}
+            roles={roles}
             onChange={onFormChange}
             onSubmit={onSave}
             onClose={onCloseSettings}

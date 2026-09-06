@@ -13,6 +13,7 @@ import { ACCESSORY_OFFSET, FACE_OFFSET, HANDS_OFFSET } from "./art/sprites";
 import { agentPresentation } from "./agent-presentation";
 import { useReducedMotion } from "./use-reduced-motion";
 import { AgentIndicator } from "./AgentIndicator";
+import { ModelResourceIndicator } from "./ModelResourceIndicator";
 import { idleTuning, nextIdleAction } from "./idle-behaviour";
 import { SCENE } from "./scene-theme";
 import {
@@ -41,7 +42,10 @@ function loungeRoute(seat: WorkspaceSeat, from: WorldPoint, agentId: string): Wo
 }
 
 /** Feet at the origin, so `y` doubles as the depth-sorting key. */
-const HIT_AREA = new Rectangle(-10, -34, 20, 36);
+// Include the status bubbles and resource mark above the avatar in the same
+// hover target. The HTML plate then supplies the readable hover/focus details
+// even though those marks are drawn inside the Pixi canvas.
+const HIT_AREA = new Rectangle(-12, -42, 24, 44);
 const WALK_FRAME_MS = 150;
 const CELEBRATION_MS = 1000;
 
@@ -337,6 +341,7 @@ export function AgentSprite({
       <pixiContainer y={-28}>
         <AgentIndicator kind={presentation.indicator} />
       </pixiContainer>
+      <ModelResourceIndicator resource={agent.modelResource} />
       <pixiContainer ref={sleepBadgeRef} y={-28} visible={false}>
         <AgentIndicator kind="sleep" />
       </pixiContainer>

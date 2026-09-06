@@ -140,6 +140,49 @@ describe("AgentMetricsService", () => {
     expect(metrics.tokens.tokensPerSecondAvg).toBeNull();
   });
 
+  it("uses model-turn audit evidence when a legacy Run omitted usage", () => {
+    const run = baseRun({
+      id: "run-audited",
+      usage: null,
+      startedAt: null,
+      completedAt: null,
+    });
+    const events = [
+      auditEvent({
+        id: "model-turn",
+        type: "model_turn",
+        agentId: AGENT_ID,
+        runId: run.id,
+        durationMs: 2_000,
+        metadata: {
+          inputTokens: 120,
+          cachedInputTokens: 20,
+          outputTokens: 80,
+          mcpToolItems: 2,
+          commandItems: 1,
+          fileChangeItems: 3,
+        },
+      }),
+    ];
+    const service = new AgentMetricsService(
+      makeSources({ runs: () => [run], audit: fakeAudit(events) }),
+    );
+    const metrics = service.forAgent(AGENT_ID);
+    expect(metrics.tokens.lastRun).toEqual({
+      inputTokens: 120,
+      cachedInputTokens: 20,
+      outputTokens: 80,
+    });
+    expect(metrics.tokens.session).toEqual({
+      inputTokens: 120,
+      cachedInputTokens: 20,
+      outputTokens: 80,
+    });
+    expect(metrics.tokens.sessionAvailability).toBe("available");
+    expect(metrics.tokens.tokensPerSecondLastRun).toBe(40);
+    expect(metrics.tools).toMatchObject({ calls: 2, sandboxCommands: 1, filesChanged: 3 });
+  });
+
   it("counts tool calls, denials, sandbox commands, and files changed from audit events", () => {
     const events: AuditEvent[] = [
       auditEvent({ id: "1", type: "tool_started", agentId: AGENT_ID }),
@@ -189,6 +232,35 @@ describe("AgentMetricsService", () => {
       sandboxCommands: 2,
       filesChanged: 3,
     });
+  });
+
+  it("counts runtime MCP calls without double-counting the server tool event", () => {
+    const runId = "run-tools";
+    const events: AuditEvent[] = [
+      auditEvent({
+        id: "server-tool",
+        type: "tool_started",
+        agentId: AGENT_ID,
+        runId,
+        resource: { kind: "tool", id: "web.search" },
+      }),
+      auditEvent({
+        id: "runtime-mcp-tool",
+        type: "mcp_tool_call",
+        agentId: AGENT_ID,
+        runId,
+        metadata: { toolId: "web.search" },
+      }),
+      auditEvent({
+        id: "runtime-only-mcp-tool",
+        type: "mcp_tool_call",
+        agentId: AGENT_ID,
+        runId,
+        metadata: { toolId: "web.fetch" },
+      }),
+    ];
+    const service = new AgentMetricsService(makeSources({ audit: fakeAudit(events) }));
+    expect(service.forAgent(AGENT_ID).tools.calls).toBe(2);
   });
 
   it("returns null container metrics when no sampler is configured", () => {
