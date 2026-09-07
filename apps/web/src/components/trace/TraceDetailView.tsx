@@ -8,7 +8,7 @@ import type {
 } from "../../types";
 import { Spinner } from "../playground/Spinner";
 import { formatDuration } from "../insights/usage-format";
-import { formatStarted, shortId } from "./run-format";
+import { describeTokens, formatStarted, formatTokenCell, shortId } from "./run-format";
 import {
   categoryColorVar,
   flattenTrace,
@@ -295,6 +295,10 @@ export function TraceDetailView({
 
   const durationMs = run?.durationMs ?? trace?.durationMs ?? 0;
   const eventCount = trace?.eventCount ?? run?.eventCount ?? 0;
+  // A Run's own counters are the precise figure; the trace rollup covers every
+  // Run beneath it and is the right total when no single Run is in view.
+  const tokens = run?.tokens ?? trace?.tokens;
+  const toolCalls = trace?.countsByCategory.tool_call ?? 0;
   const status = run === null ? trace?.status ?? "success" : run.failed ? "failure" : "success";
 
   return (
@@ -314,7 +318,11 @@ export function TraceDetailView({
               {run === null ? status : run.status}
             </span>
             <span>{formatDuration(durationMs)}</span>
+            <span title={describeTokens(tokens)}>
+              {formatTokenCell(tokens)} tokens
+            </span>
             <span>{eventCount} events</span>
+            {toolCalls > 0 && <span>{toolCalls} tool calls</span>}
             {run !== null && <span>{formatStarted(run.startedAt ?? run.createdAt)}</span>}
           </p>
         </div>

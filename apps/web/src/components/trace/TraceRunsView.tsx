@@ -4,7 +4,7 @@ import type { AuditTraceSummary, RunHistoryEntry } from "../../types";
 import { Spinner } from "../playground/Spinner";
 import { formatDuration } from "../insights/usage-format";
 import { RunListView } from "./RunListView";
-import { formatStarted, shortId } from "./run-format";
+import { describeTokens, formatStarted, formatTokenCell, shortId } from "./run-format";
 import { statusFilter } from "./trace-tree";
 
 interface TraceRunsViewProps {
@@ -205,6 +205,7 @@ export function TraceRunsView({
                     <th>Agents</th>
                     <th>Status</th>
                     <th className="numeric">Duration</th>
+                    <th className="numeric">Tokens</th>
                     <th className="numeric">Events</th>
                     <th className="numeric">Tools</th>
                     <th className="numeric">Sandbox</th>
@@ -246,6 +247,9 @@ export function TraceRunsView({
                           </span>
                         </td>
                         <td className="numeric">{formatDuration(trace.durationMs)}</td>
+                        <td className="numeric" title={describeTokens(trace.tokens)}>
+                          {formatTokenCell(trace.tokens)}
+                        </td>
                         <td className="numeric">{trace.eventCount}</td>
                         <td className="numeric">{trace.countsByCategory.tool_call ?? 0}</td>
                         <td className="numeric">{trace.countsByCategory.sandbox_execution ?? 0}</td>

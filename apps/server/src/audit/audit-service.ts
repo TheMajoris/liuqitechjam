@@ -22,6 +22,7 @@ import {
   listTraces,
   type AuditTrace,
   type AuditTraceListQuery,
+  type TraceRunUsageReader,
   type AuditTraceSummary,
 } from "./audit-trace.js";
 import {
@@ -71,13 +72,27 @@ export class AuditService implements AuditRecorder, AuditReader {
     return verifyAuditChain(this.store.read(), this.store.anchor()?.hash);
   }
 
+  /**
+   * Token counters live on Run records, so traces read them through the same
+   * runtime reader the Run history uses. Without a reader a trace reports its
+   * tokens as unavailable rather than as zero.
+   */
+  private runUsageReader(): TraceRunUsageReader {
+    const usageByRun = new Map(
+      (this.runtime?.readRuns() ?? []).map((run) => [run.id, run.usage]),
+    );
+    return { usageForRun: (runId) => usageByRun.get(runId) };
+  }
+
   trace(traceId: string): AuditTrace | null {
     const events = this.readNormalized().filter((event) => event.traceId === traceId);
-    return events.length === 0 ? null : buildTraceTree(events, traceId);
+    return events.length === 0
+      ? null
+      : buildTraceTree(events, traceId, this.runUsageReader());
   }
 
   traces(filter: AuditTraceListQuery = {}): AuditTraceSummary[] {
-    return listTraces(this.readNormalized(), filter);
+    return listTraces(this.readNormalized(), filter, this.runUsageReader());
   }
 
   /**

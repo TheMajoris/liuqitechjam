@@ -421,6 +421,20 @@ export interface AgentRun {
  * It carries its own Agent identity, so a Run remains fully readable after
  * its Agent has been deleted.
  */
+/**
+ * Provider-reported token counters. `availability` stays explicit so a Run
+ * that reported nothing is never displayed as zero tokens.
+ */
+export interface RunTokenTotals {
+  availability: "available" | "partial" | "unavailable";
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  runsReporting: number;
+  runsMissing: number;
+}
+
 export interface RunHistoryEntry {
   runId: string;
   agentId: string;
@@ -436,6 +450,7 @@ export interface RunHistoryEntry {
   durationMs: number | null;
   eventCount: number;
   errorCount: number;
+  tokens: RunTokenTotals;
   failed: boolean;
   error: string | null;
 }
@@ -829,6 +844,8 @@ export interface AuditTrace {
   durationMs: number;
   eventCount: number;
   countsByCategory: Record<AuditCategory, number>;
+  /** Tokens summed across every Run this trace covers. */
+  tokens: RunTokenTotals;
   failingStep: { spanId: string; eventId: string; type: string } | null;
   agentIds: string[];
   runIds: string[];

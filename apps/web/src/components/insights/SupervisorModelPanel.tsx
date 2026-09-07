@@ -156,8 +156,8 @@ export function SupervisorModelPanel({
 
       {!loading && current && (
         <>
-          <div className="worker-model-grid">
-            <label>
+          <div className="supervisor-model-row">
+            <label className="supervisor-model-field">
               Endpoint
               <select
                 id="supervisor-model-endpoint"
@@ -184,16 +184,14 @@ export function SupervisorModelPanel({
               </select>
               <span className="worker-model-help">{sourceLabel(current)}</span>
             </label>
-            <div className="orch-field">
-              <button
-                type="button"
-                className="button button-primary"
-                onClick={() => void save()}
-                disabled={!dirty || saving}
-              >
-                {saving ? "Saving…" : "Save supervisor model"}
-              </button>
-            </div>
+            <button
+              type="button"
+              className="button button-primary supervisor-model-save"
+              onClick={() => void save()}
+              disabled={!dirty || saving}
+            >
+              {saving ? "Saving…" : "Save"}
+            </button>
           </div>
 
           {activeResource && (

@@ -41,6 +41,66 @@ export function normalizeRunUsage(
   return normalized;
 }
 
+/**
+ * Token rollup for one Run or for every Run under a trace.
+ *
+ * Counters are never invented: `availability` reports whether the provider
+ * supplied a complete picture, so a surface can distinguish "zero tokens" from
+ * "nothing was reported".
+ */
+export interface RunTokenTotals {
+  availability: UsageAvailability;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  /** Runs that reported at least one counter. */
+  runsReporting: number;
+  /** Runs that reported nothing at all. */
+  runsMissing: number;
+}
+
+/** Aggregate provider counters across Runs without filling in the gaps. */
+export function summarizeRunTokens(
+  usages: readonly (RunUsage | null | undefined)[],
+): RunTokenTotals {
+  let inputTokens = 0;
+  let cachedInputTokens = 0;
+  let outputTokens = 0;
+  let runsReporting = 0;
+  let runsMissing = 0;
+  let runsPartial = 0;
+
+  for (const usage of usages) {
+    const normalized = normalizeRunUsage(usage);
+    if (normalized.availability === "unavailable") {
+      runsMissing += 1;
+      continue;
+    }
+    runsReporting += 1;
+    if (normalized.availability === "partial") runsPartial += 1;
+    inputTokens += normalized.inputTokens ?? 0;
+    cachedInputTokens += normalized.cachedInputTokens ?? 0;
+    outputTokens += normalized.outputTokens ?? 0;
+  }
+
+  return {
+    availability: runsReporting === 0
+      ? "unavailable"
+      : runsMissing > 0 || runsPartial > 0
+        ? "partial"
+        : "available",
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+    // Cached input is already part of the input count; adding it would
+    // double-count the same tokens.
+    totalTokens: inputTokens + outputTokens,
+    runsReporting,
+    runsMissing,
+  };
+}
+
 export function usageAttributes(
   usage: RunUsage | null | undefined,
 ): TelemetryAttributes {

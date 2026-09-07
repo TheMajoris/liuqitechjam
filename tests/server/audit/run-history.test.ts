@@ -136,4 +136,33 @@ describe("historical observability", () => {
     expect(entry?.agentDeletedAt).toBeTypeOf("string");
     expect(entry?.status).toBe("completed");
   });
+
+  it("reports each Run's tokens and rolls them into its trace", async () => {
+    const { service, audit } = await makeObservabilityHarness();
+    const agent = await service.createAgent({
+      name: "Builder",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
+    const runId = await completedRun(service, agent.id, "Build login page");
+
+    const entry = audit.runs({ agentId: agent.id }).find((item) => item.runId === runId);
+
+    // The runner reports input and output but no cached counter, so the
+    // rollup must stay explicitly partial rather than implying an exact total.
+    expect(entry?.tokens).toMatchObject({
+      availability: "partial",
+      inputTokens: 12,
+      cachedInputTokens: 0,
+      outputTokens: 5,
+      totalTokens: 17,
+      runsReporting: 1,
+      runsMissing: 0,
+    });
+
+    // The trace covering that Run reports the same tokens.
+    const trace = audit.runTrace(runId);
+    expect(trace?.tokens.totalTokens).toBe(17);
+    expect(audit.traces().find((item) => item.traceId === trace?.traceId)?.tokens.totalTokens)
+      .toBe(17);
+  });
 });
