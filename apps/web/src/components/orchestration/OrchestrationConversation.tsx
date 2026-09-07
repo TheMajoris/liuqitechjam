@@ -23,6 +23,8 @@ interface OrchestrationConversationProps {
   agents: Agent[];
   action?: OrchestrationAction;
   onContinue?: (prompt: string, sessionId: string) => void;
+  /** Re-runs one failed recorded turn and continues from that checkpoint. */
+  onRetry?: (fromStepIndex: number) => void;
 }
 
 const UNFINISHED: OrchestrationTurn["status"][] = ["failed", "cancelled", "timed_out"];
@@ -48,6 +50,7 @@ export function OrchestrationConversation({
   agents,
   action = null,
   onContinue,
+  onRetry,
 }: OrchestrationConversationProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [followUp, setFollowUp] = useState("");
@@ -119,6 +122,9 @@ export function OrchestrationConversation({
   // owner routes that first message through the draft-start lifecycle call;
   // only active runs and in-flight actions lock the field.
   const composerLocked = active || action !== null;
+  const retryPending = action === "retry";
+  const retryBlocked = active;
+  const retryDisabled = retryBlocked || action !== null;
 
   return (
     <div className="orch-chat-pane">
@@ -211,6 +217,29 @@ export function OrchestrationConversation({
                 {turn.outputTruncated && !unfinished && (
                   <p className="orch-chat-truncated">Reply shortened before it was passed on.</p>
                 )}
+                {(turn.status === "failed" || turn.status === "timed_out") &&
+                  turn.stepIndex !== undefined &&
+                  onRetry && (
+                    <div className="orch-chat-retry">
+                      <button
+                        type="button"
+                        className="orch-chat-retry-action"
+                        disabled={retryDisabled}
+                        onClick={() => onRetry(turn.stepIndex as number)}
+                      >
+                        {retryPending ? "Retrying…" : "Retry from this turn"}
+                      </button>
+                      <p className="orch-chat-retry-note" role={retryPending ? "status" : undefined}>
+                        {retryBlocked
+                          ? "Stop the conversation before retrying it."
+                          : retryPending
+                            ? "Retrying this Agent turn and continuing from the checkpoint…"
+                            : action !== null
+                              ? "Wait for the current action to finish."
+                              : "This reruns the Agent turn and continues from there. Earlier turns stay in the record. Shared Workspace files are not rolled back."}
+                      </p>
+                    </div>
+                  )}
               </div>
             </li>
           );

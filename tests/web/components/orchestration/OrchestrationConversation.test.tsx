@@ -5,6 +5,7 @@ import type {
   OrchestrationSession,
   OrchestrationSessionDetail,
   OrchestrationStatus,
+  OrchestrationTurn,
 } from "../../../../apps/web/src/types";
 import { OrchestrationConversation } from "../../../../apps/web/src/components/orchestration/OrchestrationConversation";
 
@@ -45,6 +46,25 @@ function detailFor(status: OrchestrationStatus): OrchestrationSessionDetail {
     completedAt: null,
   };
   return { session, turns: [], events: [], continuationPrompts: [] };
+}
+
+function failedTurn(): OrchestrationTurn {
+  return {
+    id: "turn-1",
+    sessionId: "session-1",
+    participantId: "p1",
+    agentId: "agent-1",
+    runId: "run-1",
+    stepIndex: 0,
+    position: 0,
+    status: "failed",
+    safeInputSummary: "Build the todo app",
+    safeOutput: null,
+    outputTruncated: false,
+    errorCode: "WEB_TOOL_PERMISSION_DENIED",
+    createdAt: "2026-01-01T00:00:01.000Z",
+    completedAt: "2026-01-01T00:00:05.000Z",
+  };
 }
 
 function render(status: OrchestrationStatus) {
@@ -93,5 +113,67 @@ describe("Team conversation composer", () => {
     expect(html).toContain("Type the first task to start this conversation…");
     expect(html).toMatch(/<textarea class="composer-input"(?![^>]*disabled)/);
     expect(html).not.toContain("orch-chat-item-user");
+  });
+
+  it("offers retry from a failed turn and explains the workspace file behavior", () => {
+    const detail = detailFor("failed");
+    detail.turns = [failedTurn()];
+    const html = renderToStaticMarkup(
+      <OrchestrationConversation
+        detail={detail}
+        agents={agents}
+        onRetry={() => undefined}
+        onContinue={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("Retry from this turn");
+    expect(html).toContain("Web access was denied. Assign this Agent a role that allows the requested web tool, then retry this turn.");
+    expect(html).toContain("This reruns the Agent turn");
+    expect(html).toContain("Shared Workspace files are not rolled back.");
+  });
+
+  it("disables retry while the session is active or retry is pending", () => {
+    const activeDetail = detailFor("running");
+    activeDetail.turns = [failedTurn()];
+    const activeHtml = renderToStaticMarkup(
+      <OrchestrationConversation
+        detail={activeDetail}
+        agents={agents}
+        onRetry={() => undefined}
+        onContinue={() => undefined}
+      />,
+    );
+    expect(activeHtml).toMatch(/<button[^>]*class="orch-chat-retry-action"[^>]*disabled/);
+    expect(activeHtml).toContain("Stop the conversation before retrying it.");
+
+    const pendingDetail = detailFor("failed");
+    pendingDetail.turns = [failedTurn()];
+    const pendingHtml = renderToStaticMarkup(
+      <OrchestrationConversation
+        detail={pendingDetail}
+        agents={agents}
+        action="retry"
+        onRetry={() => undefined}
+        onContinue={() => undefined}
+      />,
+    );
+    expect(pendingHtml).toContain("Retrying…");
+    expect(pendingHtml).toMatch(/<button[^>]*class="orch-chat-retry-action"[^>]*disabled/);
+  });
+
+  it("explains when supervisor routing needs another try", () => {
+    const detail = detailFor("failed");
+    detail.session.errorCode = "SUPERVISOR_INVALID_SELECTION";
+    detail.session.errorMessage =
+      "The supervisor did not select an Agent to answer this follow-up.";
+
+    const html = renderToStaticMarkup(
+      <OrchestrationConversation detail={detail} agents={agents} action={null} />,
+    );
+
+    expect(html).toContain(
+      "The supervisor could not choose the next Agent. Try again or review the Team roster.",
+    );
   });
 });

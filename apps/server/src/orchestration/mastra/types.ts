@@ -22,6 +22,8 @@ export interface MastraExecutionState {
   originalPrompt: string;
   participants: OrchestrationParticipant[];
   mode: OrchestrationMode;
+  /** Zero for the initial run; positive values identify follow-up cycles. */
+  cycleIndex: number;
   completionReason: OrchestrationCompletionReason | null;
   stepIndex: number;
   maxSteps: number;

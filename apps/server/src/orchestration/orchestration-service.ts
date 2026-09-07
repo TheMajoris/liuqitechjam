@@ -65,6 +65,8 @@ import {
   type OrchestrationServiceDependencies,
   type SupervisorModelAssignment,
 } from "./orchestration-runtime.js";
+import { SupervisorError, createAbortError } from "./supervisor/errors.js";
+import { DEFAULT_SUPERVISOR_TIMEOUT_MS } from "./supervisor/provider.js";
 
 export type {
   OrchestrationAgentAccess,
@@ -589,7 +591,7 @@ export class OrchestrationService {
       );
     }
 
-    await this.preflightRoster(current);
+    await this.preflightRoster(current, { allowErroredAgentId: participant.agentId });
     const supervisorModel = await this.preflightSupervisor(current);
 
     const accepted = await this.store.mutate((database) => {
@@ -690,6 +692,10 @@ export class OrchestrationService {
       stepOffset: accepted.stepOffset,
       startStepIndex: accepted.startStepIndex,
       contextBeforeStepIndex: step,
+      retryAgentId: participant.agentId,
+      ...(current.mode === "supervisor"
+        ? { retryParticipantId: participant.id }
+        : {}),
     });
     return cloneSession(accepted.session);
   }
@@ -986,7 +992,10 @@ export class OrchestrationService {
     });
   }
 
-  private async preflightRoster(session: OrchestrationSession): Promise<void> {
+  private async preflightRoster(
+    session: OrchestrationSession,
+    options: { allowErroredAgentId?: string } = {},
+  ): Promise<void> {
     const agents = await this.listCurrentAgents();
     const byId = new Map(agents.map((agent) => [agent.id, agent]));
     for (const participant of session.participants) {
@@ -997,7 +1006,11 @@ export class OrchestrationService {
           "Agent " + participant.agentId + " was not found",
         );
       }
-      this.assertAgentAvailable(agent, true);
+      this.assertAgentAvailable(
+        agent,
+        true,
+        options.allowErroredAgentId === agent.id,
+      );
       if (agent.modelRef === undefined) {
         throw new HttpError(
           422,
@@ -1049,8 +1062,17 @@ export class OrchestrationService {
     };
   }
 
-  private assertAgentAvailable(agent: Agent, preflight: boolean): void {
+  private assertAgentAvailable(
+    agent: Agent,
+    preflight: boolean,
+    allowErrored = false,
+  ): void {
     if (agent.status === "ready") return;
+    // A retry button is an explicit user action. Permit only the Agent that
+    // owns the recorded checkpoint to re-enter the queue after a prior
+    // runtime failure; ordinary starts/continues still require `ready`, and
+    // stopped/busy Agents remain protected by their normal lifecycle rules.
+    if (agent.status === "error" && allowErrored) return;
     const statusCode = 409;
     if (agent.status === "busy") {
       throw preflight
@@ -1073,7 +1095,10 @@ export class OrchestrationService {
         );
   }
 
-  private async validateParticipant(participant: OrchestrationParticipant): Promise<void> {
+  private async validateParticipant(
+    participant: OrchestrationParticipant,
+    options: { allowErrored?: boolean } = {},
+  ): Promise<void> {
     const agent = (await this.listCurrentAgents()).find(
       (candidate) => candidate.id === participant.agentId,
     );
@@ -1083,7 +1108,7 @@ export class OrchestrationService {
         "Agent " + participant.agentId + " was not found",
       );
     }
-    this.assertAgentAvailable(agent, false);
+    this.assertAgentAvailable(agent, false, options.allowErrored === true);
   }
 
   /**
@@ -1100,6 +1125,10 @@ export class OrchestrationService {
       stepOffset?: number;
       startStepIndex?: number;
       contextBeforeStepIndex?: number;
+      /** Supervisor retries pin the first dispatch to this occurrence. */
+      retryParticipantId?: string;
+      /** Any retry may recover the failed checkpoint Agent once. */
+      retryAgentId?: string;
     } = {},
   ): void {
     let invoker: PlatformAgentInvokerContract;
@@ -1120,6 +1149,113 @@ export class OrchestrationService {
                 { ...input, supervisorModel },
                 options,
               );
+      if (selector !== undefined && cycle.retryParticipantId !== undefined) {
+        const normalSelector = selector;
+        let checkpointPending = true;
+        selector = async (input, options) => {
+          if (checkpointPending && input.mode === "supervisor") {
+            checkpointPending = false;
+            const participant = input.participants.find(
+              (candidate) => candidate.id === cycle.retryParticipantId,
+            );
+            if (!participant) {
+              throw new Error("Retry checkpoint participant is not configured");
+            }
+            return {
+              kind: "invoke",
+              participant: { ...participant },
+              stepIndex: input.stepIndex,
+              reason: "Retrying from the recorded checkpoint",
+            };
+          }
+          return normalSelector(input, options);
+        };
+      }
+      if (
+        selector !== undefined &&
+        (cycle.cycleIndex ?? 0) > 0 &&
+        cycle.retryParticipantId === undefined
+      ) {
+        const normalSelector = selector;
+        let correctionUsed = false;
+        selector = async (input, options) => {
+          const startedAt = Date.now();
+          const decision = await normalSelector(input, options);
+          if (
+            input.mode !== "supervisor" ||
+            (input.cycleIndex ?? 0) <= 0 ||
+            (input.currentCycleTurnCount ?? input.turns.length) !== 0 ||
+            decision.kind !== "end" ||
+            decision.reason !== "supervisor_completed"
+          ) {
+            return decision;
+          }
+
+          if (correctionUsed) {
+            throw new SupervisorError(
+              "SUPERVISOR_INVALID_ROUTE",
+              "Supervisor completed this follow-up before an Agent replied; retry the follow-up or review the Team roster",
+            );
+          }
+          correctionUsed = true;
+          if (options?.signal?.aborted) throw createAbortError();
+
+          // A corrective provider call is still part of the same selection
+          // deadline. It is side-effect free: no supervisor decision hook or
+          // child Run is recorded until an eligible invoke is returned.
+          const elapsedMs = Math.max(0, Date.now() - startedAt);
+          const configuredBudgetMs =
+            options?.timeoutMs ?? this.supervisorTimeoutMs;
+          const selectionBudgetMs =
+            configuredBudgetMs !== undefined &&
+            Number.isInteger(configuredBudgetMs) &&
+            configuredBudgetMs > 0
+              ? configuredBudgetMs
+              : DEFAULT_SUPERVISOR_TIMEOUT_MS;
+          const remainingTimeoutMs =
+            selectionBudgetMs - elapsedMs;
+          if (remainingTimeoutMs <= 0) {
+            throw new SupervisorError(
+              "SUPERVISOR_TIMED_OUT",
+              "Supervisor did not choose an Agent for this follow-up before the routing deadline",
+            );
+          }
+          const corrected = await normalSelector(
+            {
+              ...input,
+              requireCurrentCycleDispatch: true,
+            },
+            { ...(options ?? {}), timeoutMs: remainingTimeoutMs },
+          );
+          const participant =
+            typeof corrected === "object" && corrected !== null &&
+            "participant" in corrected
+              ? (corrected as { participant?: unknown }).participant
+              : undefined;
+          const eligible =
+            typeof participant === "object" &&
+            participant !== null &&
+            input.participants.some(
+              (candidate) =>
+                (participant as OrchestrationParticipant).id === candidate.id &&
+                (participant as OrchestrationParticipant).agentId ===
+                  candidate.agentId &&
+                (participant as OrchestrationParticipant).position ===
+                  candidate.position,
+            );
+          if (
+            corrected.kind !== "invoke" ||
+            !eligible ||
+            corrected.stepIndex !== input.stepIndex
+          ) {
+            throw new SupervisorError(
+              "SUPERVISOR_INVALID_ROUTE",
+              "Supervisor did not select an eligible Agent for this follow-up; retry the follow-up or review the Team roster",
+            );
+          }
+          return corrected;
+        };
+      }
       orchestrator = this.orchestratorFactory();
     } catch (error) {
       // Start is accepted before background execution begins. If dependency
@@ -1138,6 +1274,8 @@ export class OrchestrationService {
       ...(session.supervisorModelRef?.modelId === undefined
         ? {}
         : { supervisorModel: session.supervisorModelRef.modelId }),
+      ...(cycle.retryAgentId === undefined ? {} : { retryAgentId: cycle.retryAgentId }),
+      retryAgentPending: cycle.retryAgentId !== undefined,
       controller: new AbortController(),
       invoker,
       ...(selector === undefined ? {} : { selector }),
@@ -1192,7 +1330,12 @@ export class OrchestrationService {
   ): OrchestrationExecutionHooks {
     const journalHooks = createOrchestrationExecutionHooks(context, {
       store: this.store,
-      validateParticipant: (participant) => this.validateParticipant(participant),
+      validateParticipant: async (participant) => {
+        const allowErrored =
+          context.retryAgentPending && context.retryAgentId === participant.agentId;
+        await this.validateParticipant(participant, { allowErrored });
+        if (allowErrored) context.retryAgentPending = false;
+      },
       cancelChildRun: (runId) => this.cancelChildRun(context, runId),
     });
     if (!this.audit) return journalHooks;
@@ -1305,6 +1448,7 @@ export class OrchestrationService {
         originalPrompt: context.cyclePrompt,
         participants: session.participants.map(safeParticipant),
         mode: session.mode ?? "sequential",
+        cycleIndex: context.cycleIndex,
         maxSteps: session.maxSteps,
         // Each continuation is a fresh internal cycle. Persisted turn indexes
         // remain global through context.stepOffset in the lifecycle hooks.
@@ -1373,7 +1517,25 @@ export class OrchestrationService {
         result.status === "completed" &&
         (session.mode ?? "sequential") === "supervisor" &&
         result.completionReason !== "supervisor_completed";
-      if (roundRobinCeilingExceeded) {
+      const supervisorFollowUpWithoutReply =
+        context.cycleIndex > 0 &&
+        (session.mode ?? "sequential") === "supervisor" &&
+        result.turns.length === 0 &&
+        (result.status === "completed" ||
+          result.errorCode === "SUPERVISOR_INVALID_RESPONSE" ||
+          result.errorCode === "SUPERVISOR_INVALID_SELECTION" ||
+          result.errorCode === "SUPERVISOR_FAILED");
+      if (supervisorFollowUpWithoutReply && result.status === "completed") {
+        // A continuation is a new user request. Historical turns may be
+        // present in the supervisor context, but they cannot satisfy the
+        // request without one current-cycle participant reply.
+        result = {
+          ...result,
+          status: "failed",
+          completionReason: null,
+          errorCode: "SUPERVISOR_INVALID_SELECTION",
+        };
+      } else if (roundRobinCeilingExceeded) {
         result = {
           ...result,
           status: "failed",
@@ -1442,7 +1604,9 @@ export class OrchestrationService {
       session.status = "failed";
       session.completionReason = null;
       session.errorCode = result.errorCode ?? "RUN_FAILED";
-      session.errorMessage = this.executionErrorMessage(result.errorCode);
+      session.errorMessage = supervisorFollowUpWithoutReply
+        ? "The supervisor did not select an Agent to answer this follow-up. Retry the follow-up or review the Team roster."
+        : this.executionErrorMessage(result.errorCode);
       session.completedAt = completedAt;
       session.currentParticipantId = null;
       session.currentRunId = null;
@@ -1532,6 +1696,12 @@ export class OrchestrationService {
         return "Automatic turn taking is unavailable";
       case "SUPERVISOR_FAILED":
         return "The next participant could not be chosen";
+      case "WEB_TOOL_PERMISSION_DENIED":
+        return "A participant could not use a web tool because its Agent role lacks the required permission";
+      case "MODEL_INFERENCE_LIMIT_EXCEEDED":
+        return "This model is paused because its provider inference limit was reached. Review Safe Experience Mode in the provider's Model Activation settings, or choose another available model, then retry.";
+      case "PROJECT_PERMISSION_DENIED":
+        return "This Agent is not allowed to write to the Workspace. Add Allow Agent runs (agent.invoke) and Edit workspace files (project.write) to the Agent's role, make sure it has editable Workspace membership, then retry.";
       default:
         return "Orchestration failed while running a participant";
     }

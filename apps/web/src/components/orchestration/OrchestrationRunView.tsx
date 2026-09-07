@@ -152,16 +152,6 @@ export function OrchestrationRunView({
         </div>
       </div>
 
-      {session.mode === "supervisor" && session.supervisorModelRef && (
-        <div className="orch-project-badge" role="status">
-          <span className="orch-eyebrow">Supervisor model</span>
-          <strong>{session.supervisorModelRef.modelId}</strong>
-          <span className="orch-field-help">
-            Routing model captured when this cycle was accepted.
-          </span>
-        </div>
-      )}
-
       <ParticipantBar
         participants={session.participants}
         agents={agents}

@@ -42,6 +42,14 @@ describe("model resource capacity copy", () => {
     expect(modelResourceCapacityLabel(snapshot)).toBe("Tokens left —%");
   });
 
+  it("marks a percentage that is no longer being confirmed as last known", () => {
+    const snapshot = resource({
+      quota: { usedTokens: 66, totalTokens: 100, remainingTokens: 34 },
+      freshness: "stale",
+    });
+    expect(modelResourceCapacityLabel(snapshot)).toBe("34% tokens left \u00b7 last known");
+  });
+
   it("rejects an incoherent quota instead of showing a false percentage", () => {
     const snapshot = resource({
       quota: { usedTokens: 120, totalTokens: 100, remainingTokens: 0 },

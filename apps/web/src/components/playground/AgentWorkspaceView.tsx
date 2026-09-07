@@ -17,6 +17,7 @@ import type { ModelCatalogController } from "../../playground/use-model-catalog"
 import type { AgentWorkspaceController } from "../../playground/use-agent-workspace";
 import { AgentSettingsPanel } from "./AgentSettingsPanel";
 import { Spinner } from "./Spinner";
+import { humanizeAgentRunFailure } from "../orchestration/orchestration-utils";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -293,7 +294,12 @@ export function AgentWorkspaceView({
                 {controller.activeRun?.status === "failed" && (
                   <article className="run-error">
                     <strong>Run failed</strong>
-                    <span>{controller.activeRun.error}</span>
+                    <span>
+                      {humanizeAgentRunFailure(
+                        controller.activeRun.errorCode,
+                        controller.activeRun.error,
+                      )}
+                    </span>
                   </article>
                 )}
                 <div ref={messageEnd} />

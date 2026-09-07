@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { AgentPrincipal } from "../access/access-types.js";
 import { agentPrincipal } from "../access/access-types.js";
 import { DEFAULT_MCP_TOKEN_TTL_MS } from "../config.js";
+import { WEB_TOOL_PERMISSION_DENIED } from "../errors.js";
 import type { AuditRecorder } from "../audit/audit-types.js";
 
 export const MCP_BEARER_TOKEN_ENV = "LAUNCHPAD_MCP_BEARER_TOKEN";
@@ -45,6 +46,8 @@ export interface MintedMcpSession {
   context: McpSessionContext;
 }
 
+export type McpWebToolDenialCode = typeof WEB_TOOL_PERMISSION_DENIED;
+
 function hashToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
@@ -58,6 +61,8 @@ function sameHash(left: string, right: string): boolean {
 /** In-memory opaque bearer sessions scoped to one Agent run. */
 export class McpSessionService {
   private readonly sessions = new Map<string, SessionRecord>();
+  /** Terminal web denial state survives token expiry until the owning Run ends. */
+  private readonly webToolDenials = new Map<string, McpWebToolDenialCode>();
   private readonly ttlMs: number;
   private readonly audit?: AuditRecorder;
   private readonly now: () => number;
@@ -161,7 +166,25 @@ export class McpSessionService {
     const record = this.sessions.get(tokenHash);
     if (!record || !sameHash(record.tokenHash, tokenHash) || record.revokedAt) return false;
     this.sessions.delete(tokenHash);
+    this.clearWebToolPermissionDenied(record.runId);
     return true;
+  }
+
+  /** Record a trusted web-tool denial for the authenticated Run. */
+  markWebToolPermissionDenied(runId: string): void {
+    if (!runId) return;
+    this.webToolDenials.set(runId, WEB_TOOL_PERMISSION_DENIED);
+  }
+
+  /** Read the terminal denial latch without consuming it. */
+  hasWebToolPermissionDenied(runId: string): boolean {
+    return this.webToolDenials.has(runId);
+  }
+
+  /** Release the denial latch once the owning Run has settled. */
+  clearWebToolPermissionDenied(runId: string): void {
+    if (!runId) return;
+    this.webToolDenials.delete(runId);
   }
 
   /** Revoke all stale records without exposing token material. */

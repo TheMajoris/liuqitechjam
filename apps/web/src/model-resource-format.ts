@@ -104,11 +104,16 @@ export function modelResourceQuotaPercent(
  * Compact capacity copy for the room hover/focus surface.
  *
  * Detailed counters belong in AgentInspector/Insights. Keep the unavailable
- * state explicit when the provider has not exposed a quota.
+ * state explicit when the provider has not exposed a quota, and never present
+ * a percentage from a snapshot we have stopped confirming: a number that reads
+ * as live while the poll is failing is worse than an admitted gap.
  */
 export function modelResourceCapacityLabel(resource: ModelResourceSnapshot | null | undefined): string {
   const percent = modelResourceQuotaPercent(resource);
-  return percent === null ? "Tokens left —%" : `${percent}% tokens left`;
+  if (percent === null) return "Tokens left \u2014%";
+  return resource?.freshness === "fresh"
+    ? `${percent}% tokens left`
+    : `${percent}% tokens left \u00b7 last known`;
 }
 
 export type ModelResourceQuotaTone = "healthy" | "warning" | "critical" | "unknown";

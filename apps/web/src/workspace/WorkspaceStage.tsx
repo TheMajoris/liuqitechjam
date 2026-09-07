@@ -13,6 +13,8 @@ import {
 } from "./workspace-view-model";
 import {
   modelResourceCapacityLabel,
+  modelResourceObservedLabel,
+  modelResourceQuotaLabel,
   modelResourceQuotaPercent,
   modelResourceQuotaTone,
   modelResourceStatusGlyph,
@@ -255,7 +257,21 @@ export function WorkspaceStage({
                   role="tooltip"
                   id={capacityCardId}
                 >
-                  {capacityLabel}
+                  <span className="ws-resource-capacity-headline">{capacityLabel}</span>
+                  {agent.modelResource && (
+                    <>
+                      <span className="ws-resource-capacity-detail">
+                        {modelResourceQuotaLabel(agent.modelResource)}
+                      </span>
+                      {/* When the number was last confirmed matters more than
+                          the number itself: the provider's free-pack counters
+                          settle behind the run, so a percentage alone reads as
+                          a live meter it is not. */}
+                      <span className="ws-resource-capacity-detail">
+                        {modelResourceObservedLabel(agent.modelResource)}
+                      </span>
+                    </>
+                  )}
                 </span>
               )}
             </button>

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  finalizeCodexRun,
   parseCodexEventLine,
   type ParsedEvents,
 } from "../../apps/server/src/codex-runner.js";
@@ -55,5 +56,100 @@ describe("parseCodexEventLine observer tap", () => {
     ).not.toThrow();
 
     expect(parsed.messages).toEqual(["hi"]);
+  });
+});
+
+const terminalMessages = {
+  timeout: "timed out",
+  exit: "exited",
+  missing: "missing output",
+  missingTruncated: "missing output after truncation",
+};
+
+describe("Codex terminal failure classification", () => {
+  it("classifies the exact provider code from an error event", () => {
+    const parsed = emptyParsed();
+    parseCodexEventLine(
+      '{"type":"error","error":{"code":"SetLimitExceeded","message":"request-id and secret"}}',
+      parsed,
+    );
+
+    expect(() =>
+      finalizeCodexRun(
+        parsed,
+        { exitCode: 1, cancelled: false, timedOut: false, outputTruncated: false },
+        terminalMessages,
+      ),
+    ).toThrowError(
+      expect.objectContaining({
+        errorCode: "MODEL_INFERENCE_LIMIT_EXCEEDED",
+        message: expect.stringContaining("provider inference limit was reached"),
+      }),
+    );
+    expect(parsed.errors).toEqual(["Codex reported an error"]);
+  });
+
+  it("reads the provider code from turn.failed.error but not generic 429 text", () => {
+    const parsed = emptyParsed();
+    parseCodexEventLine(
+      '{"type":"turn.failed","error":{"message":"{\\"code\\":\\"SetLimitExceeded\\"}"}}',
+      parsed,
+    );
+    expect(parsed.modelInferenceLimitExceeded).toBe(true);
+
+    const generic429 = emptyParsed();
+    parseCodexEventLine(
+      '{"type":"error","message":"HTTP 429 TooManyRequests"}',
+      generic429,
+    );
+    expect(generic429.modelInferenceLimitExceeded).toBeUndefined();
+    expect(() =>
+      finalizeCodexRun(
+        generic429,
+        { exitCode: 1, cancelled: false, timedOut: false, outputTruncated: false },
+        terminalMessages,
+      ),
+    ).toThrow("exited");
+  });
+
+  it("lets a successful response win over a transient provider error", () => {
+    const parsed = emptyParsed();
+    parseCodexEventLine(
+      '{"type":"error","error":{"code":"SetLimitExceeded"}}',
+      parsed,
+    );
+    parseCodexEventLine(
+      '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}',
+      parsed,
+    );
+    parseCodexEventLine('{"type":"turn.completed"}', parsed);
+
+    expect(
+      finalizeCodexRun(
+        parsed,
+        { exitCode: 0, cancelled: false, timedOut: false, outputTruncated: false },
+        terminalMessages,
+      ),
+    ).toEqual({ output: "done", threadId: null, usage: null });
+  });
+
+  it("keeps cancellation and timeout ahead of provider failure evidence", () => {
+    const parsed = emptyParsed();
+    parsed.modelInferenceLimitExceeded = true;
+
+    expect(() =>
+      finalizeCodexRun(
+        parsed,
+        { exitCode: 130, cancelled: true, timedOut: false, outputTruncated: false },
+        terminalMessages,
+      ),
+    ).toThrow("Run cancelled");
+    expect(() =>
+      finalizeCodexRun(
+        parsed,
+        { exitCode: 1, cancelled: false, timedOut: true, outputTruncated: false },
+        terminalMessages,
+      ),
+    ).toThrow("timed out");
   });
 });

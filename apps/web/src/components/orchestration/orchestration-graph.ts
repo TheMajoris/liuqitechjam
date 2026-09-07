@@ -37,7 +37,7 @@ export interface GraphNode {
    */
   events: OrchestrationEvent[];
   /**
-   * The turn did not produce a usable result, so resuming from it is the
+   * The turn did not produce a usable result, so retrying from it is the
    * action a reader is most likely to want.
    */
   failed: boolean;
@@ -319,84 +319,32 @@ export function buildOrchestrationGraph(
 }
 
 /**
- * Canvas geometry. Lanes are columns and execution steps are rows, so the
- * drawing keeps a git-graph reading even though a flow library owns the
- * viewport. Positions are absolute because the layout is computed, not solved.
- */
-export const FLOW_LANE_GAP = 208;
-export const FLOW_ROW_GAP = 86;
-export const FLOW_NODE_WIDTH = 176;
-
-export interface FlowTurnData extends Record<string, unknown> {
-  node: GraphNode;
-  /** Resolved Agent name. Injected so the model stays free of naming policy. */
-  label: string;
-}
-
-export interface FlowMarkerData extends Record<string, unknown> {
-  marker: GraphMarker;
-}
-
-export interface FlowNode {
-  id: string;
-  type: "turn" | "cycle";
-  position: { x: number; y: number };
-  data: FlowTurnData | FlowMarkerData;
-  selectable: boolean;
-}
-
-export interface FlowEdge {
-  id: string;
-  source: string;
-  target: string;
-  handoff: boolean;
-  crossCycle: boolean;
-}
-
-export interface FlowElements {
-  nodes: FlowNode[];
-  edges: FlowEdge[];
-}
-
-/**
- * Place the model on a canvas.
+ * Vertical extent of each lane: the first and last row it holds a turn on.
  *
- * Kept separate from rendering so the geometry is testable without a DOM: the
- * flow library only consumes the arrays this returns. `resolveLabel` is
- * injected because a custom node receives only its own data, and naming an
- * Agent is the caller's concern rather than the layout's.
+ * The log draws a continuous track for a lane only between those rows, so an
+ * Agent that has not spoken yet contributes no ink and a finished lane stops
+ * rather than trailing to the bottom of the run.
  */
-export function toFlowElements(
-  model: OrchestrationGraphModel,
-  resolveLabel: (agentId: string) => string = (agentId) => agentId,
-): FlowElements {
-  const nodes: FlowNode[] = model.rows.map((row) =>
-    row.kind === "turn"
-      ? {
-          id: row.id,
-          type: "turn" as const,
-          position: { x: row.column * FLOW_LANE_GAP, y: row.row * FLOW_ROW_GAP },
-          data: { node: row, label: resolveLabel(row.turn.agentId) },
-          selectable: true,
-        }
-      : {
-          // A follow-up spans the whole run rather than belonging to a lane.
-          id: row.id,
-          type: "cycle" as const,
-          position: { x: 0, y: row.row * FLOW_ROW_GAP },
-          data: { marker: row },
-          selectable: false,
-        },
-  );
+export interface LaneExtent {
+  column: number;
+  firstRow: number;
+  lastRow: number;
+}
 
-  return {
-    nodes,
-    edges: model.edges.map((edge) => ({
-      id: edge.id,
-      source: edge.fromId,
-      target: edge.toId,
-      handoff: edge.handoff,
-      crossCycle: edge.crossCycle,
-    })),
-  };
+export function laneExtents(model: OrchestrationGraphModel): LaneExtent[] {
+  const extents = new Map<number, LaneExtent>();
+  for (const node of model.nodes) {
+    const existing = extents.get(node.column);
+    if (existing === undefined) {
+      extents.set(node.column, {
+        column: node.column,
+        firstRow: node.row,
+        lastRow: node.row,
+      });
+      continue;
+    }
+    if (node.row < existing.firstRow) existing.firstRow = node.row;
+    if (node.row > existing.lastRow) existing.lastRow = node.row;
+  }
+  return [...extents.values()].sort((left, right) => left.column - right.column);
 }

@@ -13,11 +13,13 @@ import type { GraphNode } from "./orchestration-graph";
 export interface OrchestrationTurnInspectorProps {
   node: GraphNode;
   agents: Agent[];
-  /** Absent when the caller cannot resume, which closes the affordance. */
+  /** Absent when the caller cannot retry, which closes the affordance. */
   onRetry?: ((fromStepIndex: number) => void) | undefined;
   retryPending?: boolean;
   /** True while the conversation is running, when a retry must not be offered. */
   retryBlocked?: boolean;
+  /** True while another lifecycle action is in flight. */
+  retryDisabled?: boolean;
   onClose: () => void;
 }
 
@@ -25,8 +27,8 @@ export interface OrchestrationTurnInspectorProps {
  * What one dot on the graph actually records: its status, its timings, and the
  * journal entries written against its Run.
  *
- * A failed turn is also the one place a resume is offered, because resuming
- * from a turn that already succeeded would discard work for no reason.
+ * A failed turn is also the one place a retry is offered, because a successful
+ * turn has no failure checkpoint to recover.
  */
 export function OrchestrationTurnInspector({
   node,
@@ -34,6 +36,7 @@ export function OrchestrationTurnInspector({
   onRetry,
   retryPending = false,
   retryBlocked = false,
+  retryDisabled = false,
   onClose,
 }: OrchestrationTurnInspectorProps) {
   const { turn } = node;
@@ -127,15 +130,19 @@ export function OrchestrationTurnInspector({
           <button
             type="button"
             className="orch-inspector-resume-action"
-            disabled={retryPending || retryBlocked}
+            disabled={retryPending || retryBlocked || retryDisabled}
             onClick={() => onRetry?.(turn.stepIndex as number)}
           >
-            {retryPending ? "Resuming…" : "Resume from this turn"}
+            {retryPending ? "Retrying…" : "Retry from this turn"}
           </button>
           <p className="orch-inspector-note">
             {retryBlocked
-              ? "Stop the conversation before resuming it."
-              : "This Agent runs again, then the turns after it. Earlier turns are kept, and the turns that followed stay in the record. Files already written to the shared Workspace are not rewound."}
+              ? "Stop the conversation before retrying it."
+              : retryPending
+                ? "Retrying this Agent turn and continuing from the checkpoint…"
+                : retryDisabled
+                  ? "Wait for the current action to finish."
+                  : "This reruns the Agent turn and continues from there. Earlier turns stay in the record. Shared Workspace files are not rolled back."}
           </p>
         </section>
       )}

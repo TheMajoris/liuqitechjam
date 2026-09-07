@@ -48,10 +48,18 @@ export interface OrchestrationSelectionInput {
   originalPrompt: string;
   participants: readonly OrchestrationParticipant[];
   mode: OrchestrationMode;
+  /** Zero for the initial run; positive values identify follow-up cycles. */
+  cycleIndex?: number | undefined;
   /** Runtime-only supervisor model captured when the cycle was accepted. */
   supervisorModel?: string | undefined;
   stepIndex: number;
   maxSteps: number;
+  /** Number of participant replies produced in this cycle so far. */
+  currentCycleTurnCount?: number | undefined;
+  /** Number of bounded prior-cycle turns supplied as context. */
+  priorCycleTurnCount?: number | undefined;
+  /** Set only for a corrective follow-up routing decision. */
+  requireCurrentCycleDispatch?: boolean | undefined;
   turns: readonly OrchestrationExecutionTurn[];
   /** Prior-cycle authoritative turns for a bounded shared-context view. */
   contextTurns?: readonly SharedConversationTurn[];
@@ -119,6 +127,8 @@ export type OrchestrationExecutionInput = Pick<
       | "completionReason"
     >
   > & {
+    /** Zero for the initial run; positive values identify follow-up cycles. */
+    cycleIndex?: number | undefined;
     /** Prior-cycle authoritative turns; never counted against this cycle. */
     contextTurns?: readonly SharedConversationTurn[];
   };

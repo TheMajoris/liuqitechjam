@@ -64,6 +64,9 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [roles, setRoles] = useState<AgentRole[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(readSidebarPreference);
+  // Narrow viewports get the same sidebar as an overlay drawer rather than a
+  // squashed rail, so navigation keeps its labels and its Conversation tree.
+  const [navOpen, setNavOpen] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [composerMode, setComposerMode] = useState<"workspace" | "conversation">("workspace");
   const orchestration = useOrchestration();
@@ -80,6 +83,21 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem(PREVIEW_PANEL_KEY, previewPanelOpen ? "open" : "collapsed");
   }, [previewPanelOpen]);
+
+  // Any navigation dismisses the drawer: on a phone the destination should be
+  // what fills the screen, not the menu that chose it.
+  useEffect(() => {
+    setNavOpen(false);
+  }, [view, selectedId, orchestration.selectedSessionId, orchestration.selectedWorkspaceId]);
+
+  useEffect(() => {
+    if (!navOpen) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setNavOpen(false);
+    };
+    document.addEventListener("keydown", close);
+    return () => document.removeEventListener("keydown", close);
+  }, [navOpen]);
 
   const refreshAgents = useCallback(async () => {
     const { agents: next } = await api.listAgents();
@@ -362,7 +380,44 @@ export default function App() {
   }
 
   return (
-    <div className={"app-shell " + (sidebarOpen ? "" : "is-collapsed")}>
+    <div
+      className={
+        "app-shell " +
+        (sidebarOpen ? "" : "is-collapsed") +
+        (navOpen ? " nav-open" : "")
+      }
+    >
+      <header className="mobile-bar">
+        <button
+          type="button"
+          className="mobile-bar-button"
+          aria-label={navOpen ? "Close navigation" : "Open navigation"}
+          aria-expanded={navOpen}
+          aria-controls="app-sidebar"
+          onClick={() => setNavOpen((value) => !value)}
+        >
+          <span aria-hidden="true">{navOpen ? "✕" : "☰"}</span>
+        </button>
+        <span className="mobile-bar-title">LQAM</span>
+        <button
+          type="button"
+          className="mobile-bar-button is-primary"
+          aria-label="New workspace"
+          onClick={newWorkspace}
+        >
+          <span aria-hidden="true">＋</span>
+        </button>
+      </header>
+
+      <button
+        type="button"
+        className="nav-scrim"
+        tabIndex={navOpen ? 0 : -1}
+        aria-hidden={!navOpen}
+        aria-label="Close navigation"
+        onClick={() => setNavOpen(false)}
+      />
+
       <AppSidebar
         collapsed={!sidebarOpen}
         view={view}

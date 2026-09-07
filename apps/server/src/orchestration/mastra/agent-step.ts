@@ -23,6 +23,7 @@ import {
 import type { OrchestrationErrorCode } from "../types.js";
 import type { SequenceDecision, SequenceInput } from "../sequence.js";
 import type { OrchestrationParticipant } from "../types.js";
+import { SupervisorError } from "../supervisor/errors.js";
 import type {
   MastraExecutionState,
   MastraOrchestrationStepOptions,
@@ -60,6 +61,7 @@ export const mastraExecutionStateSchema: z.ZodType<MastraExecutionState> = z.obj
     .min(1)
     .max(ORCHESTRATION_LIMITS.maxParticipants),
   mode: OrchestrationModeSchema,
+  cycleIndex: z.number().int().nonnegative(),
   completionReason: OrchestrationCompletionReasonSchema.nullable(),
   stepIndex: z.number().int().nonnegative(),
   maxSteps: z.number().int().positive().max(ORCHESTRATION_LIMITS.maxSteps),
@@ -268,6 +270,32 @@ function configuredParticipant(
   return participant ?? null;
 }
 
+/**
+ * The selector/provider is untrusted, so keep the immediate-repeat invariant
+ * at the dispatch boundary too. The selector normally performs one corrective
+ * provider call, but a custom selector must not be able to bypass the rule.
+ * A retry starts a fresh current-cycle turn list, which deliberately permits
+ * its explicitly pinned checkpoint participant once.
+ */
+function immediateSupervisorRepeat(
+  state: MastraExecutionState,
+  participant: OrchestrationParticipant,
+): SupervisorError | null {
+  if (state.mode !== "supervisor" || state.turns.length === 0) return null;
+  const distinctAgentIds = new Set(
+    state.participants.map((candidate) => candidate.agentId.trim()),
+  );
+  if (distinctAgentIds.size <= 1) return null;
+  const previousAgentId = state.turns.at(-1)?.agentId.trim();
+  if (!previousAgentId || participant.agentId.trim() !== previousAgentId) {
+    return null;
+  }
+  return new SupervisorError(
+    "SUPERVISOR_INVALID_ROUTE",
+    "Supervisor selected the same Agent consecutively after the corrective routing boundary",
+  );
+}
+
 function isSequenceDecision(value: unknown): value is SequenceDecision {
   const record =
     typeof value === "object" && value !== null
@@ -354,8 +382,11 @@ export async function executeMastraOrchestrationStep(
       // supervisor implementation attempts to mutate its selection input.
       participants: state.participants.map((participant) => ({ ...participant })),
       mode: state.mode,
+      cycleIndex: state.cycleIndex,
       stepIndex: state.stepIndex,
       maxSteps: state.maxSteps,
+      currentCycleTurnCount: state.turns.length,
+      priorCycleTurnCount: state.contextTurns?.length ?? 0,
       turns: state.turns.map((turn) => ({ ...turn })),
       ...(options.participantProfiles === undefined
         ? {}
@@ -433,6 +464,14 @@ export async function executeMastraOrchestrationStep(
       errorCode,
     });
     return failureState(state, errorCode);
+  }
+  const immediateRepeat = immediateSupervisorRepeat(state, participant);
+  if (immediateRepeat) {
+    options.onStepFailure?.({
+      error: immediateRepeat,
+      errorCode: immediateRepeat.orchestrationErrorCode,
+    });
+    return failureState(state, immediateRepeat.orchestrationErrorCode);
   }
   if (state.mode === "supervisor") {
     try {

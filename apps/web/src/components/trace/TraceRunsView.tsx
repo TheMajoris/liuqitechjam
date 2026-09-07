@@ -2,10 +2,17 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "../../api";
 import type { AuditTraceSummary, RunHistoryEntry } from "../../types";
 import { Spinner } from "../playground/Spinner";
-import { formatDuration } from "../insights/usage-format";
+import { formatDuration, formatPercent } from "../insights/usage-format";
 import { RunListView } from "./RunListView";
 import { describeTokens, formatStarted, formatTokenCell, shortId } from "./run-format";
 import { statusFilter } from "./trace-tree";
+import {
+  TokenHotspots,
+  TokenSplitBar,
+  addTokens,
+  emptyHotspot,
+  type TokenHotspot,
+} from "./TokenHotspots";
 
 interface TraceRunsViewProps {
   projectId?: string;
@@ -20,8 +27,55 @@ const FILTERS = [
   { value: "failure", label: "Failure" },
 ] as const;
 
+const TRACE_SORTS = [
+  { value: "recent", label: "Recent" },
+  { value: "tokens", label: "Most tokens" },
+  { value: "duration", label: "Slowest" },
+] as const;
+
 type FilterValue = (typeof FILTERS)[number]["value"];
+type TraceSort = (typeof TRACE_SORTS)[number]["value"];
 type Tab = "runs" | "traces";
+
+function traceTokens(trace: AuditTraceSummary): number {
+  return trace.tokens.availability === "unavailable" ? -1 : trace.tokens.totalTokens;
+}
+
+function sortTraces(
+  traces: readonly AuditTraceSummary[],
+  sort: TraceSort,
+): AuditTraceSummary[] {
+  const rows = [...traces];
+  if (sort === "tokens") {
+    return rows.sort((left, right) => traceTokens(right) - traceTokens(left));
+  }
+  if (sort === "duration") {
+    return rows.sort((left, right) => right.durationMs - left.durationMs);
+  }
+  return rows.sort((left, right) => right.startedAt.localeCompare(left.startedAt));
+}
+
+/**
+ * Token spend per trace.
+ *
+ * A trace can span several Agents, and the rollup does not say which of them
+ * spent what — so the ranking stays at the level the counters were actually
+ * reported at rather than inventing a per-Agent split.
+ */
+function traceHotspots(
+  traces: readonly AuditTraceSummary[],
+  labelFor: (trace: AuditTraceSummary) => string | null,
+): TokenHotspot[] {
+  return traces.map((trace) => {
+    const row = emptyHotspot(
+      trace.traceId,
+      trace.rootSummary || trace.rootType || shortId(trace.traceId),
+      labelFor(trace),
+    );
+    addTokens(row, trace.tokens);
+    return row;
+  });
+}
 
 interface AgentLabel {
   name: string;
@@ -53,6 +107,7 @@ export function TraceRunsView({
   const [traces, setTraces] = useState<AuditTraceSummary[] | null>(null);
   const [labels, setLabels] = useState<Map<string, AgentLabel>>(new Map());
   const [status, setStatus] = useState<FilterValue>("all");
+  const [sort, setSort] = useState<TraceSort>("recent");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState<"jsonl" | "csv" | null>(null);
@@ -78,7 +133,24 @@ export function TraceRunsView({
     if (tab === "traces") void load();
   }, [load, tab]);
 
-  const rows = useMemo(() => statusFilter(traces ?? [], status), [traces, status]);
+  const rows = useMemo(
+    () => sortTraces(statusFilter(traces ?? [], status), sort),
+    [traces, status, sort],
+  );
+  const agentNames = useCallback(
+    (trace: AuditTraceSummary) =>
+      trace.agentIds.map((id) => labels.get(id)?.name ?? shortId(id)).join(", ") || null,
+    [labels],
+  );
+  const hotspots = useMemo(() => traceHotspots(rows, agentNames), [rows, agentNames]);
+  const peakTokens = useMemo(
+    () => rows.reduce((peak, trace) => Math.max(peak, traceTokens(trace)), 0),
+    [rows],
+  );
+  const windowTokens = useMemo(
+    () => rows.reduce((sum, trace) => sum + Math.max(0, traceTokens(trace)), 0),
+    [rows],
+  );
 
   const runExport = async (format: "jsonl" | "csv") => {
     setExporting(format);
@@ -183,6 +255,19 @@ export function TraceRunsView({
                 </button>
               ))}
             </div>
+            <div className="insights-range" role="group" aria-label="Sort traces">
+              {TRACE_SORTS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={"button" + (sort === option.value ? " is-active" : "")}
+                  aria-pressed={sort === option.value}
+                  onClick={() => setSort(option.value)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
             <button type="button" className="button" onClick={() => void load()}>
               Refresh
             </button>
@@ -196,6 +281,18 @@ export function TraceRunsView({
           ) : rows.length === 0 ? (
             <p className="usage-empty">No traces recorded yet.</p>
           ) : (
+            <>
+            <TokenHotspots
+              title="Where the tokens went"
+              subject="trace"
+              rows={hotspots}
+              onSelect={(traceId) => {
+                const trace = rows.find((item) => item.traceId === traceId);
+                const runId = trace?.runIds.length === 1 ? trace.runIds[0] : undefined;
+                if (runId === undefined) onOpenTrace(traceId);
+                else onOpenRun(runId);
+              }}
+            />
             <div className="usage-table-scroll">
               <table className="usage-table trace-table">
                 <thead>
@@ -205,7 +302,7 @@ export function TraceRunsView({
                     <th>Agents</th>
                     <th>Status</th>
                     <th className="numeric">Duration</th>
-                    <th className="numeric">Tokens</th>
+                    <th className="token-column">Tokens</th>
                     <th className="numeric">Events</th>
                     <th className="numeric">Tools</th>
                     <th className="numeric">Sandbox</th>
@@ -247,8 +344,27 @@ export function TraceRunsView({
                           </span>
                         </td>
                         <td className="numeric">{formatDuration(trace.durationMs)}</td>
-                        <td className="numeric" title={describeTokens(trace.tokens)}>
-                          {formatTokenCell(trace.tokens)}
+                        <td className="token-column" title={describeTokens(trace.tokens)}>
+                          <span className="token-cell">
+                            <span className="token-cell-figures">
+                              <strong>{formatTokenCell(trace.tokens)}</strong>
+                              {windowTokens > 0 && traceTokens(trace) > 0 && (
+                                <span className="token-cell-share">
+                                  {formatPercent(trace.tokens.totalTokens, windowTokens)}
+                                </span>
+                              )}
+                            </span>
+                            {peakTokens > 0 && traceTokens(trace) > 0 && (
+                              <span
+                                className="token-cell-bar"
+                                style={{
+                                  width: (trace.tokens.totalTokens / peakTokens) * 100 + "%",
+                                }}
+                              >
+                                <TokenSplitBar hotspot={trace.tokens} />
+                              </span>
+                            )}
+                          </span>
                         </td>
                         <td className="numeric">{trace.eventCount}</td>
                         <td className="numeric">{trace.countsByCategory.tool_call ?? 0}</td>
@@ -260,6 +376,7 @@ export function TraceRunsView({
                 </tbody>
               </table>
             </div>
+            </>
           )}
         </>
       )}

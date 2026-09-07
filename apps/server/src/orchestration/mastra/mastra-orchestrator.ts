@@ -199,6 +199,7 @@ function normalizeInput(input: OrchestrationExecutionInput): MastraExecutionStat
     originalPrompt: input.originalPrompt,
     participants: [...input.participants],
     mode: input.mode ?? "sequential",
+    cycleIndex: input.cycleIndex ?? 0,
     completionReason: input.completionReason ?? null,
     stepIndex: input.stepIndex ?? 0,
     maxSteps: input.maxSteps,

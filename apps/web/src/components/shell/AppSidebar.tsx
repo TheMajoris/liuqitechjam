@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type {
   Agent,
+  OrchestrationSession,
   Project,
   SystemInfo,
 } from "../../types";
@@ -48,6 +49,64 @@ function agentStatusLabel(status: Agent["status"]): string {
   if (status === "busy") return "Working";
   if (status === "stopped") return "Stopped";
   return "Error";
+}
+
+/**
+ * One Conversation in the tree.
+ *
+ * The delete control lives inside the card rather than beside it, so a row is
+ * one target with one outline instead of a card and a stray glyph drifting
+ * past its right edge. State reads on the meta line next to the timestamp,
+ * which leaves the name the full width it needs before it has to truncate.
+ */
+function ConversationRow({
+  session,
+  selected,
+  busy,
+  onSelect,
+  onDelete,
+}: {
+  session: OrchestrationSession;
+  selected: boolean;
+  busy: boolean;
+  onSelect: (sessionId: string) => void;
+  onDelete: (sessionId: string) => void;
+}) {
+  const active = isOrchestrationActive(session.status);
+  return (
+    <div className={"conversation-row" + (selected ? " is-selected" : "")}>
+      <button
+        type="button"
+        className="conversation-card"
+        aria-current={selected ? "page" : undefined}
+        onClick={() => onSelect(session.id)}
+      >
+        <span className={"conversation-dot thread-state-" + session.status} aria-hidden="true" />
+        <span className="conversation-copy">
+          <strong>{session.name}</strong>
+          <span className="conversation-meta">
+            <span className={"thread-state thread-state-" + session.status}>
+              {statusLabel(session.status)}
+            </span>
+            <span className="conversation-sep" aria-hidden="true" />
+            <time dateTime={session.updatedAt}>{formatDateTime(session.updatedAt)}</time>
+          </span>
+        </span>
+      </button>
+      <button
+        type="button"
+        className="conversation-delete"
+        aria-label={`Delete conversation ${session.name}`}
+        title={active ? "Stop before deleting" : "Delete conversation"}
+        disabled={active || busy}
+        onClick={() => {
+          if (window.confirm(`Delete conversation "${session.name}"?`)) onDelete(session.id);
+        }}
+      >
+        <span aria-hidden="true">×</span>
+      </button>
+    </div>
+  );
 }
 
 /**
@@ -378,38 +437,14 @@ export function AppSidebar({
                     {projectSessions.map((session) => {
                       const conversationSelected = session.id === orchestration.selectedSessionId;
                       return (
-                        <div className="thread-card-row" key={session.id}>
-                          <button
-                            type="button"
-                            className={"thread-card workspace-conversation-card " + (conversationSelected ? "selected" : "")}
-                            aria-current={conversationSelected ? "page" : undefined}
-                            onClick={() => onSelectSession(session.id)}
-                          >
-                            <span className="thread-card-copy">
-                              <strong>{session.name}</strong>
-                              <span className="thread-card-meta">
-                                <span>{formatDateTime(session.updatedAt)}</span>
-                              </span>
-                            </span>
-                            <span className={"thread-state thread-state-" + session.status}>
-                              {statusLabel(session.status)}
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            className="thread-delete"
-                            aria-label={`Delete conversation ${session.name}`}
-                            title={isOrchestrationActive(session.status) ? "Stop before deleting" : "Delete conversation"}
-                            disabled={isOrchestrationActive(session.status) || orchestration.action !== null}
-                            onClick={() => {
-                              if (window.confirm(`Delete conversation "${session.name}"?`)) {
-                                onDeleteSession(session.id);
-                              }
-                            }}
-                          >
-                            ×
-                          </button>
-                        </div>
+                        <ConversationRow
+                          key={session.id}
+                          session={session}
+                          selected={conversationSelected}
+                          busy={orchestration.action !== null}
+                          onSelect={onSelectSession}
+                          onDelete={onDeleteSession}
+                        />
                       );
                     })}
                     {projectSessions.length === 0 && (
@@ -443,29 +478,14 @@ export function AppSidebar({
                 .map((session) => {
                   const selected = view === "workspace" && session.id === orchestration.selectedSessionId;
                   return (
-                    <div className="thread-card-row" key={session.id}>
-                      <button
-                        type="button"
-                        className={"thread-card workspace-conversation-card " + (selected ? "selected" : "")}
-                        aria-current={selected ? "page" : undefined}
-                        onClick={() => onSelectSession(session.id)}
-                      >
-                        <span className="thread-card-copy">
-                          <strong>{session.name}</strong>
-                          <span className="thread-card-meta"><span>{formatDateTime(session.updatedAt)}</span></span>
-                        </span>
-                        <span className={"thread-state thread-state-" + session.status}>{statusLabel(session.status)}</span>
-                      </button>
-                      <button
-                        type="button"
-                        className="thread-delete"
-                        aria-label={`Delete conversation ${session.name}`}
-                        disabled={isOrchestrationActive(session.status) || orchestration.action !== null}
-                        onClick={() => {
-                          if (window.confirm(`Delete conversation "${session.name}"?`)) onDeleteSession(session.id);
-                        }}
-                      >×</button>
-                    </div>
+                    <ConversationRow
+                      key={session.id}
+                      session={session}
+                      selected={selected}
+                      busy={orchestration.action !== null}
+                      onSelect={onSelectSession}
+                      onDelete={onDeleteSession}
+                    />
                   );
                 })}
             </div>
