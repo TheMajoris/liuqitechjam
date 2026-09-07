@@ -5746,6 +5746,62 @@ textarea:focus {
   background: #ffffff;
 }
 
+/*
+ * A plate at rest is a name tag.
+ *
+ * Pod desks are 45 world units apart, and a plate carrying its name, its
+ * activity, and its quota is wider than that gap at every zoom — which is how
+ * two neighbours ended up overlapping and clipping each other's text. Only the
+ * plate being looked at spends the extra width, and it rises above its
+ * neighbours while it does.
+ */
+.ws-plate {
+  z-index: 1;
+  max-width: 168px;
+}
+
+.ws-plate.is-expanded {
+  z-index: 4;
+}
+
+.ws-plate-heading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+/* State stays legible at rest through colour, since its word is put away. */
+.ws-plate-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.ws-plate[data-tone="active"] .ws-plate-dot { background: var(--purple); }
+.ws-plate[data-tone="positive"] .ws-plate-dot { background: var(--green); }
+.ws-plate[data-tone="danger"] .ws-plate-dot { background: var(--red); }
+.ws-plate[data-tone="waiting"] .ws-plate-dot { background: #c0a24a; }
+
+/*
+ * Put away, not removed: the text keeps its place in the accessibility tree
+ * so a screen reader still hears the activity and the quota.
+ */
+.ws-plate-state.is-quiet,
+.ws-plate-resource.is-quiet {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .ws-plate-name {
   max-width: 132px;
   overflow: hidden;

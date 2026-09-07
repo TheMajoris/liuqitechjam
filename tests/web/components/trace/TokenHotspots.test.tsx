@@ -4,6 +4,7 @@ import {
   TokenHotspots,
   addTokens,
   emptyHotspot,
+  tokenSegments,
 } from "../../../../apps/web/src/components/trace/TokenHotspots";
 import type { RunTokenTotals } from "../../../../apps/web/src/types";
 
@@ -19,6 +20,36 @@ function tokens(overrides: Partial<RunTokenTotals> = {}): RunTokenTotals {
     ...overrides,
   };
 }
+
+describe("tokenSegments", () => {
+  // The server bills input + output and reports cached input as the slice of
+  // the input it served from cache. Treating cache as a third addend
+  // double-counts it and pushes the drawn shares past 100%.
+  it("bills input plus output, with cache taken out of the input", () => {
+    expect(
+      tokenSegments({ inputTokens: 142_000, cachedInputTokens: 85_000, outputTokens: 20_000 }),
+    ).toEqual({ fresh: 57_000, cached: 85_000, output: 20_000, total: 162_000 });
+  });
+
+  it("keeps the three segments summing to the billed total", () => {
+    const parts = { inputTokens: 900, cachedInputTokens: 300, outputTokens: 100 };
+    const { fresh, cached, output, total } = tokenSegments(parts);
+
+    expect(fresh + cached + output).toBe(total);
+  });
+
+  it("clamps a cache counter that overshoots the input it came from", () => {
+    expect(
+      tokenSegments({ inputTokens: 100, cachedInputTokens: 400, outputTokens: 50 }),
+    ).toEqual({ fresh: 0, cached: 100, output: 50, total: 150 });
+  });
+
+  it("has nothing to draw when no counter was reported", () => {
+    expect(
+      tokenSegments({ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 }).total,
+    ).toBe(0);
+  });
+});
 
 describe("addTokens", () => {
   it("sums the reported split and counts the run", () => {

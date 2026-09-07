@@ -191,6 +191,12 @@ export function WorkspaceStage({
           const showCapacity = hovered === agent.agentId;
           const capacityPercent = modelResourceQuotaPercent(agent.modelResource);
           const capacityTone = modelResourceQuotaTone(agent.modelResource);
+          // Desks sit closer together than a fully-written plate is wide, so a
+          // plate states only its name at rest and opens its detail when it is
+          // the one being looked at. Everything stays in the accessibility
+          // tree either way; only the drawn width changes.
+          const expanded =
+            showCapacity || agent.isSelected || agent.isCurrentParticipant;
           return (
             <button
               key={agent.agentId}
@@ -202,7 +208,8 @@ export function WorkspaceStage({
               className={
                 "ws-plate" +
                 (agent.isSelected ? " is-selected" : "") +
-                (agent.isCurrentParticipant ? " is-active" : "")
+                (agent.isCurrentParticipant ? " is-active" : "") +
+                (expanded ? " is-expanded" : "")
               }
               data-tone={descriptor.tone}
               style={
@@ -219,14 +226,17 @@ export function WorkspaceStage({
               onFocus={() => setHovered(agent.agentId)}
               onBlur={() => setHovered(null)}
             >
-              <span className="ws-plate-name">{agent.name}</span>
-              <span className="ws-plate-state">
+              <span className="ws-plate-heading">
+                <span className="ws-plate-dot" aria-hidden="true" />
+                <span className="ws-plate-name">{agent.name}</span>
+              </span>
+              <span className={"ws-plate-state" + (expanded ? "" : " is-quiet")}>
                 <span className="ws-plate-glyph" aria-hidden="true">{descriptor.glyph}</span>
                 {descriptor.label}
                 {agent.isCurrentParticipant ? " · this turn" : ""}
               </span>
               <span
-                className="ws-plate-resource"
+                className={"ws-plate-resource" + (expanded ? "" : " is-quiet")}
                 data-resource-tone={agent.modelResource?.endpointStatus ?? "unknown"}
                 data-resource-freshness={agent.modelResource?.freshness ?? "unavailable"}
                 data-resource-capacity-tone={capacityTone}
