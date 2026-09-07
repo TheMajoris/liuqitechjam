@@ -1,4 +1,4 @@
-import type { AgentRole, SkillMetadata } from "../../types";
+import type { AgentRole, ModelResourceSnapshot, SkillMetadata } from "../../types";
 import type { AgentForm } from "../../playground/agent-form";
 import type { ModelCatalogController } from "../../playground/use-model-catalog";
 import { AgentFormFields } from "./AgentFormFields";
@@ -7,6 +7,7 @@ import { Spinner } from "./Spinner";
 interface CreateAgentModalProps {
   form: AgentForm;
   modelCatalog: ModelCatalogController;
+  modelResources?: Map<string, ModelResourceSnapshot>;
   skillCatalog: SkillMetadata[];
   skillLoading: boolean;
   skillError: string | null;
@@ -21,6 +22,7 @@ interface CreateAgentModalProps {
 export function CreateAgentModal({
   form,
   modelCatalog,
+  modelResources,
   skillCatalog,
   skillLoading,
   skillError,
@@ -50,6 +52,7 @@ export function CreateAgentModal({
           <AgentFormFields
             form={form}
             modelCatalog={modelCatalog}
+            {...(modelResources === undefined ? {} : { modelResources })}
             skillCatalog={skillCatalog}
             skillLoading={skillLoading}
             skillError={skillError}

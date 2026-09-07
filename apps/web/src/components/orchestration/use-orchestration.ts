@@ -301,9 +301,6 @@ export function useOrchestration(): UseOrchestrationResult {
           originalPrompt: input.initialTask.trim(),
           participants,
           mode: input.mode,
-          ...(input.supervisorAgentId?.trim()
-            ? { supervisorAgentId: input.supervisorAgentId.trim() }
-            : {}),
           projectId: project.id,
           maxSteps: input.maxSteps,
           perAgentTimeoutMs: input.perAgentTimeoutMs,

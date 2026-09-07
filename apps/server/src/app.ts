@@ -31,8 +31,12 @@ import {
   ModelProviderParamsSchema,
   ModelRefSchema,
   ModelScopeQuerySchema,
+  ARK_WORKER_PROVIDER_ID,
+  parseSupervisorModelRef,
+  releaseAgentsFromReservedModel,
   type ArkModelCatalogRecord,
   type ModelDescriptor,
+  type ModelRef,
   type ModelRegistry,
 } from "./models/index.js";
 import {
@@ -104,7 +108,16 @@ export interface PreviewServiceContract {
 /** Narrow operator-facing seam for the persisted Ark model catalog. */
 export interface ModelCatalogServiceContract {
   get(): ArkModelCatalogRecord;
+  /** Absent on read-only catalog implementations used by some tests. */
+  setSupervisorModelRef?(modelRef: ModelRef | null): Promise<ArkModelCatalogRecord>;
 }
+
+const supervisorModelBody = z
+  .object({
+    /** `null` clears the override and hands routing back to SUPERVISOR_MODEL. */
+    modelRef: ModelRefSchema.nullable(),
+  })
+  .strict();
 
 /** Cosmetic only. Every field is optional; absent means the ID-derived look. */
 const appearanceBody = z.object({
@@ -383,6 +396,96 @@ export async function createApp(
       );
     }
     return modelRegistry.modelResources({ force: refresh === "true" });
+  });
+
+  // The supervisor endpoint is server-wide. SUPERVISOR_MODEL seeds it; an
+  // operator selection persists in the catalog and wins from then on.
+  const environmentSupervisorModelId = () => {
+    const value = config.supervisorModel.trim();
+    return value.length === 0 || value.includes("replace-") ? null : value;
+  };
+
+  const supervisorModelView = () => {
+    const override = modelCatalog?.get().supervisorModelRef ?? null;
+    const environmentModelId = environmentSupervisorModelId();
+    const modelRef: ModelRef | null = override
+      ? { providerId: override.providerId, modelId: override.modelId }
+      : environmentModelId === null
+        ? null
+        : { providerId: ARK_WORKER_PROVIDER_ID, modelId: environmentModelId };
+    return {
+      modelRef,
+      source: override ? "override" : modelRef ? "environment" : ("none" as const),
+      environmentModelId,
+      revision: modelCatalog?.get().revision ?? 0,
+    };
+  };
+
+  app.get("/api/supervisor-model", async () => {
+    if (modelCatalog === undefined) {
+      throw new ModelCatalogError(
+        "MODEL_CATALOG_UNAVAILABLE",
+        503,
+        "The Ark model catalog is not initialized",
+      );
+    }
+    return supervisorModelView();
+  });
+
+  app.put("/api/supervisor-model", async (request) => {
+    const catalog = modelCatalog;
+    if (catalog?.setSupervisorModelRef === undefined) {
+      throw new ModelCatalogError(
+        "MODEL_CATALOG_UNAVAILABLE",
+        503,
+        "The supervisor model cannot be changed on this server",
+      );
+    }
+    const parsed = supervisorModelBody.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ModelCatalogError(
+        "MODEL_CATALOG_INVALID",
+        422,
+        "The supervisor model reference is invalid",
+      );
+    }
+
+    let next: ModelRef | null = null;
+    if (parsed.data.modelRef !== null) {
+      next = parseSupervisorModelRef(parsed.data.modelRef);
+      // Supervisor scope lists every running endpoint, including the one that
+      // is currently reserved, so re-selecting the active endpoint is valid.
+      const candidates = await modelRegistry.listModels(
+        next.providerId,
+        "supervisor",
+      );
+      if (!candidates.some((model) => model.id === next?.modelId)) {
+        throw new ModelCatalogError(
+          "MODEL_NOT_FOUND",
+          422,
+          "The selected supervisor model is not a running endpoint",
+        );
+      }
+    }
+
+    await catalog.setSupervisorModelRef(next);
+
+    // Worker resolution now rejects the newly reserved endpoint, so any Agent
+    // still pointing at it has to be moved before it can run again.
+    const reservedModelId = next?.modelId ?? environmentSupervisorModelId() ?? "";
+    const availableModels = reservedModelId.length === 0
+      ? []
+      : await modelRegistry
+          .listModels(ARK_WORKER_PROVIDER_ID, "worker")
+          .catch(() => [] as ModelDescriptor[]);
+    const reassignments = await releaseAgentsFromReservedModel({
+      agentService: service,
+      reservedModelId,
+      availableModels,
+      preferredModelRef: catalog.get().defaultModelRef ?? null,
+    });
+
+    return { ...supervisorModelView(), reassignments };
   });
 
   if (modelCatalog !== undefined) {

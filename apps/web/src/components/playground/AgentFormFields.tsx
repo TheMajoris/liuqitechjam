@@ -1,4 +1,9 @@
-import type { AgentRole, AgentSkills, SkillMetadata } from "../../types";
+import type {
+  AgentRole,
+  AgentSkills,
+  ModelResourceSnapshot,
+  SkillMetadata,
+} from "../../types";
 import type { AgentForm } from "../../playground/agent-form";
 import type { ModelCatalogController } from "../../playground/use-model-catalog";
 import { AgentSkillsPanel } from "../AgentSkillsPanel";
@@ -30,6 +35,8 @@ type ModelFields = Pick<
 interface AgentFormFieldsProps {
   form: AgentForm;
   modelCatalog: ModelFields;
+  /** Live endpoint telemetry keyed `providerId:modelId`; annotates options. */
+  modelResources?: Map<string, ModelResourceSnapshot>;
   skillCatalog: SkillMetadata[];
   skillLoading: boolean;
   skillError: string | null;
@@ -45,6 +52,7 @@ interface AgentFormFieldsProps {
 export function AgentFormFields({
   form,
   modelCatalog,
+  modelResources,
   skillCatalog,
   skillLoading,
   skillError,
@@ -111,6 +119,7 @@ export function AgentFormFields({
         models={modelCatalog.selectedFormModels}
         modelsByProvider={modelCatalog.modelsByProvider}
         loadingByProvider={modelCatalog.loadingByProvider}
+        {...(modelResources === undefined ? {} : { modelResources })}
         value={form.modelRef}
         fallbackValues={form.fallbackModelRefs}
         loadingProviders={modelCatalog.providersLoading}

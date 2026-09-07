@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { api } from "../../api";
 import {
   ORCHESTRATION_MAX_NAME_LENGTH,
   ORCHESTRATION_MAX_STEPS,
@@ -6,19 +7,15 @@ import {
   ORCHESTRATION_MIN_TIMEOUT_MS,
   type DraftErrors,
 } from "./orchestration-utils";
-import type { Agent, ModelProviderDescriptor, OrchestrationMode } from "../../types";
-import { formatAgentWorkerModel } from "../WorkerModelFields";
+import type { OrchestrationMode } from "../../types";
 
 type NumericField = "maxSteps" | "perAgentTimeoutMs";
-type ClearableField = NumericField | "supervisorAgentId";
+type ClearableField = NumericField;
 
 interface OrchestrationAdvancedSettingsProps {
   name: string;
   derivedName: string;
   mode: OrchestrationMode;
-  agents: Agent[];
-  supervisorAgentId?: string;
-  modelProviders?: ModelProviderDescriptor[];
   maxSteps: number;
   perAgentTimeoutMs: number;
   errors: DraftErrors;
@@ -27,70 +24,47 @@ interface OrchestrationAdvancedSettingsProps {
   onChange: (field: NumericField, value: number) => void;
   onClearError: (field: ClearableField) => void;
   onModeChange: (mode: OrchestrationMode) => void;
-  onSupervisorAgentChange: (agentId: string) => void;
-}
-
-export interface SupervisorAgentSelectorProps {
-  agents: Agent[];
-  supervisorAgentId?: string;
-  modelProviders?: ModelProviderDescriptor[];
-  error?: string;
-  disabled?: boolean;
-  onChange: (agentId: string) => void;
-  onClearError?: () => void;
 }
 
 /**
- * Supervisor identity is deliberately separate from the participant picker.
- * The selected Agent's own worker assignment is the runtime model used to
- * make routing decisions, so show it as read-only context in each option.
+ * Read-only statement of what routes the conversation.
+ *
+ * Routing is a server-wide model, not an Agent: no one in the roster
+ * supervises, and no Agent is consumed by supervising. There is nothing to
+ * choose here, so this reports the configured endpoint instead of offering a
+ * selection that would not be honored.
  */
-export function SupervisorAgentSelector({
-  agents,
-  supervisorAgentId = "",
-  modelProviders = [],
-  error,
-  disabled = false,
-  onChange,
-  onClearError,
-}: SupervisorAgentSelectorProps) {
-  const selectedAgent = agents.find((agent) => agent.id === supervisorAgentId);
+export function SupervisorModelNotice() {
+  const [modelId, setModelId] = useState<string | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .supervisorModel()
+      .then((current) => {
+        if (cancelled) return;
+        setModelId(current.modelRef?.modelId ?? null);
+        setUnavailable(current.modelRef === null);
+      })
+      .catch(() => {
+        if (!cancelled) setUnavailable(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <div className="orch-field">
-      <label htmlFor="orch-supervisor-agent">Supervisor Agent</label>
-      <select
-        id="orch-supervisor-agent"
-        value={supervisorAgentId}
-        disabled={disabled}
-        aria-invalid={Boolean(error)}
-        aria-describedby={error ? "orch-supervisor-agent-error" : "orch-supervisor-agent-help"}
-        onChange={(event) => {
-          onChange(event.target.value);
-          onClearError?.();
-        }}
-      >
-        <option value="">Select an existing Agent</option>
-        {agents.map((agent) => (
-          <option value={agent.id} key={agent.id}>
-            {agent.name} · {formatAgentWorkerModel(agent, modelProviders)}
-          </option>
-        ))}
-      </select>
-      <span className="orch-field-help" id="orch-supervisor-agent-help">
-        This Agent routes the conversation. It stays separate from the participant roster;
-        its assigned worker model is shown beside its name.
+      <span className="orch-field-label">Routing</span>
+      <span className="orch-field-help" role="status">
+        {modelId === null
+          ? unavailable
+            ? "No supervisor model is configured. Set one in Insights › Supervisor model before starting a supervised Conversation."
+            : "Checking the configured supervisor model…"
+          : `Routed by the supervisor model ${modelId}. It is a server-wide setting, changed in Insights › Supervisor model.`}
       </span>
-      {selectedAgent && (
-        <span className="orch-field-help" role="status">
-          Assigned model: {formatAgentWorkerModel(selectedAgent, modelProviders)}
-        </span>
-      )}
-      {error && (
-        <span className="orch-field-error" id="orch-supervisor-agent-error">
-          {error}
-        </span>
-      )}
     </div>
   );
 }
@@ -104,9 +78,6 @@ export function OrchestrationAdvancedSettings({
   name,
   derivedName,
   mode,
-  agents,
-  supervisorAgentId = "",
-  modelProviders = [],
   maxSteps,
   perAgentTimeoutMs,
   errors,
@@ -115,15 +86,8 @@ export function OrchestrationAdvancedSettings({
   onChange,
   onClearError,
   onModeChange,
-  onSupervisorAgentChange,
 }: OrchestrationAdvancedSettingsProps) {
   const advancedRef = useRef<HTMLDetailsElement>(null);
-
-  useEffect(() => {
-    if (errors.supervisorAgentId && advancedRef.current) {
-      advancedRef.current.open = true;
-    }
-  }, [errors]);
 
   return (
     <details className="orch-advanced-settings" ref={advancedRef}>
@@ -162,23 +126,13 @@ export function OrchestrationAdvancedSettings({
             <option value="round_robin">Keep cycling through Agent order</option>
           </select>
           <span className="orch-field-help" id="orch-mode-help">
-            The selected Supervisor Agent picks whoever should speak next and can end the
+            The supervisor model picks whoever should speak next and can end the
             conversation early. The other two follow the Agent order you set: once through,
             or on repeat until the turn limit below stops it.
           </span>
         </div>
 
-        {mode === "supervisor" && (
-          <SupervisorAgentSelector
-            agents={agents}
-            supervisorAgentId={supervisorAgentId}
-            modelProviders={modelProviders}
-            error={errors.supervisorAgentId}
-            disabled={disabled}
-            onChange={onSupervisorAgentChange}
-            onClearError={() => onClearError("supervisorAgentId")}
-          />
-        )}
+        {mode === "supervisor" && <SupervisorModelNotice />}
 
         <div className="orch-field">
           <label htmlFor="orch-max-steps">Turn limit</label>

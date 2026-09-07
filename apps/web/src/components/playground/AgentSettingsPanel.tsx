@@ -1,4 +1,10 @@
-import type { Agent, AgentRole, AgentSkills, SkillMetadata } from "../../types";
+import type {
+  Agent,
+  AgentRole,
+  AgentSkills,
+  ModelResourceSnapshot,
+  SkillMetadata,
+} from "../../types";
 import type { AgentForm } from "../../playground/agent-form";
 import type { ModelCatalogController } from "../../playground/use-model-catalog";
 import { AgentFormFields } from "./AgentFormFields";
@@ -8,6 +14,7 @@ interface AgentSettingsPanelProps {
   agent: Agent;
   form: AgentForm;
   modelCatalog: ModelCatalogController;
+  modelResources?: Map<string, ModelResourceSnapshot>;
   skillCatalog: SkillMetadata[];
   skillLoading: boolean;
   skillError: string | null;
@@ -25,6 +32,7 @@ export function AgentSettingsPanel({
   agent,
   form,
   modelCatalog,
+  modelResources,
   skillCatalog,
   skillLoading,
   skillError,
@@ -50,6 +58,7 @@ export function AgentSettingsPanel({
         <AgentFormFields
           form={form}
           modelCatalog={modelCatalog}
+          {...(modelResources === undefined ? {} : { modelResources })}
           skillCatalog={skillCatalog}
           skillLoading={skillLoading}
           skillError={skillError}

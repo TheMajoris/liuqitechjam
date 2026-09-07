@@ -7,7 +7,6 @@ import type {
 } from "../../types";
 import {
   type DraftErrors,
-  defaultSupervisorAgentId,
   deriveSessionName,
   isOrderedMode,
   normalizeParticipants,
@@ -19,7 +18,7 @@ import {
 } from "./orchestration-utils";
 import {
   OrchestrationAdvancedSettings,
-  SupervisorAgentSelector,
+  SupervisorModelNotice,
 } from "./OrchestrationAdvancedSettings";
 import { AgentPicker } from "./AgentPicker";
 
@@ -43,7 +42,6 @@ const initialDraft: OrchestrationDraft = {
   originalPrompt: "",
   participants: [],
   mode: "supervisor",
-  supervisorAgentId: "",
   maxSteps: 20,
   perAgentTimeoutMs: 300_000,
 };
@@ -54,7 +52,6 @@ const initialWorkspaceDraft: WorkspaceDraft = {
   participants: [],
   initialTask: "",
   mode: "supervisor",
-  supervisorAgentId: "",
   maxSteps: 20,
   perAgentTimeoutMs: 300_000,
 };
@@ -74,58 +71,14 @@ export function OrchestrationComposer({
   const [draft, setDraft] = useState<OrchestrationDraft>(() => ({
     ...initialDraft,
     participants: initialConversationParticipants,
-    supervisorAgentId: defaultSupervisorAgentId(
-      initialConversationParticipants,
-      undefined,
-      agents[0]?.id,
-    ),
   }));
   const [workspaceDraft, setWorkspaceDraft] = useState<WorkspaceDraft>(() => ({
     ...initialWorkspaceDraft,
     participants: initialConversationParticipants,
-    supervisorAgentId: defaultSupervisorAgentId(
-      initialConversationParticipants,
-      undefined,
-      agents[0]?.id,
-    ),
   }));
   const [errors, setErrors] = useState<DraftErrors>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-
-  // Agent loading can finish after the composer mounts. Fill an unset
-  // supervisor once, while preserving any explicit Advanced override.
-  useEffect(() => {
-    const fallbackAgentId = agents[0]?.id;
-    if (!fallbackAgentId) return;
-    if (mode === "workspace") {
-      setWorkspaceDraft((current) =>
-        current.supervisorAgentId?.trim()
-          ? current
-          : {
-              ...current,
-              supervisorAgentId: defaultSupervisorAgentId(
-                current.participants,
-                undefined,
-                fallbackAgentId,
-              ),
-            },
-      );
-      return;
-    }
-    setDraft((current) =>
-      current.supervisorAgentId?.trim()
-        ? current
-        : {
-            ...current,
-            supervisorAgentId: defaultSupervisorAgentId(
-              current.participants,
-              undefined,
-              fallbackAgentId,
-            ),
-          },
-    );
-  }, [agents, mode]);
 
   const derivedName = useMemo(
     () => (draft.originalPrompt.trim() ? deriveSessionName(draft.originalPrompt) : ""),
@@ -134,29 +87,13 @@ export function OrchestrationComposer({
 
   const updateParticipants = (participants: OrchestrationParticipant[]) => {
     const normalizedParticipants = normalizeParticipants(participants);
-    setDraft((current) => ({
-      ...current,
-      participants: normalizedParticipants,
-      supervisorAgentId: defaultSupervisorAgentId(
-        normalizedParticipants,
-        current.supervisorAgentId,
-        agents[0]?.id,
-      ),
-    }));
+    setDraft((current) => ({ ...current, participants: normalizedParticipants }));
     setErrors((current) => ({ ...current, participants: undefined }));
   };
 
   const updateWorkspaceParticipants = (participants: OrchestrationParticipant[]) => {
     const normalizedParticipants = normalizeParticipants(participants);
-    setWorkspaceDraft((current) => ({
-      ...current,
-      participants: normalizedParticipants,
-      supervisorAgentId: defaultSupervisorAgentId(
-        normalizedParticipants,
-        current.supervisorAgentId,
-        agents[0]?.id,
-      ),
-    }));
+    setWorkspaceDraft((current) => ({ ...current, participants: normalizedParticipants }));
     setErrors((current) => ({ ...current, participants: undefined }));
   };
 
@@ -167,8 +104,6 @@ export function OrchestrationComposer({
     const form = event.currentTarget;
     const target = nextErrors.name
       ? form.querySelector<HTMLElement>("[aria-invalid='true']")
-      : nextErrors.supervisorAgentId
-        ? form.querySelector<HTMLElement>("#orch-supervisor-agent")
       : nextErrors.participants
         ? form.querySelector<HTMLElement>(".orch-add-agent, .orch-agent-chip")
         : form.querySelector<HTMLElement>("[aria-invalid='true']");
@@ -194,9 +129,6 @@ export function OrchestrationComposer({
           name: workspaceDraft.name.trim(),
           description: workspaceDraft.description?.trim() || undefined,
           initialTask: workspaceDraft.initialTask.trim(),
-          ...(workspaceDraft.supervisorAgentId?.trim()
-            ? { supervisorAgentId: workspaceDraft.supervisorAgentId.trim() }
-            : {}),
           participants: normalizeParticipants(workspaceDraft.participants).map((participant) => ({
             ...participant,
             role:
@@ -337,17 +269,7 @@ export function OrchestrationComposer({
           </span>
         </div>
 
-        <SupervisorAgentSelector
-          agents={agents}
-          modelProviders={modelProviders}
-          supervisorAgentId={workspaceDraft.supervisorAgentId}
-          error={errors.supervisorAgentId}
-          disabled={busy}
-          onChange={(supervisorAgentId) => {
-            setWorkspaceDraft((current) => ({ ...current, supervisorAgentId }));
-            setErrors((current) => ({ ...current, supervisorAgentId: undefined }));
-          }}
-        />
+        {workspaceDraft.mode === "supervisor" && <SupervisorModelNotice />}
 
         <div className="orch-composer-footer">
           <span className="orch-safety-note">
@@ -386,8 +308,7 @@ export function OrchestrationComposer({
   const canStartImmediately =
     Boolean(draft.originalPrompt.trim()) &&
     draft.participants.length > 0 &&
-    draft.participants.every((participant) => participant.agentId.trim()) &&
-    (draft.mode !== "supervisor" || Boolean(draft.supervisorAgentId?.trim()));
+    draft.participants.every((participant) => participant.agentId.trim());
 
   return (
     <form className="orch-composer" onSubmit={submit}>
@@ -430,11 +351,7 @@ export function OrchestrationComposer({
           aria-describedby={errors.originalPrompt ? "orch-prompt-error" : "orch-prompt-help"}
           onChange={(event) => {
             setDraft((current) => ({ ...current, originalPrompt: event.target.value }));
-            setErrors((current) => ({
-              ...current,
-              originalPrompt: undefined,
-              ...(event.target.value.trim() ? {} : { supervisorAgentId: undefined }),
-            }));
+            setErrors((current) => ({ ...current, originalPrompt: undefined }));
           }}
         />
         <span className="orch-field-help" id="orch-prompt-help">
@@ -449,9 +366,6 @@ export function OrchestrationComposer({
         name={draft.name}
         derivedName={derivedName}
         mode={draft.mode}
-        agents={agents}
-        supervisorAgentId={draft.supervisorAgentId}
-        modelProviders={modelProviders}
         maxSteps={draft.maxSteps}
         perAgentTimeoutMs={draft.perAgentTimeoutMs}
         errors={errors}
@@ -460,32 +374,11 @@ export function OrchestrationComposer({
         onChange={(field, value) => setDraft((current) => ({ ...current, [field]: value }))}
         onClearError={(field) => setErrors((current) => ({ ...current, [field]: undefined }))}
         onModeChange={(nextMode) => {
-          setDraft((current) => ({
-            ...current,
-            mode: nextMode,
-            supervisorAgentId:
-              nextMode === "supervisor"
-                ? defaultSupervisorAgentId(
-                    current.participants,
-                    current.supervisorAgentId,
-                    agents[0]?.id,
-                  )
-                : current.supervisorAgentId,
-          }));
-          setErrors((current) => ({ ...current, supervisorAgentId: undefined }));
-        }}
-        onSupervisorAgentChange={(supervisorAgentId) => {
-          setDraft((current) => ({ ...current, supervisorAgentId }));
-          setErrors((current) => ({ ...current, supervisorAgentId: undefined }));
+          setDraft((current) => ({ ...current, mode: nextMode }));
         }}
       />
 
       <div className="orch-composer-footer">
-        {errors.supervisorAgentId && (
-          <span className="orch-field-error" role="alert">
-            {errors.supervisorAgentId} Open Advanced settings to choose a Supervisor Agent.
-          </span>
-        )}
         <span className="orch-safety-note">
           <span aria-hidden="true">⌁</span> Each Conversation keeps its own history. Replies
           pass along as bounded, untrusted text.

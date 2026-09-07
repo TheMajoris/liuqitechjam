@@ -27,6 +27,12 @@ export interface ArkLiveModelStateOptions {
   ttlMs?: number;
   /** Optional test/deployment override; always capped by the endpoint TTL. */
   usageTtlMs?: number;
+  /**
+   * Endpoint reserved for supervisor routing. It is hidden from every worker
+   * listing and rejected by worker resolution, but stays in the resource
+   * projection so its consumption remains observable.
+   */
+  reservedSupervisorModelId?: () => string | null | undefined;
   now?: () => number;
 }
 
@@ -199,6 +205,9 @@ export class ArkLiveModelState implements ArkLiveModelCatalog {
   private readonly ttlMs: number;
   private readonly usageTtlMs: number;
   private readonly activationTtlMs: number;
+  private readonly reservedSupervisorModelId:
+    | (() => string | null | undefined)
+    | undefined;
   private readonly now: () => number;
   private endpointEntry: CacheEntry<ArkEndpointRecord[]> | undefined;
   private usageEntry: CacheEntry<ArkInferenceUsageRecord> | undefined;
@@ -222,7 +231,14 @@ export class ArkLiveModelState implements ArkLiveModelCatalog {
       this.ttlMs,
     );
     this.activationTtlMs = this.usageTtlMs;
+    this.reservedSupervisorModelId = options.reservedSupervisorModelId;
     this.now = options.now ?? Date.now;
+  }
+
+  /** The supervisor endpoint currently withheld from worker selection. */
+  private reservedWorkerModelId(): string | null {
+    const reserved = this.reservedSupervisorModelId?.()?.trim();
+    return reserved === undefined || reserved.length === 0 ? null : reserved;
   }
 
   getProvider(providerId: string): ProviderDescriptor | undefined {
@@ -242,6 +258,10 @@ export class ArkLiveModelState implements ArkLiveModelCatalog {
 
   getModel(providerId: string, modelId: string): ModelDescriptor | undefined {
     if (providerId !== ARK_WORKER_PROVIDER_ID) return undefined;
+    // This seam is the worker resolver's validation gate, so the reserved
+    // supervisor endpoint must fail here too. Hiding it from the listing
+    // alone would still let a persisted assignment resolve.
+    if (modelId === this.reservedWorkerModelId()) return undefined;
     const endpoint = this.endpointEntry?.value.find(
       (candidate) => candidate.id === modelId && candidate.status === "running",
     );
@@ -394,8 +414,12 @@ export class ArkLiveModelState implements ArkLiveModelCatalog {
 
   listRunningDescriptors(scope: ModelScope): ModelDescriptor[] {
     const endpoints = this.endpointEntry?.value ?? [];
+    // The supervisor picker needs the unfiltered list; only worker selection
+    // withholds the endpoint that is currently reserved for routing.
+    const reserved = scope === "worker" ? this.reservedWorkerModelId() : null;
     return endpoints
       .filter((endpoint) => endpoint.status === "running")
+      .filter((endpoint) => endpoint.id !== reserved)
       .map((endpoint) => descriptorForEndpoint(endpoint, scope));
   }
 

@@ -227,24 +227,28 @@ export class ArkModelProvider implements ModelProviderAdapter {
   }
 
   async listModels(input: { scope: ModelScope }): Promise<ModelDescriptor[]> {
-    if (input.scope === "worker") {
-      if (this.liveState === undefined) {
-        throw new ModelCatalogError(
-          "MODEL_PROVIDER_UNAVAILABLE",
-          503,
-          "ModelArk endpoint discovery is not configured",
-        );
-      }
+    // Both scopes are answered from ListEndpoints so that a supervisor choice
+    // and a worker choice name the same kind of thing — a running endpoint —
+    // and share the identifiers the resource projection is keyed by. The
+    // worker listing additionally withholds the reserved supervisor endpoint.
+    if (this.liveState !== undefined) {
       // Refreshing the shared state makes ListEndpoints authoritative. The
       // registry can still serve its own stale cache when this rejects, but a
       // selector never receives a model that was not observed as Running.
       await this.liveState.refreshEndpoints();
       return this.liveState.listRunningDescriptors(input.scope);
     }
+    if (input.scope === "worker") {
+      throw new ModelCatalogError(
+        "MODEL_PROVIDER_UNAVAILABLE",
+        503,
+        "ModelArk endpoint discovery is not configured",
+      );
+    }
 
-    // Supervisor routing remains a fixed, server-selected Responses path. It
-    // may use the OpenAI-compatible model list, but this branch is never used
-    // to make a worker model selectable.
+    // Without management credentials the supervisor list falls back to the
+    // OpenAI-compatible model names. This branch is never used to make a
+    // worker model selectable.
     const catalog = this.catalog?.get();
     const apiKey = catalog === undefined
       ? this.apiKey

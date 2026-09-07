@@ -5,6 +5,7 @@ import { Spinner } from "../playground/Spinner";
 import { UsageSparkline } from "./UsageSparkline";
 import { UsageBreakdownTable, type UsageBreakdownRow } from "./UsageBreakdownTable";
 import { ModelResourceTable } from "./ModelResourceTable";
+import { SupervisorModelPanel } from "./SupervisorModelPanel";
 import type { Agent } from "../../types";
 import type { ModelResourcesController } from "../../playground/use-model-resources";
 import {
@@ -25,6 +26,8 @@ const RANGES = [
 interface InsightsViewProps {
   agents: Agent[];
   modelResources: ModelResourcesController;
+  /** Changing the supervisor endpoint can reassign Agents. */
+  onAgentsChanged?: () => void | Promise<void>;
   onSelectAgent: (agentId: string) => void;
   onSelectSession: (sessionId: string) => void;
 }
@@ -33,7 +36,12 @@ function windowStart(days: number): string {
   return new Date(Date.now() - days * 86_400_000).toISOString();
 }
 
-export function InsightsView({ agents, modelResources, onSelectAgent }: InsightsViewProps) {
+export function InsightsView({
+  agents,
+  modelResources,
+  onAgentsChanged,
+  onSelectAgent,
+}: InsightsViewProps) {
   const [days, setDays] = useState<number>(30);
   const [report, setReport] = useState<UsageReport | null>(null);
   const [loading, setLoading] = useState(true);
@@ -109,6 +117,10 @@ export function InsightsView({ agents, modelResources, onSelectAgent }: Insights
             <p>Current model resources remain available even when historical usage is unavailable.</p>
           </div>
         </header>
+        <SupervisorModelPanel
+          modelResources={modelResources}
+          {...(onAgentsChanged === undefined ? {} : { onAgentsChanged })}
+        />
         <ModelResourceTable agents={agents} modelResources={modelResources} />
         <section className="insights-centered insights-error-panel">
           <h2>Usage is unavailable</h2>
@@ -217,6 +229,10 @@ export function InsightsView({ agents, modelResources, onSelectAgent }: Insights
         <UsageSparkline points={report.daily} metric="toolCalls" label="Tool calls" />
       </div>
 
+      <SupervisorModelPanel
+        modelResources={modelResources}
+        {...(onAgentsChanged === undefined ? {} : { onAgentsChanged })}
+      />
       <ModelResourceTable agents={agents} modelResources={modelResources} />
 
       <UsageBreakdownTable

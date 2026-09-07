@@ -49,7 +49,6 @@ export type WorkspaceDraft = {
   participants: OrchestrationParticipant[];
   initialTask: string;
   mode: OrchestrationMode;
-  supervisorAgentId?: string;
   maxSteps: number;
   perAgentTimeoutMs: number;
 };
@@ -59,7 +58,6 @@ export type DraftErrors = Partial<
     | "name"
     | "originalPrompt"
     | "participants"
-    | "supervisorAgentId"
     | "projectName"
     | "maxSteps"
     | "perAgentTimeoutMs",
@@ -100,21 +98,6 @@ export function normalizeParticipants(
     ...participant,
     position: index,
   }));
-}
-
-/** Keep a runnable Supervisor conversation useful on first render. */
-export function defaultSupervisorAgentId(
-  participants: OrchestrationParticipant[],
-  supervisorAgentId?: string,
-  fallbackAgentId?: string,
-): string {
-  const explicitId = supervisorAgentId?.trim();
-  if (explicitId) return explicitId;
-  return (
-    participants.find((participant) => participant.agentId.trim())?.agentId.trim() ??
-    fallbackAgentId?.trim() ??
-    ""
-  );
 }
 
 /**
@@ -176,15 +159,6 @@ export function validateDraft(
         "One or more Agents are no longer available. Refresh the Agent list or choose another.";
     }
   }
-  if (draft.mode === "supervisor") {
-    const available = new Set(agents.map((agent) => agent.id));
-    if (!draft.supervisorAgentId?.trim()) {
-      errors.supervisorAgentId = "Choose an existing Agent to supervise this conversation.";
-    } else if (!available.has(draft.supervisorAgentId)) {
-      errors.supervisorAgentId =
-        "The selected supervisor is no longer available. Choose another Agent.";
-    }
-  }
   if (
     !Number.isInteger(draft.maxSteps) ||
     draft.maxSteps < 1 ||
@@ -233,14 +207,6 @@ export function validateWorkspaceTask(
       draft.perAgentTimeoutMs > ORCHESTRATION_MAX_TIMEOUT_MS
     ) {
       errors.perAgentTimeoutMs = "Use a time limit between 1 second and 60 minutes.";
-    }
-    if (draft.mode === "supervisor") {
-      const available = new Set(agents.map((agent) => agent.id));
-      if (!draft.supervisorAgentId?.trim()) {
-        errors.supervisorAgentId = "Choose an existing Agent to supervise this workspace.";
-      } else if (!available.has(draft.supervisorAgentId)) {
-        errors.supervisorAgentId = "The selected supervisor is no longer available.";
-      }
     }
   }
   return errors;

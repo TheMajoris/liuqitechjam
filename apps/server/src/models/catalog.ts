@@ -17,6 +17,12 @@ export interface ArkModelCatalogRecord {
   models: string[];
   /** Optional for records created before operator default selection existed. */
   defaultModelRef?: ModelRef | null;
+  /**
+   * Server-wide supervisor endpoint override. `null` — and absence, for
+   * records written before the override existed — means routing falls back to
+   * the SUPERVISOR_MODEL environment value.
+   */
+  supervisorModelRef?: ModelRef | null;
   /** Monotonically increasing successful update count. */
   revision?: number;
 }
@@ -94,6 +100,7 @@ export const ArkModelCatalogSchema = z
       ),
     models: z.array(modelIdSchema).max(256),
     defaultModelRef: ModelRefSchema.nullable().optional(),
+    supervisorModelRef: ModelRefSchema.nullable().optional(),
     revision: revisionSchema.optional(),
   })
   .strict()
@@ -138,6 +145,31 @@ export const ArkModelCatalogSchema = z
         message: "The default model must be enabled in models",
       });
     }
+    // The supervisor override names a live ModelArk endpoint rather than a
+    // curated catalog entry, so membership in `models` is deliberately not
+    // required here; the write route validates it against ListEndpoints.
+    if (
+      value.supervisorModelRef !== undefined &&
+      value.supervisorModelRef !== null &&
+      value.supervisorModelRef.providerId !== ARK_WORKER_PROVIDER_ID
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["supervisorModelRef", "providerId"],
+        message: "The supervisor override must use the Ark provider",
+      });
+    }
+    if (
+      value.supervisorModelRef !== undefined &&
+      value.supervisorModelRef !== null &&
+      value.supervisorModelRef.reasoning?.effort !== undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["supervisorModelRef", "reasoning"],
+        message: "The supervisor override cannot include reasoning controls",
+      });
+    }
   })
   .transform((value): ArkModelCatalogRecord => ({
     provider: value.provider,
@@ -153,6 +185,17 @@ export const ArkModelCatalogSchema = z
               : {
                   providerId: value.defaultModelRef.providerId,
                   modelId: value.defaultModelRef.modelId,
+                },
+        }),
+    ...(value.supervisorModelRef === undefined
+      ? {}
+      : {
+          supervisorModelRef:
+            value.supervisorModelRef === null
+              ? null
+              : {
+                  providerId: value.supervisorModelRef.providerId,
+                  modelId: value.supervisorModelRef.modelId,
                 },
         }),
     ...(value.revision === undefined ? {} : { revision: value.revision }),
@@ -176,6 +219,14 @@ export function cloneArkModelCatalog(
             catalog.defaultModelRef === null
               ? null
               : { ...catalog.defaultModelRef },
+        }),
+    ...(catalog.supervisorModelRef === undefined
+      ? {}
+      : {
+          supervisorModelRef:
+            catalog.supervisorModelRef === null
+              ? null
+              : { ...catalog.supervisorModelRef },
         }),
     ...(catalog.revision === undefined ? {} : { revision: catalog.revision }),
   };
@@ -288,9 +339,13 @@ export class ArkModelCatalogService implements ModelCatalogReader {
           "The default model must be enabled in models",
         );
       }
+      const supervisorModelRef = replacement.supervisorModelRef === undefined
+        ? current?.supervisorModelRef
+        : replacement.supervisorModelRef;
       const next: ArkModelCatalogRecord = {
         ...cloneArkModelCatalog(replacement),
         ...(defaultModelRef === undefined ? {} : { defaultModelRef }),
+        ...(supervisorModelRef === undefined ? {} : { supervisorModelRef }),
         revision: currentRevision + 1,
       };
       database.modelCatalog = next;
@@ -298,4 +353,60 @@ export class ArkModelCatalogService implements ModelCatalogReader {
     });
   }
 
+  /**
+   * Set (or clear, with `null`) the server-wide supervisor endpoint. Clearing
+   * hands routing back to the SUPERVISOR_MODEL environment value rather than
+   * disabling supervisor mode.
+   */
+  async setSupervisorModelRef(
+    modelRef: ModelRef | null,
+  ): Promise<ArkModelCatalogRecord> {
+    const parsed = modelRef === null
+      ? null
+      : parseSupervisorModelRef(modelRef);
+    return this.store.mutate((database) => {
+      const current = database.modelCatalog;
+      if (current === null || current === undefined) {
+        throw new ModelCatalogError(
+          "MODEL_CATALOG_UNAVAILABLE",
+          503,
+          "The Ark model catalog is not initialized",
+        );
+      }
+      const next: ArkModelCatalogRecord = {
+        ...cloneArkModelCatalog(current),
+        supervisorModelRef: parsed === null ? null : { ...parsed },
+        revision: (current.revision ?? 0) + 1,
+      };
+      database.modelCatalog = next;
+      return cloneArkModelCatalog(next);
+    });
+  }
+}
+
+/** Validate a supervisor override without touching the rest of the catalog. */
+export function parseSupervisorModelRef(value: unknown): ModelRef {
+  const parsed = ModelRefSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new ModelCatalogError(
+      "MODEL_CATALOG_INVALID",
+      422,
+      "The supervisor model reference is invalid",
+    );
+  }
+  if (parsed.data.providerId !== ARK_WORKER_PROVIDER_ID) {
+    throw new ModelCatalogError(
+      "MODEL_CATALOG_INVALID",
+      422,
+      "The supervisor override must use the Ark provider",
+    );
+  }
+  if (parsed.data.reasoning?.effort !== undefined) {
+    throw new ModelCatalogError(
+      "MODEL_CATALOG_INVALID",
+      422,
+      "The supervisor override cannot include reasoning controls",
+    );
+  }
+  return { providerId: parsed.data.providerId, modelId: parsed.data.modelId };
 }

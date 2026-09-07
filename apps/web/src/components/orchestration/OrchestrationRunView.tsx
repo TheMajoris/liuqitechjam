@@ -5,7 +5,6 @@ import type {
   OrchestrationSessionDetail,
   Project,
 } from "../../types";
-import { formatAgentWorkerModel } from "../WorkerModelFields";
 import { ParticipantBar } from "./ParticipantBar";
 import {
   agentName,
@@ -83,13 +82,8 @@ export function OrchestrationRunView({
     : null;
   const currentAgent = current ? agentName(agents, current.agentId) : null;
   const active = isOrchestrationActive(session.status);
-  const supervisor = session.supervisorAgentId
-    ? agents.find((agent) => agent.id === session.supervisorAgentId)
-    : undefined;
   const canStart =
-    Boolean(session.originalPrompt.trim()) &&
-    session.participants.length > 0 &&
-    (session.mode !== "supervisor" || Boolean(session.supervisorAgentId?.trim()));
+    Boolean(session.originalPrompt.trim()) && session.participants.length > 0;
   const failed = session.status === "failed";
   const showTechnicalErrorCode =
     session.errorCode !== null && !session.errorCode.startsWith("SUPERVISOR_");
@@ -157,12 +151,12 @@ export function OrchestrationRunView({
         </div>
       </div>
 
-      {session.supervisorAgentId && (
+      {session.mode === "supervisor" && session.supervisorModelRef && (
         <div className="orch-project-badge" role="status">
-          <span className="orch-eyebrow">Supervisor Agent</span>
-          <strong>{supervisor?.name ?? "Unavailable Agent"}</strong>
+          <span className="orch-eyebrow">Supervisor model</span>
+          <strong>{session.supervisorModelRef.modelId}</strong>
           <span className="orch-field-help">
-            {formatAgentWorkerModel(supervisor ?? { modelRef: undefined }, modelProviders)}
+            Routing model captured when this cycle was accepted.
           </span>
         </div>
       )}
