@@ -164,7 +164,13 @@ export function WorkspaceStage({
       )}
 
       <div
-        className={"ws-overlay " + (canRender ? "is-mapped" : "is-listed")}
+        className={
+          "ws-overlay " +
+          (canRender ? "is-mapped" : "is-listed") +
+          // While one plate is open it is the subject; the rest step back so
+          // the overlap reads as depth rather than as two broken cards.
+          (hovered === null ? "" : " is-focusing")
+        }
         style={
           canRender
             ? {
@@ -192,11 +198,13 @@ export function WorkspaceStage({
           const capacityPercent = modelResourceQuotaPercent(agent.modelResource);
           const capacityTone = modelResourceQuotaTone(agent.modelResource);
           // Desks sit closer together than a fully-written plate is wide, so a
-          // plate states only its name at rest and opens its detail when it is
-          // the one being looked at. Everything stays in the accessibility
-          // tree either way; only the drawn width changes.
-          const expanded =
-            showCapacity || agent.isSelected || agent.isCurrentParticipant;
+          // plate states only its name at rest and opens its detail while it is
+          // being pointed at or focused — and only then. Selection and the
+          // current turn are persistent states, so letting either hold a plate
+          // open would park a card permanently over its neighbour. They read
+          // instead through the plate's own border. Everything stays in the
+          // accessibility tree either way; only the drawn width changes.
+          const expanded = showCapacity;
           return (
             <button
               key={agent.agentId}
@@ -248,7 +256,7 @@ export function WorkspaceStage({
                 </span>
                 {capacityLabel}
               </span>
-              {capacityPercent !== null && (
+              {capacityPercent !== null && expanded && (
                 <span
                   className="ws-plate-capacity-bar"
                   data-resource-capacity-tone={capacityTone}

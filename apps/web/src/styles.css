@@ -7689,21 +7689,34 @@ button.assignment-archive:hover:not(:disabled) {
 .workspace-nav-card .thread-card-copy strong { font-size: 12px; }
 .workspace-nav-card .thread-card-meta { margin-top: 2px; }
 
+/*
+ * The row stretches to the height of the workspace card, so the action button
+ * has to centre itself against it rather than inherit that full height and
+ * leave its glyph sitting at the top.
+ */
 .workspace-nav-overflow {
   position: relative;
+  display: flex;
+  align-items: center;
   flex: 0 0 auto;
 }
 
 .workspace-nav-overflow-button {
   width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
   border: 1px solid transparent;
   border-radius: 8px;
   color: #aaa9a1;
   background: transparent;
   cursor: pointer;
-  font-size: 14px;
-  letter-spacing: 0.08em;
   line-height: 1;
+}
+
+.overflow-glyph {
+  display: block;
+  fill: currentColor;
 }
 .workspace-nav-overflow-button:hover,
 .workspace-nav-overflow-button[aria-expanded="true"] {
@@ -8890,4 +8903,27 @@ button.assignment-archive:hover:not(:disabled) {
 .trace-token-parts span[title] {
   border-bottom: 1px dotted var(--muted);
   cursor: help;
+}
+
+/*
+ * One plate at a time.
+ *
+ * Desks are closer together than an opened plate is wide, so an opened plate
+ * always covers its neighbour. Stepping the others back makes that overlap
+ * read as focus, and keeps the quota bar of the plate being read the one bar
+ * that is fully drawn.
+ */
+.ws-overlay.is-focusing .ws-plate:not(.is-expanded) {
+  opacity: 0.34;
+}
+
+.ws-plate {
+  transition:
+    border-color 140ms var(--ease-out),
+    box-shadow 140ms var(--ease-out),
+    opacity 140ms var(--ease-out);
+}
+
+.ws-plate.is-expanded {
+  box-shadow: var(--elevation-2);
 }

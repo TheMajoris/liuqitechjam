@@ -46,6 +46,13 @@ function loungeRoute(seat: WorkspaceSeat, from: WorldPoint, agentId: string): Wo
 // hover target. The HTML plate then supplies the readable hover/focus details
 // even though those marks are drawn inside the Pixi canvas.
 const HIT_AREA = new Rectangle(-12, -42, 24, 44);
+/**
+ * Frames the body only, measured from the feet.
+ *
+ * It stops below the activity bubble at -28: a halo tall enough to reach the
+ * badges above the head cuts straight through them.
+ */
+const HALO_HEIGHT = 26;
 const WALK_FRAME_MS = 150;
 const CELEBRATION_MS = 1000;
 
@@ -293,6 +300,27 @@ export function AgentSprite({
     [agent.isCurrentParticipant, agent.isSelected, hovered, look.accent],
   );
 
+  /**
+   * A halo behind the body, not a ring on the floor.
+   *
+   * A seated Agent's feet are behind their desk, so the ground ellipse that
+   * marked hover was drawn where nobody could see it. This sits at body height
+   * and reads whatever the Agent is standing on or behind.
+   */
+  const drawHalo = useCallback(
+    (graphics: Graphics) => {
+      graphics.clear();
+      if (!hovered && !agent.isSelected) return;
+      const accent = agent.isSelected ? SCENE.ink : look.accent;
+      graphics
+        .roundRect(-13, -HALO_HEIGHT, 26, HALO_HEIGHT + 4, 7)
+        .fill({ color: accent, alpha: agent.isSelected ? 0.2 : 0.16 })
+        .roundRect(-13, -HALO_HEIGHT, 26, HALO_HEIGHT + 4, 7)
+        .stroke({ width: 1, color: accent, alpha: agent.isSelected ? 0.9 : 0.6 });
+    },
+    [agent.isSelected, hovered, look.accent],
+  );
+
   const drawPulse = useCallback(
     (graphics: Graphics) => {
       graphics.clear().ellipse(0, 0, 19, 7).stroke({ width: 1, color: look.accent });
@@ -305,7 +333,14 @@ export function AgentSprite({
       ref={containerRef}
       x={seat.anchor.x}
       y={seat.anchor.y}
-      alpha={presentation.dimmed || !agent.available ? 0.6 : 1}
+      // Pointing at an Agent brings it fully forward, whatever its state.
+      alpha={
+        hovered || agent.isSelected
+          ? 1
+          : presentation.dimmed || !agent.available
+            ? 0.6
+            : 1
+      }
       eventMode="static"
       cursor="pointer"
       hitArea={HIT_AREA}
@@ -315,6 +350,7 @@ export function AgentSprite({
     >
       <pixiGraphics ref={pulseRef} draw={drawPulse} alpha={0} />
       <pixiGraphics draw={drawGround} />
+      <pixiGraphics draw={drawHalo} />
       <pixiSprite
         ref={bodyRef}
         texture={bodyTexture(agent.agentId, "stand", agent.appearance)}

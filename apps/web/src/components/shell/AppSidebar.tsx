@@ -382,7 +382,21 @@ export function AppSidebar({
                         );
                       }}
                     >
-                      <span aria-hidden="true">•••</span>
+                      {/* Drawn rather than typed: a "•••" glyph run carries a
+                          trailing letter-space after the last bullet, which
+                          drags the ink off the button's centre. */}
+                      <svg
+                        className="overflow-glyph"
+                        viewBox="0 0 16 4"
+                        width="16"
+                        height="4"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <circle cx="2" cy="2" r="1.6" />
+                        <circle cx="8" cy="2" r="1.6" />
+                        <circle cx="14" cy="2" r="1.6" />
+                      </svg>
                     </button>
                     {openWorkspaceMenuId === project.id && (
                       <div
