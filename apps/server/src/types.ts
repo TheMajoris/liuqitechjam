@@ -26,6 +26,7 @@ import type {
 } from "./projects/project-types.js";
 import type { AgentRole } from "./roles/role-types.js";
 import type { InstalledSkillRecord } from "./skills/skill-types.js";
+import type { AgentRunErrorCode } from "./errors.js";
 
 export type {
   AgentRole,
@@ -181,6 +182,8 @@ export interface AgentRun {
   prompt: string;
   output: string | null;
   error: string | null;
+  /** Stable terminal code for a typed run failure; omitted on other runs. */
+  errorCode?: AgentRunErrorCode;
   usage: RunUsage | null;
   /** Assignment captured before execution; omitted on legacy Run records. */
   modelSnapshot?: AgentModelSnapshot;

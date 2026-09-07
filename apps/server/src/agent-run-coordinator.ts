@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
-import { HttpError, RetryableModelError, RunCancelledError } from "./errors.js";
+import {
+  HttpError,
+  MODEL_INFERENCE_LIMIT_EXCEEDED,
+  RetryableModelError,
+  RunCancelledError,
+  WEB_TOOL_PERMISSION_DENIED,
+  WebToolPermissionDeniedError,
+} from "./errors.js";
 import { AgentRuntimePromptComposer } from "./agent-runtime-prompt.js";
 import type { WorkerRuntimeModelConfig } from "./models/types.js";
 import {
@@ -63,6 +70,23 @@ function modelRefForRuntime(runtimeModel: WorkerRuntimeModelConfig) {
     providerId: runtimeModel.providerId,
     modelId: runtimeModel.modelId,
   };
+}
+
+function runtimeErrorCode(error: unknown):
+  | typeof WEB_TOOL_PERMISSION_DENIED
+  | typeof MODEL_INFERENCE_LIMIT_EXCEEDED
+  | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const record = error as {
+    code?: unknown;
+    errorCode?: unknown;
+    orchestrationErrorCode?: unknown;
+  };
+  const candidate = record.errorCode ?? record.orchestrationErrorCode ?? record.code;
+  return candidate === WEB_TOOL_PERMISSION_DENIED ||
+    candidate === MODEL_INFERENCE_LIMIT_EXCEEDED
+    ? candidate
+    : undefined;
 }
 
 export interface AgentRunCoordinatorDependencies {
@@ -522,6 +546,13 @@ export class AgentRunCoordinator {
                   },
                 }),
           });
+          // The model may swallow an MCP isError and return apparent output.
+          // The authenticated MCP route latches the denial for this Run, so a
+          // successful runner result cannot turn a denied tool call into a
+          // completed Run.
+          if (this.webToolPermissionDenied(run.id)) {
+            throw new WebToolPermissionDeniedError();
+          }
           selectedModelIndex = modelIndex;
           break;
         } catch (error) {
@@ -530,6 +561,12 @@ export class AgentRunCoordinator {
             this.cancellationRequests.has(run.id)
           ) {
             throw error;
+          }
+          // Check the terminal denial before considering a model fallback. A
+          // tool authorization failure is a Run failure even when the runner
+          // reports it through a retryable transport error.
+          if (this.webToolPermissionDenied(run.id)) {
+            throw new WebToolPermissionDeniedError();
           }
           // A generic runner failure may already have changed the workspace
           // or invoked a tool. Only a runner-authored, explicitly typed
@@ -684,6 +721,12 @@ export class AgentRunCoordinator {
       const completedAt = now();
       const cancelled =
         error instanceof RunCancelledError || this.cancellationRequests.has(run.id);
+      const webPermissionDenied =
+        !cancelled &&
+        (error instanceof WebToolPermissionDeniedError ||
+          this.webToolPermissionDenied(run.id));
+      const modelInferenceLimitExceeded =
+        !cancelled && runtimeErrorCode(error) === MODEL_INFERENCE_LIMIT_EXCEEDED;
       runSpan?.setStatus(cancelled ? "ok" : "error");
       const message = safeRuntimeError(error);
       await this.dependencies.store.mutate((database) => {
@@ -699,13 +742,26 @@ export class AgentRunCoordinator {
         if (storedRun) {
           storedRun.status = cancelled ? "cancelled" : "failed";
           storedRun.error = cancelled ? "Run cancelled" : message;
+          if (webPermissionDenied) {
+            storedRun.errorCode = WEB_TOOL_PERMISSION_DENIED;
+          } else if (modelInferenceLimitExceeded) {
+            storedRun.errorCode = MODEL_INFERENCE_LIMIT_EXCEEDED;
+          } else {
+            delete storedRun.errorCode;
+          }
           storedRun.completedAt = completedAt;
         }
         if (agent) {
           if (agent.status !== "stopped") {
-            agent.status = cancelled ? "ready" : "error";
+            agent.status =
+              cancelled || webPermissionDenied || modelInferenceLimitExceeded
+                ? "ready"
+                : "error";
           }
-          agent.lastError = cancelled ? null : message;
+          agent.lastError =
+            cancelled || webPermissionDenied || modelInferenceLimitExceeded
+              ? null
+              : message;
           agent.updatedAt = completedAt;
         }
       });
@@ -733,6 +789,11 @@ export class AgentRunCoordinator {
               durationMs,
               metadata: {
                 exitReason: "error",
+                ...(webPermissionDenied
+                  ? { errorCode: WEB_TOOL_PERMISSION_DENIED }
+                  : modelInferenceLimitExceeded
+                    ? { errorCode: MODEL_INFERENCE_LIMIT_EXCEEDED }
+                  : {}),
                 errorClass:
                   (error as { constructor?: { name?: string } } | null)
                     ?.constructor?.name ?? "Error",
@@ -751,6 +812,7 @@ export class AgentRunCoordinator {
       if (mintedMcpSession !== null) {
         this.dependencies.getMcpSessions()?.revoke(mintedMcpSession.token);
       }
+      this.dependencies.getMcpSessions()?.clearWebToolPermissionDenied(run.id);
     }
   }
 
@@ -783,6 +845,10 @@ export class AgentRunCoordinator {
       throw new HttpError(503, "Project execution is not configured");
     }
     return projectScope;
+  }
+
+  private webToolPermissionDenied(runId: string): boolean {
+    return this.dependencies.getMcpSessions()?.hasWebToolPermissionDenied(runId) ?? false;
   }
 
   /** Resolve the worker-reachable MCP URL without exposing it in prompts. */

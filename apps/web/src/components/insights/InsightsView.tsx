@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../../api";
-import type { UsageReport } from "../../types";
+import type { UsageReport, UsageTotals } from "../../types";
 import { Spinner } from "../playground/Spinner";
 import { UsageSparkline } from "./UsageSparkline";
 import { UsageBreakdownTable, type UsageBreakdownRow } from "./UsageBreakdownTable";
 import { ModelResourceTable } from "./ModelResourceTable";
+import {
+  TokenHotspots,
+  TokenSplitBar,
+  type TokenHotspot,
+} from "../trace/TokenHotspots";
 import { SupervisorModelPanel } from "./SupervisorModelPanel";
 import type { Agent } from "../../types";
 import type { ModelResourcesController } from "../../playground/use-model-resources";
@@ -34,6 +39,31 @@ interface InsightsViewProps {
 
 function windowStart(days: number): string {
   return new Date(Date.now() - days * 86_400_000).toISOString();
+}
+
+/**
+ * Usage rows as token hotspots.
+ *
+ * The report already carries the split per subject, so nothing is derived
+ * here: a subject whose provider reported no counters keeps a zero total and
+ * is ranked out rather than being shown as free.
+ */
+function hotspotsFrom(
+  rows: readonly (UsageTotals & { id: string; name: string | null })[],
+  fallbackName: string,
+  meta?: (row: UsageTotals & { id: string }) => string | null,
+): TokenHotspot[] {
+  return rows.map((row) => ({
+    id: row.id,
+    label: row.name ?? fallbackName,
+    meta: meta?.(row) ?? null,
+    inputTokens: row.tokens.inputTokens,
+    cachedInputTokens: row.tokens.cachedInputTokens,
+    outputTokens: row.tokens.outputTokens,
+    totalTokens: row.tokens.totalTokens,
+    runs: row.runs.total,
+    runsMissing: Math.max(0, row.runs.total - row.tokens.runsReporting),
+  }));
 }
 
 export function InsightsView({
@@ -96,6 +126,15 @@ export function InsightsView({
         meta: null,
       })),
     [report],
+  );
+
+  const agentHotspots = useMemo(
+    () => hotspotsFrom(agentRows, "Agent", (row) => (row as UsageBreakdownRow).meta),
+    [agentRows],
+  );
+  const workspaceHotspots = useMemo(
+    () => hotspotsFrom(workspaceRows, "Workspace"),
+    [workspaceRows],
   );
 
   if (loading && report === null) {
@@ -189,12 +228,20 @@ export function InsightsView({
               ? "—"
               : formatCount(totals.tokens.totalTokens)}
           </strong>
+          {totals.tokens.availability !== "unavailable" && totals.tokens.totalTokens > 0 && (
+            <span className="usage-tile-bar">
+              <TokenSplitBar hotspot={totals.tokens} />
+            </span>
+          )}
           <span className="usage-tile-foot">
             {totals.tokens.availability === "unavailable"
               ? (caveat ?? "No counters reported")
-              : `${formatCount(totals.tokens.inputTokens)} in · ` +
-                `${formatCount(totals.tokens.outputTokens)} out · ` +
-                `${formatCount(totals.tokens.cachedInputTokens)} cached`}
+              : `${formatCount(totals.tokens.inputTokens)} input · ` +
+                `${formatCount(totals.tokens.outputTokens)} output · ` +
+                `${formatPercent(
+                  totals.tokens.cachedInputTokens,
+                  totals.tokens.inputTokens,
+                )} of input cached`}
           </span>
         </article>
 
@@ -222,6 +269,20 @@ export function InsightsView({
       {caveat !== null && totals.tokens.availability === "partial" && (
         <p className="usage-caveat" role="note">{caveat}</p>
       )}
+
+      <div className="usage-hotspots">
+        <TokenHotspots
+          title="Where the tokens went — by Agent"
+          subject="Agent"
+          rows={agentHotspots}
+          onSelect={onSelectAgent}
+        />
+        <TokenHotspots
+          title="Where the tokens went — by Workspace"
+          subject="Workspace"
+          rows={workspaceHotspots}
+        />
+      </div>
 
       <div className="usage-charts">
         <UsageSparkline points={report.daily} metric="runs" label="Runs" />

@@ -7,7 +7,7 @@ import type {
   RunHistoryEntry,
 } from "../../types";
 import { Spinner } from "../playground/Spinner";
-import { formatDuration } from "../insights/usage-format";
+import { formatCount, formatDuration, formatPercent } from "../insights/usage-format";
 import { describeTokens, formatStarted, formatTokenCell, shortId } from "./run-format";
 import {
   categoryColorVar,
@@ -15,9 +15,18 @@ import {
   modelEvidenceFromSpans,
   pathToSpan,
   spanLabel,
+  spanTokens,
   timelineBars,
   type FlatSpan,
+  type TraceModelEvidence,
 } from "./trace-tree";
+import {
+  CACHED_TOKENS_HELP,
+  TokenHotspots,
+  TokenSplitBar,
+  TokenSplitLegend,
+  type TokenHotspot,
+} from "./TokenHotspots";
 
 /**
  * The one trace/audit detail implementation.
@@ -137,6 +146,49 @@ function AuditEvidence({ spans }: { spans: FlatSpan[] }) {
   );
 }
 
+/**
+ * Per-model spend inside one trace.
+ *
+ * A trace's headline total says what was spent; this says which model spent
+ * it, and how the spend split between fresh input, cache reads, and generated
+ * output — the three things a reader can actually act on. Counters the
+ * provider never reported stay absent rather than being shown as zero.
+ */
+function modelHotspots(evidence: readonly TraceModelEvidence[]): TokenHotspot[] {
+  const rows = new Map<string, TokenHotspot>();
+  for (const item of evidence) {
+    const model = item.resolvedModel ?? item.requestedModel ?? "Unnamed model";
+    const key = model + "::" + (item.providerId ?? "");
+    const row = rows.get(key) ?? {
+      id: key,
+      label: model,
+      meta: item.providerId,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      runs: 0,
+      runsMissing: 0,
+    };
+    row.runs += 1;
+    const input = item.inputTokens ?? 0;
+    const cached = item.cachedInputTokens ?? 0;
+    const output = item.outputTokens ?? 0;
+    // Cached input is already inside `input`, so the billed total is input
+    // plus output. Adding cache back in would count it twice.
+    const total = item.totalTokens ?? input + output;
+    if (total === 0 && item.totalTokens === undefined) {
+      row.runsMissing = (row.runsMissing ?? 0) + 1;
+    }
+    row.inputTokens += input;
+    row.cachedInputTokens += cached;
+    row.outputTokens += output;
+    row.totalTokens += total;
+    rows.set(key, row);
+  }
+  return [...rows.values()];
+}
+
 /** Run header shown when the detail view was opened from a Run. */
 function RunSummaryHeading({ run }: { run: RunHistoryEntry }) {
   return (
@@ -163,6 +215,7 @@ export function TraceDetailView({
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [highlighted, setHighlighted] = useState<string | null>(null);
+  const [scale, setScale] = useState<"time" | "tokens">("time");
   const nodeRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const pendingScroll = useRef<string | null>(null);
   const requestSequence = useRef(0);
@@ -201,6 +254,26 @@ export function TraceDetailView({
   const spans = useMemo<FlatSpan[]>(() => (trace ? flattenTrace(trace) : []), [trace]);
   const bars = useMemo(() => (trace ? timelineBars(spans, trace) : []), [spans, trace]);
   const modelEvidence = useMemo(() => modelEvidenceFromSpans(spans), [spans]);
+  const modelRows = useMemo(() => modelHotspots(modelEvidence), [modelEvidence]);
+  // Token bars are scaled against the heaviest span, not the trace total, so a
+  // single dominant step is visible rather than being flattened by the rest.
+  const spanTokenTotals = useMemo(() => spans.map(spanTokens), [spans]);
+  const peakSpanTokens = useMemo(
+    () => spanTokenTotals.reduce<number>((peak, value) => Math.max(peak, value ?? 0), 0),
+    [spanTokenTotals],
+  );
+  const measuredSpans = useMemo(
+    () => spanTokenTotals.filter((value) => value !== null).length,
+    [spanTokenTotals],
+  );
+  const tokensBySpan = useMemo(
+    () => new Map(spans.map((span, index) => [span.spanId, spanTokenTotals[index] ?? null])),
+    [spans, spanTokenTotals],
+  );
+  const traceStepTokens = useMemo(
+    () => spanTokenTotals.reduce<number>((sum, value) => sum + (value ?? 0), 0),
+    [spanTokenTotals],
+  );
 
   useEffect(() => {
     const target = pendingScroll.current;
@@ -251,6 +324,9 @@ export function TraceDetailView({
     const spanId = nodeSpanId(node);
     const open = expanded.has(spanId);
     const events = node.events.length > 0 ? node.events : [node.event];
+    // Only a model call is charged tokens; a tool or sandbox step reports none,
+    // and saying so is more useful than printing a zero it did not spend.
+    const stepTokens = tokensBySpan.get(spanId) ?? null;
     return (
       <div
         key={spanId}
@@ -279,6 +355,19 @@ export function TraceDetailView({
           </span>
           <span className="trace-node-duration">
             {formatDuration(node.event.durationMs ?? 0)}
+          </span>
+          <span
+            className={"trace-node-tokens" + (stepTokens === null ? " is-absent" : "")}
+            title={
+              stepTokens === null
+                ? "This step reported no token counters."
+                : `${formatCount(stepTokens)} tokens, ${formatPercent(
+                    stepTokens,
+                    traceStepTokens,
+                  )} of every counted step in this trace`
+            }
+          >
+            {stepTokens === null ? "—" : formatCount(stepTokens) + " tok"}
           </span>
         </button>
         {open && (
@@ -325,6 +414,30 @@ export function TraceDetailView({
             {toolCalls > 0 && <span>{toolCalls} tool calls</span>}
             {run !== null && <span>{formatStarted(run.startedAt ?? run.createdAt)}</span>}
           </p>
+          {tokens && tokens.availability !== "unavailable" && tokens.totalTokens > 0 && (
+            <div className="trace-token-summary">
+              <span className="trace-token-bar">
+                <TokenSplitBar hotspot={tokens} />
+              </span>
+              <span className="trace-token-parts">
+                <span>
+                  <strong>{formatCount(tokens.inputTokens)}</strong> input ·{" "}
+                  {formatPercent(tokens.inputTokens, tokens.totalTokens)}
+                </span>
+                <span>
+                  <strong>{formatCount(tokens.outputTokens)}</strong> output ·{" "}
+                  {formatPercent(tokens.outputTokens, tokens.totalTokens)}
+                </span>
+                {/* A different denominator: the cache share is of the input it
+                    came from, never of the billed total. */}
+                <span title={CACHED_TOKENS_HELP}>
+                  <strong>{formatCount(tokens.cachedInputTokens)}</strong> of that input
+                  was cached ·{" "}
+                  {formatPercent(tokens.cachedInputTokens, tokens.inputTokens)}
+                </span>
+              </span>
+            </div>
+          )}
         </div>
         <div className="trace-head-actions">
           <div className="insights-range">
@@ -350,25 +463,89 @@ export function TraceDetailView({
       ) : (
       <>
       <AuditEvidence spans={spans} />
+
+      {modelRows.length > 0 && (
+        <TokenHotspots title="Token spend by model" subject="model" rows={modelRows} />
+      )}
+
       <div className="trace-panes">
         <section className="trace-timeline" aria-label="Timeline">
+          <div className="trace-timeline-toolbar">
+            <div className="insights-range" role="group" aria-label="Timeline scale">
+              <button
+                type="button"
+                className={"button" + (scale === "time" ? " is-active" : "")}
+                aria-pressed={scale === "time"}
+                onClick={() => setScale("time")}
+              >
+                Time
+              </button>
+              <button
+                type="button"
+                className={"button" + (scale === "tokens" ? " is-active" : "")}
+                aria-pressed={scale === "tokens"}
+                disabled={peakSpanTokens === 0}
+                title={
+                  peakSpanTokens === 0
+                    ? "No step in this trace reported token counters"
+                    : "Scale each bar by the tokens that step reported"
+                }
+                onClick={() => setScale("tokens")}
+              >
+                Tokens
+              </button>
+            </div>
+            {scale === "tokens" ? (
+              <>
+                <span className="trace-timeline-note">
+                  {measuredSpans} of {spans.length} steps reported counters
+                </span>
+                <TokenSplitLegend />
+              </>
+            ) : (
+              <span className="trace-timeline-note">
+                Each bar spans when the step ran inside {formatDuration(durationMs)}
+              </span>
+            )}
+          </div>
           {spans.map((span, index) => {
             const bar = bars[index];
+            const stepTokens = spanTokenTotals[index] ?? null;
+            const byTokens = scale === "tokens";
             return (
               <div key={span.spanId} className="trace-timeline-row">
                 <span className="trace-timeline-label" style={{ paddingLeft: span.depth * 10 }}>
                   {span.label}
                 </span>
                 <span className="trace-timeline-track">
-                  <span
-                    className="trace-timeline-bar"
-                    style={{
-                      left: (bar?.leftPct ?? 0) + "%",
-                      width: (bar?.widthPct ?? 0) + "%",
-                      background: `var(${categoryColorVar(span.category)})`,
-                    }}
-                    title={span.label + " · " + formatDuration(span.durationMs)}
-                  />
+                  {byTokens ? (
+                    stepTokens === null || peakSpanTokens === 0 ? (
+                      <span className="trace-timeline-unmeasured">not reported</span>
+                    ) : (
+                      <span
+                        className="trace-timeline-bar is-tokens"
+                        style={{ left: 0, width: (stepTokens / peakSpanTokens) * 100 + "%" }}
+                        title={`${span.label} · ${formatCount(stepTokens)} tokens`}
+                      />
+                    )
+                  ) : (
+                    <span
+                      className="trace-timeline-bar"
+                      style={{
+                        left: (bar?.leftPct ?? 0) + "%",
+                        width: (bar?.widthPct ?? 0) + "%",
+                        background: `var(${categoryColorVar(span.category)})`,
+                      }}
+                      title={span.label + " · " + formatDuration(span.durationMs)}
+                    />
+                  )}
+                </span>
+                <span className="trace-timeline-figure">
+                  {byTokens
+                    ? stepTokens === null
+                      ? "—"
+                      : formatCount(stepTokens)
+                    : formatDuration(span.durationMs)}
                 </span>
               </div>
             );
@@ -377,6 +554,11 @@ export function TraceDetailView({
         </section>
 
         <section className="trace-tree" aria-label="Spans">
+          <p className="trace-tree-note">
+            Tokens are charged per model call, so a tool or sandbox step shows
+            no figure. <span title={CACHED_TOKENS_HELP}>Cached input</span> is
+            part of the input it is quoted against, not an extra charge.
+          </p>
           {trace.root && renderNode(trace.root, 0)}
           {trace.orphans.map((orphan) => renderNode(orphan, 0))}
         </section>

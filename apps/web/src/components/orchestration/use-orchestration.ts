@@ -77,6 +77,9 @@ export function useOrchestration(): UseOrchestrationResult {
   const pollGenerationRef = useRef(0);
   const sessionListGenerationRef = useRef(0);
   const selectedWorkspaceRef = useRef<string | null>(null);
+  // React state updates land after the click handler returns. Keep a ref as
+  // the immediate guard so two same-tick clicks cannot enqueue two retries.
+  const retryInFlightRef = useRef(false);
 
   const publishWorkspaceSelection = useCallback((workspaceId: string | null) => {
     selectedWorkspaceRef.current = workspaceId;
@@ -420,23 +423,32 @@ export function useOrchestration(): UseOrchestrationResult {
   }, [detail, selectedSessionId, sessions, startSession]);
 
   /**
-   * Re-run one recorded step. The detail is cleared so the next poll refetches
-   * the journal, which now holds both the abandoned turns and the new ones.
+   * Re-run one recorded step. The accepted session is followed by an immediate
+   * detail read, and the active-session poll keeps the journal current while
+   * the new turns are appended.
    */
   const retryFromStep = useCallback(
     async (fromStepIndex: number, sessionId?: string) => {
       const target = sessionId ?? selectedSessionId;
-      if (!target) return;
+      if (!target || retryInFlightRef.current) return;
+      retryInFlightRef.current = true;
       setAction("retry");
       try {
         const result = await api.retryOrchestration(target, fromStepIndex);
+        // The retry route is accepted asynchronously. Fetch the detail again
+        // before publishing the accepted session so the view does not keep a
+        // stale terminal transcript while the new child Run is being created.
+        // If this read is transiently unavailable, the active-session poll
+        // below still has the accepted status and will recover the journal.
+        const acceptedDetail = await api.getOrchestration(target).catch(() => null);
         if (mountedRef.current) {
           setSessions((current) => replaceSession(current, result.session));
           setSelectedSessionId(result.session.id);
           setDetail((current) =>
-            current?.session.id === result.session.id
-              ? { ...current, session: result.session }
-              : null,
+            acceptedDetail ??
+              (current?.session.id === result.session.id
+                ? { ...current, session: result.session }
+                : null),
           );
           setError(null);
         }
@@ -444,6 +456,7 @@ export function useOrchestration(): UseOrchestrationResult {
         if (mountedRef.current) setError(errorMessage(reason));
         throw reason;
       } finally {
+        retryInFlightRef.current = false;
         if (mountedRef.current) setAction(null);
       }
     },

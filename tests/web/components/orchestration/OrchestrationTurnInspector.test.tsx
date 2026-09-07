@@ -108,7 +108,7 @@ describe("OrchestrationTurnInspector", () => {
     expect(html).toContain("No events recorded for this Run.");
   });
 
-  it("offers no resume for a turn that succeeded", () => {
+  it("offers no retry for a turn that succeeded", () => {
     const html = renderToStaticMarkup(
       <OrchestrationTurnInspector
         node={node()}
@@ -118,10 +118,10 @@ describe("OrchestrationTurnInspector", () => {
       />,
     );
 
-    expect(html).not.toContain("Resume from this turn");
+    expect(html).not.toContain("Retry from this turn");
   });
 
-  it("offers a resume for a failed turn and warns that files are not rewound", () => {
+  it("offers a retry for a failed turn and warns that files are not rolled back", () => {
     const html = renderToStaticMarkup(
       <OrchestrationTurnInspector
         node={node({ turn: turn({ status: "failed", errorCode: "RUN_FAILED" }) })}
@@ -131,14 +131,14 @@ describe("OrchestrationTurnInspector", () => {
       />,
     );
 
-    expect(html).toContain("Resume from this turn");
-    expect(html).toContain("not rewound");
+    expect(html).toContain("Retry from this turn");
+    expect(html).toContain("not rolled back");
     // The failure is explained in product wording, with the code kept.
     expect(html).toContain("An Agent could not complete its turn.");
     expect(html).toContain("RUN_FAILED");
   });
 
-  it("hides the resume when the caller cannot perform one", () => {
+  it("hides the retry when the caller cannot perform one", () => {
     const html = renderToStaticMarkup(
       <OrchestrationTurnInspector
         node={node({ turn: turn({ status: "failed" }) })}
@@ -147,10 +147,10 @@ describe("OrchestrationTurnInspector", () => {
       />,
     );
 
-    expect(html).not.toContain("Resume from this turn");
+    expect(html).not.toContain("Retry from this turn");
   });
 
-  it("will not resume a legacy turn that has no execution step", () => {
+  it("will not retry a legacy turn that has no execution step", () => {
     const legacy = turn({ status: "failed" });
     delete (legacy as { stepIndex?: number }).stepIndex;
 
@@ -163,10 +163,10 @@ describe("OrchestrationTurnInspector", () => {
       />,
     );
 
-    expect(html).not.toContain("Resume from this turn");
+    expect(html).not.toContain("Retry from this turn");
   });
 
-  it("disables the resume while the conversation is still running", () => {
+  it("disables the retry while the conversation is still running", () => {
     const html = renderToStaticMarkup(
       <OrchestrationTurnInspector
         node={node({ turn: turn({ status: "failed" }) })}
@@ -178,10 +178,10 @@ describe("OrchestrationTurnInspector", () => {
     );
 
     expect(html).toMatch(/<button[^>]*disabled/);
-    expect(html).toContain("Stop the conversation before resuming it.");
+    expect(html).toContain("Stop the conversation before retrying it.");
   });
 
-  it("shows progress while a resume is in flight", () => {
+  it("shows progress while a retry is in flight", () => {
     const html = renderToStaticMarkup(
       <OrchestrationTurnInspector
         node={node({ turn: turn({ status: "failed" }) })}
@@ -192,7 +192,7 @@ describe("OrchestrationTurnInspector", () => {
       />,
     );
 
-    expect(html).toContain("Resuming…");
+    expect(html).toContain("Retrying…");
     expect(html).toMatch(/<button[^>]*disabled/);
   });
 

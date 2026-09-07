@@ -1,5 +1,8 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type AgentRunErrorCode =
+  | "WEB_TOOL_PERMISSION_DENIED"
+  | "MODEL_INFERENCE_LIMIT_EXCEEDED";
 
 export type PreviewStatus =
   | "starting"
@@ -405,6 +408,8 @@ export interface AgentRun {
   prompt: string;
   output: string | null;
   error: string | null;
+  /** Stable typed failure code for a terminal runtime failure. */
+  errorCode?: AgentRunErrorCode;
   usage: {
     inputTokens?: number;
     cachedInputTokens?: number;
@@ -515,6 +520,9 @@ export type OrchestrationErrorCode =
   | "RUN_FAILED"
   | "RUN_CANCELLED"
   | "RUN_TIMED_OUT"
+  | "WEB_TOOL_PERMISSION_DENIED"
+  | "MODEL_INFERENCE_LIMIT_EXCEEDED"
+  | "PROJECT_PERMISSION_DENIED"
   | "INVALID_OUTPUT"
   | "MAX_STEPS_EXCEEDED"
   | "ORCHESTRATION_STOPPED"

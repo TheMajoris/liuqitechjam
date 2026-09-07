@@ -161,6 +161,33 @@ export function modelEvidenceFromSpans(spans: readonly FlatSpan[]): TraceModelEv
   });
 }
 
+/**
+ * Tokens attributable to one span.
+ *
+ * Only counters the provider actually reported are returned; a span with no
+ * counter is `null` rather than zero, so a view can say "not reported" instead
+ * of drawing a confident empty bar. When no total was recorded the fallback is
+ * input plus output — matching the server — because cached input is a slice of
+ * the input counter rather than a third bucket, and adding it would count the
+ * cache twice.
+ */
+export function spanTokens(span: FlatSpan): number | null {
+  let total: number | undefined;
+  let input: number | undefined;
+  let output: number | undefined;
+  for (const event of span.events) {
+    const recorded = metadataNumber(event, "totalTokens");
+    if (recorded !== undefined) total = recorded;
+    const recordedInput = metadataNumber(event, "inputTokens");
+    if (recordedInput !== undefined) input = recordedInput;
+    const recordedOutput = metadataNumber(event, "outputTokens");
+    if (recordedOutput !== undefined) output = recordedOutput;
+  }
+  if (total !== undefined) return total;
+  if (input === undefined && output === undefined) return null;
+  return (input ?? 0) + (output ?? 0);
+}
+
 function spanEnd(events: AuditEventRecord[], fallback: string): string {
   let end = Date.parse(fallback);
   if (!Number.isFinite(end)) end = 0;

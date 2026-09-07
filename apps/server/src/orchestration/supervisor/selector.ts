@@ -12,6 +12,7 @@ import type {
 import type { SequenceDecision } from "../sequence.js";
 import type { HandoffEnvelope } from "../handoff.js";
 import { ORCHESTRATION_LIMITS } from "../schemas.js";
+import { DEFAULT_SUPERVISOR_TIMEOUT_MS } from "./provider.js";
 import type {
   SupervisorProvider,
   SupervisorProviderOptions,
@@ -58,6 +59,12 @@ function resolveSelection(
     positions.add(participant.position);
   }
   if (decision.kind === "complete") {
+    if (context.requireCurrentCycleDispatch) {
+      throw new SupervisorError(
+        "SUPERVISOR_INVALID_ROUTE",
+        "Supervisor must select an eligible Agent before completing this follow-up",
+      );
+    }
     const reason = sanitizeSupervisorReason(decision.reason);
     return {
       kind: "complete",
@@ -97,11 +104,63 @@ export class SupervisorSelector {
     options: SupervisorProviderOptions = {},
   ): Promise<SupervisorSelection> {
     if (options.signal?.aborted) throw createAbortError();
+    const startedAt = Date.now();
     const safeContext = sanitizeSupervisorSelectionContext(context);
     const rawDecision = await this.provider.decide(safeContext, options);
     if (options.signal?.aborted) throw createAbortError();
     const decision = parseSupervisorRoutingDecision(rawDecision);
-    return resolveSelection(safeContext, decision);
+    const selection = resolveSelection(safeContext, decision);
+    if (
+      safeContext.avoidImmediateRepeatAgentId === undefined ||
+      selection.kind !== "invoke" ||
+      selection.participant.agentId !== safeContext.avoidImmediateRepeatAgentId
+    ) {
+      return selection;
+    }
+
+    if (options.signal?.aborted) throw createAbortError();
+    const configuredTimeoutMs = options.timeoutMs;
+    const selectionTimeoutMs =
+      typeof configuredTimeoutMs === "number" &&
+      Number.isInteger(configuredTimeoutMs) &&
+      configuredTimeoutMs > 0
+        ? configuredTimeoutMs
+        : DEFAULT_SUPERVISOR_TIMEOUT_MS;
+    const remainingTimeoutMs =
+      selectionTimeoutMs -
+      Math.max(0, Date.now() - startedAt);
+    if (remainingTimeoutMs <= 0) {
+      throw new SupervisorError(
+        "SUPERVISOR_TIMED_OUT",
+        "Supervisor did not correct an immediate repeat before the routing deadline",
+      );
+    }
+
+    const correctionContext = sanitizeSupervisorSelectionContext({
+      ...safeContext,
+      requireDifferentAgentOrComplete: true,
+    });
+    const correctedRawDecision = await this.provider.decide(
+      correctionContext,
+      { ...options, timeoutMs: remainingTimeoutMs },
+    );
+    if (options.signal?.aborted) throw createAbortError();
+    const correctedDecision = parseSupervisorRoutingDecision(correctedRawDecision);
+    const correctedSelection = resolveSelection(
+      correctionContext,
+      correctedDecision,
+    );
+    if (
+      correctedSelection.kind === "invoke" &&
+      correctedSelection.participant.agentId ===
+        safeContext.avoidImmediateRepeatAgentId
+    ) {
+      throw new SupervisorError(
+        "SUPERVISOR_INVALID_ROUTE",
+        "Supervisor repeated the same Agent after a corrective routing call",
+      );
+    }
+    return correctedSelection;
   }
 }
 
@@ -123,12 +182,42 @@ function previousHandoff(input: OrchestrationSelectionInput): HandoffEnvelope | 
   };
 }
 
+function previousCurrentCycleAgentId(
+  input: OrchestrationSelectionInput,
+  currentCycleTurnCount: number,
+): string | undefined {
+  if (input.turns.length === 0) return undefined;
+  const distinctAgentIds = new Set(
+    input.participants.map((participant) => participant.agentId.trim()),
+  );
+  if (distinctAgentIds.size <= 1) return undefined;
+  // The engine supplies the authoritative current-cycle count, but retain a
+  // defensive fallback to the actual current-cycle turn list if a compatible
+  // caller sends a stale zero. Prior-cycle context is kept in `contextTurns`
+  // and never enters this list.
+  const currentTurns =
+    currentCycleTurnCount > 0
+      ? input.turns.slice(-currentCycleTurnCount)
+      : input.turns;
+  const previous = currentTurns.at(-1);
+  const agentId = previous?.agentId.trim();
+  if (!agentId || !distinctAgentIds.has(agentId)) return undefined;
+  return agentId;
+}
+
 function supervisorContext(
   input: OrchestrationSelectionInput,
 ): SupervisorSelectionContext {
   const profileInput = input as OrchestrationSelectionInput & {
     participantProfiles?: SupervisorSelectionContext["participantProfiles"];
   };
+  const currentCycleTurnCount = input.currentCycleTurnCount ?? input.turns.length;
+  const priorCycleTurnCount =
+    input.priorCycleTurnCount ?? input.contextTurns?.length ?? 0;
+  const avoidImmediateRepeatAgentId = previousCurrentCycleAgentId(
+    input,
+    currentCycleTurnCount,
+  );
   return {
     sessionId: input.sessionId,
     originalPrompt: input.originalPrompt,
@@ -136,8 +225,17 @@ function supervisorContext(
     ...(profileInput.participantProfiles === undefined
       ? {}
       : { participantProfiles: profileInput.participantProfiles }),
+    cycleIndex: input.cycleIndex ?? 0,
     stepIndex: input.stepIndex,
     maxSteps: input.maxSteps,
+    currentCycleTurnCount,
+    priorCycleTurnCount,
+    ...(input.requireCurrentCycleDispatch
+      ? { requireCurrentCycleDispatch: true }
+      : {}),
+    ...(avoidImmediateRepeatAgentId === undefined
+      ? {}
+      : { avoidImmediateRepeatAgentId }),
     previousHandoff: previousHandoff(input),
     recentTurns: [
       ...(input.contextTurns ?? []),

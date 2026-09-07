@@ -218,6 +218,28 @@ describe("Container Codex runner", () => {
     expect(typeof exited.info.durationMs).toBe("number");
   });
 
+  it("preserves the provider-limit classification on a failed container turn", async () => {
+    hoisted.executions.length = 0;
+    const { execEngine } = engineExec({});
+    const runner = new ContainerCodexRunner(containerConfig(), { execEngine });
+
+    const run = runner.run(baseRequest);
+    hoisted.executions[0]!.options.onLine(
+      '{"type":"turn.failed","error":{"code":"SetLimitExceeded"}}',
+    );
+    hoisted.executions[0]!.finish({
+      exitCode: 1,
+      cancelled: false,
+      timedOut: false,
+      outputTruncated: false,
+    });
+
+    await expect(run).rejects.toMatchObject({
+      errorCode: "MODEL_INFERENCE_LIMIT_EXCEEDED",
+      message: expect.stringContaining("provider inference limit was reached"),
+    });
+  });
+
   it("falls back to the process exit code when inspect fails", async () => {
     hoisted.executions.length = 0;
     const { execEngine } = engineExec({

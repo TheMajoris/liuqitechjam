@@ -1,4 +1,5 @@
 import type {
+  AgentRunErrorCode,
   Agent,
   CreateOrchestrationInput,
   OrchestrationErrorCode,
@@ -281,6 +282,12 @@ export function humanizeFailure(
       return "One of the Agents was stopped before it could reply.";
     case "RUN_TIMED_OUT":
       return "An Agent ran out of time on its turn.";
+    case "WEB_TOOL_PERMISSION_DENIED":
+      return "Web access was denied. Assign this Agent a role that allows the requested web tool, then retry this turn.";
+    case "MODEL_INFERENCE_LIMIT_EXCEEDED":
+      return MODEL_INFERENCE_LIMIT_MESSAGE;
+    case "PROJECT_PERMISSION_DENIED":
+      return PROJECT_PERMISSION_DENIED_MESSAGE;
     case "RUN_FAILED":
       return "An Agent could not complete its turn.";
     case "RUN_CANCELLED":
@@ -290,7 +297,7 @@ export function humanizeFailure(
       return "The service restarted while this conversation was running.";
     case "SUPERVISOR_INVALID_RESPONSE":
     case "SUPERVISOR_INVALID_SELECTION":
-      return "The next participant choice was not valid for this conversation.";
+      return "The supervisor could not choose the next Agent. Try again or review the Team roster.";
     case "SUPERVISOR_FAILED":
       return "The next participant could not be chosen.";
     case "SUPERVISOR_TIMED_OUT":
@@ -311,12 +318,37 @@ export function humanizeFailure(
   }
 }
 
+/**
+ * Fixed recovery wording for direct Agent Runs. Provider/runtime messages are
+ * intentionally not copied into the product surface: they may contain paths,
+ * prompts, or provider request details. Unknown failures retain one generic
+ * message while stable categories get an actionable next step.
+ */
+export const MODEL_INFERENCE_LIMIT_MESSAGE =
+  "This model is paused because its provider inference limit was reached. Review Safe Experience Mode in the provider's Model Activation settings, or choose another available model, then retry.";
+export const PROJECT_PERMISSION_DENIED_MESSAGE =
+  "This Agent is not allowed to write to the Workspace. Add Allow Agent runs (agent.invoke) and Edit workspace files (project.write) to the Agent's role, make sure it has editable Workspace membership, then retry.";
+
+export function humanizeAgentRunFailure(
+  errorCode: AgentRunErrorCode | null | undefined,
+  _fallback?: string | null,
+): string {
+  switch (errorCode) {
+    case "MODEL_INFERENCE_LIMIT_EXCEEDED":
+      return MODEL_INFERENCE_LIMIT_MESSAGE;
+    case "WEB_TOOL_PERMISSION_DENIED":
+      return "Web access was denied. Assign this Agent a role that allows the requested web tool, then retry this turn.";
+    default:
+      return "The Agent could not complete this run.";
+  }
+}
+
 export function eventLabel(type: OrchestrationEventType): string {
   const labels: Record<OrchestrationEventType, string> = {
     orchestration_created: "Session created",
     orchestration_started: "Session started",
     orchestration_continued: "Conversation continued",
-    orchestration_retried: "Resumed from an earlier turn",
+    orchestration_retried: "Retry started from an earlier turn",
     supervisor_decision: "Next participant selected",
     participant_dispatched: "Agent turn dispatched",
     run_completed: "Agent turn completed",

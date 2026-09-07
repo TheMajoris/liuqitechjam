@@ -1,4 +1,6 @@
 import type { AgentService } from "../agent-service.js";
+import { isAuthorizationError } from "../access/authorization-service.js";
+import { ProjectPermissionDeniedError } from "../errors.js";
 
 export interface PlatformAgentInvokerInput {
   agentId: string;
@@ -40,12 +42,23 @@ export class PlatformAgentInvoker implements PlatformAgentInvokerContract {
     // Every Team turn is tagged at this boundary. The prompt still reaches
     // AgentService and the runner unchanged — only the Playground projection
     // excludes it, because the orchestrator authored it, not the user.
-    const accepted = await this.service.sendMessage(input.agentId, input.prompt, {
-      origin: "orchestration",
-      ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
-      ...(input.orchestrationId === undefined ? {} : { orchestrationId: input.orchestrationId }),
-      ...(input.parentSpan === undefined ? {} : { parentSpan: input.parentSpan }),
-    });
+    let accepted: Awaited<ReturnType<AgentService["sendMessage"]>>;
+    try {
+      accepted = await this.service.sendMessage(input.agentId, input.prompt, {
+        origin: "orchestration",
+        ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
+        ...(input.orchestrationId === undefined ? {} : { orchestrationId: input.orchestrationId }),
+        ...(input.parentSpan === undefined ? {} : { parentSpan: input.parentSpan }),
+      });
+    } catch (error) {
+      // Project authorization is checked before AgentService creates a Run.
+      // Replace only that trusted error class with a fixed orchestration code;
+      // never copy its reason, which may contain policy or resource details.
+      if (input.projectId !== undefined && isAuthorizationError(error)) {
+        throw new ProjectPermissionDeniedError();
+      }
+      throw error;
+    }
     let run;
     try {
       await input.onRunAccepted?.(accepted.run.id);
@@ -73,13 +86,20 @@ export class PlatformAgentInvoker implements PlatformAgentInvokerContract {
     }
 
     if (run.status !== "completed") {
-      throw new Error(
+      const error = new Error(
         "Agent Run " +
           run.id +
           " " +
           run.status +
           (run.error ? ": " + run.error : ""),
       );
+      // Preserve server-owned lifecycle codes across the orchestration
+      // boundary. Consumers classify this field directly and never need to
+      // infer a web permission denial from persisted prose.
+      if (run.errorCode !== undefined) {
+        Object.assign(error, { orchestrationErrorCode: run.errorCode });
+      }
+      throw error;
     }
     if (run.output === null || run.output.trim().length === 0) {
       throw new Error("Agent Run " + run.id + " completed without output");

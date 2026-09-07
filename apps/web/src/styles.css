@@ -1778,101 +1778,137 @@ textarea:focus {
   }
 }
 
+/*
+ * Narrow viewports.
+ *
+ * The sidebar keeps every label and the whole Conversation tree; it just stops
+ * holding a column and becomes an overlay drawer above the content, opened
+ * from a top bar. The previous behaviour squeezed the same nav into a 65px
+ * strip, which left the tree unreachable on a phone.
+ */
+.mobile-bar {
+  display: none;
+}
+
+.nav-scrim {
+  display: none;
+}
+
 @media (max-width: 900px) {
-  .app-shell {
-    grid-template-columns: 76px minmax(0, 1fr);
+  .app-shell,
+  .app-shell.is-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
-  .sidebar {
-    padding: 20px 10px;
+  .mobile-bar {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    padding-top: max(8px, env(safe-area-inset-top));
+    border-bottom: 1px solid #363632;
+    background: #242421;
+    color: #f5f3ed;
   }
 
-  .brand {
-    padding: 2px 9px 24px;
+  .mobile-bar-title {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
   }
 
-  .brand > div:last-child,
-  .create-button:not(:focus) {
-    font-size: 0;
+  .mobile-bar-button {
+    width: 38px;
+    height: 38px;
+    display: grid;
+    place-items: center;
+    border: 1px solid #3d3d38;
+    border-radius: 10px;
+    color: #e9e7e0;
+    background: transparent;
+    font-size: 16px;
+    cursor: pointer;
   }
 
-  .create-button {
-    justify-content: center;
+  .mobile-bar-button.is-primary {
+    color: #fff;
+    border-color: transparent;
+    background: var(--purple);
+  }
+
+  /* The drawer is always the full sidebar, never the collapsed rail. */
+  .sidebar,
+  .app-shell.is-collapsed .sidebar {
+    position: fixed;
+    z-index: 40;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(310px, 86vw);
+    padding: 16px 12px;
+    transform: translateX(-100%);
+    transition: transform 260ms var(--ease-out);
+    box-shadow: 24px 0 60px rgba(0, 0, 0, 0.28);
+    visibility: hidden;
+  }
+
+  .app-shell.nav-open .sidebar {
+    transform: translateX(0);
+    visibility: visible;
+  }
+
+  .nav-scrim {
+    position: fixed;
+    z-index: 35;
+    inset: 0;
+    display: block;
+    border: 0;
     padding: 0;
+    background: rgba(20, 20, 18, 0.45);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 220ms var(--ease-out);
   }
 
-  .create-button span {
-    font-size: 22px;
+  .app-shell.nav-open .nav-scrim {
+    opacity: 1;
+    pointer-events: auto;
   }
 
-  .sidebar-label,
-  .agent-card-copy,
-  .mini-dot,
-  .runtime-card {
+  /* The rail variant has no place here: the drawer replaces it wholesale. */
+  .sidebar.is-rail .rail-list,
+  .sidebar.is-rail .rail-foot,
+  .sidebar.is-rail .rail-divider {
     display: none;
   }
 
-  .agent-card {
-    display: grid;
-    grid-template-columns: 1fr;
-    place-items: center;
-    padding: 8px;
+  .main,
+  .main-insights {
+    padding: 16px 14px 24px;
   }
 
-  .main {
-    padding-left: 20px;
-    padding-right: 20px;
+  .main-workspace {
+    padding: 12px 14px 16px;
   }
 
-  .prompt-grid {
+  .prompt-grid,
+  .form-grid,
+  .worker-model-grid {
     grid-template-columns: 1fr;
+  }
+
+  .config-banner,
+  .error-banner {
+    margin-inline: 0;
   }
 }
 
 @media (max-width: 680px) {
-  .app-shell {
-    display: block;
-  }
-
-  .sidebar {
-    min-height: 0;
-    height: 65px;
-    padding: 10px 14px;
-    flex-direction: row;
-    align-items: center;
-    gap: 10px;
-  }
-
-  .brand {
-    padding: 0;
-  }
-
-  .brand-mark {
-    width: 36px;
-    height: 36px;
-  }
-
-  .create-button {
-    width: 38px;
-    min-height: 38px;
-    margin-left: auto;
-  }
-
-  .agent-list {
-    max-width: 50vw;
-    flex-direction: row;
-    overflow-x: auto;
-  }
-
-  .agent-card {
-    width: auto;
-  }
-
-  .main {
-    padding: 12px;
-    min-height: calc(100vh - 65px);
-  }
-
   .agent-header {
     align-items: flex-start;
     flex-direction: column;
@@ -1889,8 +1925,8 @@ textarea:focus {
   }
 
   .playground {
-    height: calc(100vh - 224px);
-    min-height: 490px;
+    height: auto;
+    min-height: 60vh;
   }
 
   .playground-topbar {
@@ -1902,19 +1938,11 @@ textarea:focus {
   }
 
   .messages {
-    padding: 22px 15px;
+    padding: 20px 14px;
   }
 
   .message-user {
     margin-left: 8%;
-  }
-
-  .form-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .worker-model-grid {
-    grid-template-columns: 1fr;
   }
 
   .worker-model-heading {
@@ -2079,7 +2107,7 @@ textarea:focus {
 .orch-run-view,
 .orch-run-tablist,
 .orch-chat,
-.orch-graph,
+.orch-log,
 .orch-timeline-embedded,
 .orch-run-loading {
   display: grid;
@@ -3070,6 +3098,45 @@ textarea:focus {
   font-size: 10px;
 }
 
+.orch-chat-retry {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  margin-top: 10px;
+  border-top: 1px solid rgba(201, 52, 52, 0.18);
+  padding-top: 9px;
+}
+
+.orch-chat-retry-action {
+  border: 1px solid var(--orch-accent);
+  border-radius: var(--orch-radius-control);
+  padding: 6px 10px;
+  color: #ffffff;
+  background: var(--orch-accent);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.orch-chat-retry-action:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.orch-chat-retry-action:disabled {
+  border-color: var(--orch-line);
+  color: var(--orch-muted);
+  background: rgba(120, 120, 128, 0.12);
+  cursor: not-allowed;
+}
+
+.orch-chat-retry-note {
+  margin: 0;
+  color: var(--orch-muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 .orch-chat-typing {
   display: flex;
   align-items: center;
@@ -3169,302 +3236,442 @@ textarea:focus {
 }
 
 /*
- * Execution graph. Lanes are columns and execution steps are rows, so the
- * canvas keeps a git-graph reading while a flow library owns the viewport.
- * Node geometry lives in orchestration-graph.ts; only paint lives here.
+ * Run log. One row per dispatched turn, with a lane rail drawn to the left
+ * exactly the way a commit graph draws branches.
+ *
+ * The rail is capped in orchestration-graph geometry rather than scaled, so a
+ * run with thirty lanes is the same width as a run with three, and a row is a
+ * fixed height whatever landed in it — the log grows down by one row per turn
+ * and never sideways.
  */
-.orch-graph {
+.orch-log {
   gap: 0;
+  min-width: 0;
   padding-block: 20px 4px;
 }
 
-.orch-graph-head {
+.orch-log-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 10px 16px;
   margin-bottom: 12px;
 }
 
-.orch-graph-head h2 {
+.orch-log-head h2 {
+  margin: 0;
   font-size: 14px;
   font-weight: 650;
 }
 
-.orch-graph-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 14px;
-  margin: 0 0 10px;
-  padding: 0;
-  list-style: none;
-}
-
-.orch-graph-legend > li {
+.orch-log-head-tools {
   display: flex;
   align-items: center;
-  gap: 6px;
-  min-width: 0;
-  font-size: 11px;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
-.orch-graph-legend-dot {
-  flex-shrink: 0;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: hsl(var(--orch-graph-hue) 52% 52%);
-}
-
-.orch-graph-legend-name {
-  font-weight: 600;
-}
-
-.orch-graph-legend-role {
-  overflow: hidden;
-  color: var(--orch-muted);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Canvas and inspector share the band; the inspector takes a fixed rail. */
-.orch-graph-stage {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: minmax(0, 1fr);
-  min-width: 0;
-}
-
-.orch-graph-stage.has-inspector {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 280px);
-}
-
-@media (max-width: 860px) {
-  .orch-graph-stage.has-inspector {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-/* The flow needs an explicit height; it measures its own container. */
-.orch-graph-flow {
-  height: clamp(260px, 44vh, 520px);
-  min-width: 0;
-  overflow: hidden;
+.orch-log-filter {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
   border: 1px solid var(--orch-line-soft);
-  border-radius: var(--orch-radius-card);
+  border-radius: 999px;
   background: var(--orch-surface);
 }
 
-/* Holds the canvas height while the flow library is being fetched. */
-.orch-graph-flow-loading {
-  width: 100%;
-  height: 100%;
-  background:
-    linear-gradient(100deg, #efece4 30%, #f6f4ee 50%, #efece4 70%)
-    0 0 / 300% 100%;
-  animation: orch-graph-shimmer 1.4s ease-out infinite;
-}
-
-@keyframes orch-graph-shimmer {
-  to {
-    background-position: -150% 0;
-  }
-}
-
-/* The library paints its own surface; hand it the paper palette instead. */
-.orch-graph-flow .react-flow__background {
-  background: transparent;
-}
-
-.orch-graph-flow .react-flow__controls {
-  border-radius: 8px;
-  box-shadow: none;
-}
-
-.orch-graph-flow .react-flow__controls-button {
-  border: 1px solid var(--orch-line-soft);
-  border-bottom-width: 0;
-  color: var(--orch-ink);
-  background: var(--orch-surface-solid);
-}
-
-.orch-graph-flow .react-flow__controls-button:last-child {
-  border-bottom-width: 1px;
-}
-
-.orch-graph-flow .react-flow__attribution {
-  background: transparent;
-  font-size: 9px;
-}
-
-/* Handles exist only so edges have anchors; they are never interactive. */
-.orch-flow-node .react-flow__handle {
-  width: 1px;
-  min-width: 1px;
-  height: 1px;
-  min-height: 1px;
+.orch-log-filter button,
+.orch-log-collapse {
   border: 0;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.orch-flow-card {
-  display: grid;
-  gap: 3px;
-  border: 1px solid var(--orch-line);
-  border-radius: 10px;
-  padding: 8px 10px 9px;
-  color: var(--orch-ink);
-  background: var(--orch-surface-solid);
-  font: inherit;
-  text-align: start;
-  cursor: pointer;
-  transition: border-color 0.16s ease, box-shadow 0.16s ease;
-}
-
-.orch-flow-card:hover {
-  border-color: hsl(var(--orch-graph-hue) 45% 62%);
-}
-
-.orch-flow-card:focus-visible {
-  outline: 2px solid var(--orch-accent);
-  outline-offset: 2px;
-}
-
-.orch-flow-card.is-selected {
-  border-color: hsl(var(--orch-graph-hue) 50% 50%);
-  box-shadow: 0 0 0 2px hsl(var(--orch-graph-hue) 60% 88%);
-}
-
-.orch-flow-card-top {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.orch-flow-dot {
-  flex-shrink: 0;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: hsl(var(--orch-graph-hue) 52% 52%);
-}
-
-.orch-flow-card.is-failed .orch-flow-dot {
-  background: var(--orch-danger);
-}
-
-.orch-flow-card.is-cancelled .orch-flow-dot {
-  background: var(--orch-muted);
-}
-
-/* A turn still in flight is hollow: nothing is recorded about it yet. */
-.orch-flow-card.is-running .orch-flow-dot {
-  border: 2px solid hsl(var(--orch-graph-hue) 52% 52%);
-  background: var(--orch-surface-solid);
-  animation: orch-flow-pulse 1.6s ease-in-out infinite;
-}
-
-@keyframes orch-flow-pulse {
-  50% {
-    transform: scale(1.35);
-  }
-}
-
-.orch-flow-step {
-  flex-shrink: 0;
-  color: var(--orch-muted);
-  font-size: 10px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-.orch-flow-name {
-  overflow: hidden;
-  font-size: 12px;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.orch-flow-card-meta {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  min-width: 0;
-  padding-inline-start: 15px;
-}
-
-.orch-flow-status {
-  overflow: hidden;
-  color: var(--orch-muted);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.orch-flow-card.is-failed .orch-flow-status {
-  color: var(--orch-danger);
-}
-
-.orch-flow-card.is-completed .orch-flow-status {
-  color: var(--orch-success);
-}
-
-.orch-flow-duration {
-  flex-shrink: 0;
-  color: var(--orch-muted);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-}
-
-.orch-flow-marker {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  width: 340px;
-  max-width: 340px;
-}
-
-.orch-flow-marker-tag {
-  flex-shrink: 0;
-  border: 1px solid var(--orch-line);
   border-radius: 999px;
-  padding: 1px 8px;
+  padding: 4px 11px;
   color: var(--orch-muted);
-  background: var(--orch-surface-solid);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.orch-flow-marker-prompt {
-  overflow: hidden;
-  color: var(--orch-ink);
+  background: transparent;
   font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 140ms var(--ease-out), background 140ms var(--ease-out);
 }
 
-.orch-flow-edge .react-flow__edge-path {
+.orch-log-filter button:hover,
+.orch-log-collapse:hover {
+  color: var(--orch-ink);
+  background: rgba(105, 84, 217, 0.09);
+}
+
+.orch-log-filter button.is-active {
+  color: var(--orch-ink);
+  background: var(--orch-surface-solid);
+  box-shadow: var(--elevation-1);
+}
+
+.orch-log-collapse {
+  border: 1px solid var(--orch-line-soft);
+  padding: 4px 12px;
+}
+
+.orch-log-more {
+  align-self: flex-start;
+  margin-bottom: 6px;
+  border: 1px dashed var(--orch-line);
+  border-radius: 999px;
+  padding: 5px 14px;
+  color: var(--orch-muted);
+  background: transparent;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.orch-log-more:hover {
+  color: var(--orch-ink);
+  border-color: var(--purple);
+}
+
+/* The log scrolls inside itself, so the Activity tab keeps a fixed shape. */
+.orch-log-rows {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  max-height: clamp(320px, 58vh, 720px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--orch-line-soft);
+  border-radius: var(--orch-radius-card);
+  background: var(--orch-surface);
+  scrollbar-width: thin;
+}
+
+.orch-log-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  min-width: 0;
+}
+
+.orch-log-row + .orch-log-row .orch-log-entry {
+  border-top: 1px solid var(--orch-line-soft);
+}
+
+.orch-log-rail {
+  display: block;
+  flex-shrink: 0;
+  overflow: visible;
+}
+
+.orch-log-track {
+  stroke: var(--orch-line);
+  stroke-width: 1.5;
+}
+
+.orch-log-strand {
   stroke: var(--orch-line);
   stroke-width: 1.5;
 }
 
 /* A recorded handoff actually carried a result across; show it as solid. */
-.orch-flow-edge.is-handoff .react-flow__edge-path {
+.orch-log-strand.is-handoff {
   stroke: hsl(258deg 40% 62%);
   stroke-width: 2;
 }
 
-/* Only bounded context crosses a follow-up boundary, so the strand breaks. */
-.orch-flow-edge.is-cross-cycle .react-flow__edge-path {
-  stroke-dasharray: 4 4;
-  stroke-width: 1;
+.orch-log-dot {
+  fill: hsl(var(--orch-graph-hue, 258) 52% 58%);
+  stroke: var(--orch-surface-solid);
+  stroke-width: 2.5;
 }
+
+.orch-log-dot.is-running {
+  animation: orch-log-pulse 1.4s var(--ease-out) infinite;
+}
+
+.orch-log-dot.is-failed {
+  fill: var(--red);
+}
+
+.orch-log-dot.is-cancelled {
+  fill: var(--orch-muted);
+}
+
+@keyframes orch-log-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* The row header: everything a reader scans before opening anything. */
+.orch-log-entry {
+  display: grid;
+  grid-template-columns: auto auto minmax(72px, max-content) minmax(0, 1fr) auto auto auto auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  min-height: 46px;
+  padding: 0 12px 0 2px;
+  border: 0;
+  color: var(--orch-ink);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 140ms var(--ease-out);
+}
+
+.orch-log-entry:hover {
+  background: rgba(105, 84, 217, 0.05);
+}
+
+.orch-log-entry:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: -2px;
+}
+
+.orch-log-row.is-open .orch-log-entry {
+  background: rgba(105, 84, 217, 0.07);
+}
+
+.orch-log-step {
+  color: var(--orch-muted);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.orch-log-name {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 640;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orch-log-summary {
+  overflow: hidden;
+  min-width: 0;
+  color: var(--orch-muted);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orch-log-status {
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 2px 9px;
+  color: var(--orch-muted);
+  background: rgba(60, 60, 67, 0.07);
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.orch-log-status.is-completed {
+  color: var(--green);
+  background: rgba(51, 144, 109, 0.12);
+}
+
+.orch-log-status.is-failed {
+  color: var(--red);
+  background: rgba(197, 83, 83, 0.13);
+}
+
+.orch-log-status.is-running {
+  color: var(--purple-dark);
+  background: rgba(105, 84, 217, 0.13);
+}
+
+.orch-log-duration {
+  color: var(--orch-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.orch-log-run {
+  color: var(--orch-muted);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 10.5px;
+}
+
+.orch-log-caret {
+  color: var(--orch-muted);
+  font-size: 10px;
+}
+
+/* The strand continues past an opened row, so the lane never looks cut. */
+.orch-log-detail {
+  position: relative;
+  grid-column: 1 / -1;
+  padding: 0 12px 14px 110px;
+}
+
+.orch-log-detail::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 14px;
+  left: calc(var(--orch-log-x, 13px) - 0.75px);
+  width: 1.5px;
+  background: var(--orch-line);
+}
+
+.orch-log-detail .orch-inspector {
+  max-height: none;
+  border-color: var(--orch-line-soft);
+  background: var(--orch-surface-solid);
+}
+
+/* A follow-up prompt spans the run rather than belonging to a lane. */
+.orch-log-row.is-cycle .orch-log-cycle {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  min-height: 46px;
+  padding: 6px 12px 6px 0;
+  align-content: center;
+}
+
+.orch-log-cycle-tag {
+  border: 1px dashed hsl(258deg 40% 68%);
+  border-radius: 999px;
+  padding: 2px 9px;
+  color: var(--purple-dark);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.orch-log-cycle-prompt {
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+  color: var(--orch-ink);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orch-log-cycle time {
+  color: var(--orch-muted);
+  font-size: 10.5px;
+}
+
+.orch-graph-legend {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 0 0 10px;
+  padding: 0;
+}
+
+.orch-graph-legend > li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.orch-graph-legend-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: hsl(var(--orch-graph-hue, 258) 52% 58%);
+}
+
+.orch-graph-legend-name {
+  color: var(--orch-ink);
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.orch-graph-legend-role {
+  color: var(--orch-muted);
+  font-size: 10.5px;
+}
+
+/* The raw journal: available, but never the first thing the tab shows. */
+.orch-journal {
+  width: min(820px, calc(100% - 2 * clamp(20px, 5vw, 40px)));
+  margin: 0 auto 26px;
+  border: 1px solid var(--orch-line-soft);
+  border-radius: var(--orch-radius-card);
+  background: var(--orch-surface);
+}
+
+.orch-journal > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 14px;
+  color: var(--orch-ink);
+  font-size: 12px;
+  font-weight: 620;
+  cursor: pointer;
+  list-style: none;
+}
+
+.orch-journal > summary::-webkit-details-marker {
+  display: none;
+}
+
+.orch-journal > summary::before {
+  content: "▸";
+  color: var(--orch-muted);
+  font-size: 10px;
+}
+
+.orch-journal[open] > summary::before {
+  content: "▾";
+}
+
+.orch-journal > summary > span:first-of-type {
+  margin-right: auto;
+}
+
+.orch-journal-count {
+  color: var(--orch-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.orch-journal .orch-timeline-embedded {
+  padding: 0 14px 16px;
+}
+
+@media (max-width: 720px) {
+  /* Step, avatar, name, status, duration, caret — the summary and the Run id
+     are the two columns a phone can lose without losing the reading. */
+  .orch-log-entry {
+    grid-template-columns: auto auto minmax(0, 1fr) auto auto auto;
+    gap: 8px;
+    padding-block: 8px;
+  }
+
+  .orch-log-summary,
+  .orch-log-run {
+    display: none;
+  }
+
+  .orch-log-detail {
+    padding-left: 14px;
+  }
+
+  .orch-log-detail::before {
+    display: none;
+  }
+}
+
 
 /* Turn inspector */
 .orch-inspector {
@@ -5539,6 +5746,62 @@ textarea:focus {
   background: #ffffff;
 }
 
+/*
+ * A plate at rest is a name tag.
+ *
+ * Pod desks are 45 world units apart, and a plate carrying its name, its
+ * activity, and its quota is wider than that gap at every zoom — which is how
+ * two neighbours ended up overlapping and clipping each other's text. Only the
+ * plate being looked at spends the extra width, and it rises above its
+ * neighbours while it does.
+ */
+.ws-plate {
+  z-index: 1;
+  max-width: 168px;
+}
+
+.ws-plate.is-expanded {
+  z-index: 4;
+}
+
+.ws-plate-heading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+/* State stays legible at rest through colour, since its word is put away. */
+.ws-plate-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.ws-plate[data-tone="active"] .ws-plate-dot { background: var(--purple); }
+.ws-plate[data-tone="positive"] .ws-plate-dot { background: var(--green); }
+.ws-plate[data-tone="danger"] .ws-plate-dot { background: var(--red); }
+.ws-plate[data-tone="waiting"] .ws-plate-dot { background: #c0a24a; }
+
+/*
+ * Put away, not removed: the text keeps its place in the accessibility tree
+ * so a screen reader still hears the activity and the quota.
+ */
+.ws-plate-state.is-quiet,
+.ws-plate-resource.is-quiet {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .ws-plate-name {
   max-width: 132px;
   overflow: hidden;
@@ -5690,6 +5953,20 @@ textarea:focus {
   cursor: default;
   pointer-events: none;
   z-index: 5;
+}
+
+.ws-resource-capacity-headline {
+  display: block;
+}
+
+/* Provenance for the percentage above it: the counters and when they were
+   last confirmed, so a stale reading cannot pass for a live meter. */
+.ws-resource-capacity-detail {
+  display: block;
+  margin-top: 2px;
+  color: var(--orch-muted);
+  font-size: 9.5px;
+  font-weight: 600;
 }
 
 .ws-resource-capacity-card[data-resource-capacity-tone="healthy"] {
@@ -6851,7 +7128,22 @@ textarea:focus {
 .access-option > span { min-width: 0; }
 .access-option strong, .access-option small { display: block; }
 .access-option strong { font-size: 12px; line-height: 1.3; }
+.access-option-title { display: flex !important; align-items: center; gap: 6px; flex-wrap: wrap; }
+.access-option-id,
+.access-option-permission code {
+  display: inline-flex;
+  max-width: 100%;
+  padding: 2px 5px;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--muted);
+  font: 600 10px/1.2 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
 .access-option small { margin-top: 3px; color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.35; }
+.access-option-permission { margin-top: 5px !important; }
+.access-option-permission code { padding: 0; border: 0; background: transparent; color: var(--ink); font-size: 10px; }
 .access-actions { justify-content: flex-end; flex-wrap: wrap; padding-top: 2px; }
 .role-save-actions {
   position: sticky;
@@ -6864,6 +7156,7 @@ textarea:focus {
   background: var(--paper);
 }
 .role-save-actions .access-action-note { margin-right: auto; }
+.role-unsaved-note { color: var(--purple-dark); font-weight: 700; }
 .access-action-note { color: var(--muted); font-size: 11px; }
 .button-danger:disabled { opacity: 0.45; }
 .access-inline-link { padding: 0; border: 0; background: none; color: var(--purple-dark); font: inherit; font-size: inherit; text-decoration: underline; cursor: pointer; }
@@ -7396,21 +7689,34 @@ button.assignment-archive:hover:not(:disabled) {
 .workspace-nav-card .thread-card-copy strong { font-size: 12px; }
 .workspace-nav-card .thread-card-meta { margin-top: 2px; }
 
+/*
+ * The row stretches to the height of the workspace card, so the action button
+ * has to centre itself against it rather than inherit that full height and
+ * leave its glyph sitting at the top.
+ */
 .workspace-nav-overflow {
   position: relative;
+  display: flex;
+  align-items: center;
   flex: 0 0 auto;
 }
 
 .workspace-nav-overflow-button {
   width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
   border: 1px solid transparent;
   border-radius: 8px;
   color: #aaa9a1;
   background: transparent;
   cursor: pointer;
-  font-size: 14px;
-  letter-spacing: 0.08em;
   line-height: 1;
+}
+
+.overflow-glyph {
+  display: block;
+  fill: currentColor;
 }
 .workspace-nav-overflow-button:hover,
 .workspace-nav-overflow-button[aria-expanded="true"] {
@@ -7469,15 +7775,140 @@ button.assignment-archive:hover:not(:disabled) {
   appearance: none;
 }
 
+/*
+ * The Conversation tree.
+ *
+ * One guide line marks the branch and the rows hang off it at a shallow
+ * indent, so a nested Conversation still gets nearly the full sidebar width
+ * for its name. The row is a single card with its own delete control inside
+ * it — a glyph parked outside the card reads as belonging to nothing.
+ */
 .workspace-conversation-list {
+  position: relative;
   display: grid;
-  gap: 2px;
-  margin: 0 0 2px 28px;
-  padding: 3px 0 3px 9px;
+  gap: 1px;
+  margin: 1px 0 2px 14px;
+  padding: 2px 0 2px 10px;
   border-left: 1px solid #3d3d38;
 }
-.workspace-conversation-card { padding: 7px 8px; }
-.workspace-conversation-card .thread-card-meta { font-size: 9px; }
+
+.conversation-row {
+  position: relative;
+  border-radius: 9px;
+  transition: background 150ms ease;
+}
+
+.conversation-row:hover {
+  background: #2e2e2a;
+}
+
+.conversation-row.is-selected {
+  background: #353430;
+  box-shadow: inset 0 0 0 1px #4a4944;
+}
+
+.conversation-card {
+  display: grid;
+  grid-template-columns: 7px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  border-radius: 9px;
+  padding: 7px 26px 7px 8px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.conversation-card:focus-visible {
+  outline: 2px solid #a699ff;
+  outline-offset: -1px;
+}
+
+/* The branch dot sits on the guide line, the way a tree marks a leaf. */
+.conversation-dot {
+  width: 7px;
+  height: 7px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: #6d6d66;
+}
+
+.conversation-row.is-selected .conversation-dot {
+  box-shadow: 0 0 0 3px rgba(130, 111, 240, 0.24);
+}
+
+.conversation-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.conversation-copy strong {
+  overflow: hidden;
+  color: #edebe4;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: #85857e;
+  font-size: 9.5px;
+}
+
+.conversation-meta time {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Revealed on hover or keyboard focus; always present for touch. */
+.conversation-delete {
+  position: absolute;
+  top: 6px;
+  right: 5px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  color: #aaa9a1;
+  background: transparent;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 150ms ease, color 150ms ease, background 150ms ease;
+}
+
+.conversation-row:hover .conversation-delete,
+.conversation-delete:focus-visible {
+  opacity: 1;
+}
+
+.conversation-delete:hover:not(:disabled) {
+  color: #fff;
+  background: #513534;
+}
+
+.conversation-delete:disabled {
+  cursor: not-allowed;
+  opacity: 0;
+}
+
+@media (hover: none) {
+  .conversation-delete:not(:disabled) {
+    opacity: 0.75;
+  }
+}
 .workspace-conversation-empty,
 .workspace-legacy-label {
   padding: 6px 8px;
@@ -7962,4 +8393,537 @@ button.assignment-archive:hover:not(:disabled) {
 .trace-audit-head h3 {
   margin: 3px 0 10px;
   font-size: 14px;
+}
+
+/* --- Token attribution ----------------------------------------------
+ *
+ * "Where did the tokens go" is a different question from "what happened
+ * when", so it gets its own shapes: ranked bars rather than a column of
+ * numbers, and a three-way split — fresh input, cache reads, output — because
+ * those are priced and fixed differently.
+ */
+.token-split {
+  display: flex;
+  overflow: hidden;
+  width: 100%;
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(120, 120, 128, 0.1);
+}
+
+.token-split-part {
+  display: block;
+  height: 100%;
+  min-width: 0;
+}
+
+.token-split-part.is-input { background: var(--purple); }
+.token-split-part.is-cached { background: #9c8ee8; }
+.token-split-part.is-output { background: var(--green); }
+.token-split-part.is-rest { background: rgba(120, 120, 128, 0.35); }
+
+.token-split-legend {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0;
+  padding: 0;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.token-split-legend > li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.token-split-legend .token-split-part {
+  width: 10px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.token-hotspots {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px 16px;
+  background: var(--paper);
+  box-shadow: var(--elevation-1);
+}
+
+.token-hotspots-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-bottom: 12px;
+}
+
+.token-hotspots-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.token-hotspots-head-side {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+.token-hotspots-total {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.token-hotspot-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+}
+
+.token-hotspot > button,
+.token-hotspot > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 3px 12px;
+  width: 100%;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 4px 6px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+
+.token-hotspot > button {
+  cursor: pointer;
+  transition: background 140ms var(--ease-out);
+}
+
+.token-hotspot > button:hover {
+  background: var(--purple-soft);
+}
+
+.token-hotspot > button:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 1px;
+}
+
+.token-hotspot-name {
+  overflow: hidden;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 620;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.token-hotspot-meta {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+}
+
+.token-hotspot-figures {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.token-hotspot-figures strong {
+  font-size: 12.5px;
+}
+
+.token-hotspot-share {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* The bar owns the whole width of the row and is sized against the leader. */
+.token-hotspot-bar {
+  grid-column: 1 / -1;
+  display: block;
+  min-width: 3px;
+  transition: width 260ms var(--ease-out);
+}
+
+.token-hotspot-foot {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+/* One table cell: the figure, its share, and a bar sized to the heaviest row. */
+.usage-table td.token-column,
+.usage-table th.token-column {
+  min-width: 132px;
+  text-align: right;
+}
+
+.token-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.token-cell-figures {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.token-cell-share {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.token-cell-bar {
+  display: block;
+  min-width: 3px;
+  max-width: 100%;
+}
+
+.run-list-foot {
+  margin: 10px 2px 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.run-list > .token-hotspots {
+  margin-bottom: 14px;
+}
+
+/* Trace header: the same split, stated once for the whole run. */
+.trace-token-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 8px;
+  max-width: 520px;
+}
+
+.trace-token-bar {
+  display: block;
+  width: 100%;
+}
+
+.trace-token-parts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.trace-token-parts strong {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.trace-timeline-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-bottom: 8px;
+}
+
+.trace-timeline-note {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.trace-timeline-row {
+  grid-template-columns: minmax(90px, 200px) minmax(0, 1fr) auto;
+}
+
+.trace-timeline-figure {
+  min-width: 46px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.trace-timeline-bar.is-tokens {
+  background: var(--purple);
+}
+
+.trace-timeline-unmeasured {
+  position: absolute;
+  top: -2px;
+  left: 0;
+  color: var(--muted);
+  font-size: 10px;
+  font-style: italic;
+}
+
+.usage-tile-bar {
+  display: block;
+  margin: 2px 0 6px;
+}
+
+.usage-hotspots {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 14px;
+}
+
+/* On the meta line the state is a word, not a chip: the row already carries
+   a coloured dot, and two filled badges per row made the tree read as noise. */
+.conversation-meta .thread-state {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+/*
+ * A drawn separator rather than a middle-dot glyph.
+ *
+ * A "·" carries its own side bearings and sits on the font's own vertical
+ * centre, which is not the optical centre of a 9.5px meta line — it read as
+ * hanging off to one side. A 2px square owns both axes explicitly.
+ */
+.conversation-sep {
+  width: 2px;
+  height: 2px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #5f5f59;
+}
+
+.conversation-dot.thread-state-running,
+.conversation-dot.thread-state-queued,
+.conversation-dot.thread-state-stopping {
+  background: #a693ff;
+}
+
+.conversation-dot.thread-state-completed {
+  background: #6bc79c;
+}
+
+.conversation-dot.thread-state-failed,
+.conversation-dot.thread-state-stopped {
+  background: #e08b83;
+}
+
+/* --- Role editor sections -------------------------------------------- */
+
+.role-digest {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  background: var(--purple-soft);
+}
+
+.role-digest p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.role-digest strong {
+  color: var(--purple-dark);
+}
+
+.role-digest-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 9px;
+}
+
+.role-digest-chips code {
+  border: 1px solid rgba(105, 84, 217, 0.24);
+  border-radius: 5px;
+  padding: 2px 6px;
+  color: var(--purple-dark);
+  background: rgba(255, 255, 255, 0.7);
+  font: 600 10px/1.3 ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+}
+
+.role-sections {
+  display: grid;
+  gap: 8px;
+}
+
+.role-section {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: rgba(120, 120, 128, 0.035);
+}
+
+.role-section[open] {
+  background: var(--paper);
+  box-shadow: var(--elevation-1);
+}
+
+.role-section > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 0 14px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  list-style: none;
+}
+
+.role-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.role-section > summary::before {
+  content: "▸";
+  color: var(--muted);
+  font-size: 10px;
+  transition: transform 160ms var(--ease-out);
+}
+
+.role-section[open] > summary::before {
+  content: "▾";
+}
+
+.role-section > summary:hover {
+  background: rgba(120, 120, 128, 0.06);
+}
+
+.role-section > summary:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: -2px;
+}
+
+.role-section-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.role-section-count {
+  border-radius: 999px;
+  padding: 3px 9px;
+  color: var(--muted);
+  background: rgba(120, 120, 128, 0.12);
+  font-size: 10.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.role-section-count.is-on {
+  color: var(--purple-dark);
+  background: var(--purple-soft);
+}
+
+.role-section-body {
+  min-width: 0;
+  margin: 0;
+  padding: 0 14px 14px;
+  border: 0;
+}
+
+@media (max-width: 900px) {
+  .role-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .role-index-card {
+    position: static;
+  }
+
+  .access-option-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .role-details-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .access-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .usage-hotspots {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Per-step token figure in the span tree. */
+.trace-node-tokens {
+  flex-shrink: 0;
+  min-width: 62px;
+  color: var(--purple-dark);
+  font-size: 10.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.trace-node-tokens.is-absent {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.trace-tree-note {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.trace-tree-note span,
+.token-split-legend li[title],
+.token-hotspot-foot span[title],
+.trace-token-parts span[title] {
+  border-bottom: 1px dotted var(--muted);
+  cursor: help;
+}
+
+/*
+ * One plate at a time.
+ *
+ * Desks are closer together than an opened plate is wide, so an opened plate
+ * always covers its neighbour. Stepping the others back makes that overlap
+ * read as focus, and keeps the quota bar of the plate being read the one bar
+ * that is fully drawn.
+ */
+.ws-overlay.is-focusing .ws-plate:not(.is-expanded) {
+  opacity: 0.34;
+}
+
+.ws-plate {
+  transition:
+    border-color 140ms var(--ease-out),
+    box-shadow 140ms var(--ease-out),
+    opacity 140ms var(--ease-out);
+}
+
+.ws-plate.is-expanded {
+  box-shadow: var(--elevation-2);
 }

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  humanizeAgentRunFailure,
+  humanizeFailure,
   validateDraft,
   validateWorkspaceTask,
 } from "../../../../apps/web/src/components/orchestration/orchestration-utils";
@@ -74,5 +76,32 @@ describe("orchestration draft validation", () => {
         { id: "agent-2" } as Agent,
       ]),
     ).toEqual({});
+  });
+});
+
+describe("runtime failure wording", () => {
+  it("shows the actionable provider-limit recovery message in both surfaces", () => {
+    const expected =
+      "This model is paused because its provider inference limit was reached. Review Safe Experience Mode in the provider's Model Activation settings, or choose another available model, then retry.";
+
+    expect(humanizeFailure("MODEL_INFERENCE_LIMIT_EXCEEDED")).toBe(expected);
+    expect(humanizeAgentRunFailure("MODEL_INFERENCE_LIMIT_EXCEEDED", "provider details")).toBe(
+      expected,
+    );
+  });
+
+  it("distinguishes a Project write denial from a web-tool denial", () => {
+    expect(humanizeFailure("PROJECT_PERMISSION_DENIED")).toBe(
+      "This Agent is not allowed to write to the Workspace. Add Allow Agent runs (agent.invoke) and Edit workspace files (project.write) to the Agent's role, make sure it has editable Workspace membership, then retry.",
+    );
+    expect(humanizeFailure("PROJECT_PERMISSION_DENIED")).not.toBe(
+      humanizeFailure("WEB_TOOL_PERMISSION_DENIED"),
+    );
+  });
+
+  it("does not expose unknown runtime error text", () => {
+    expect(humanizeAgentRunFailure(undefined, "a provider request id")).toBe(
+      "The Agent could not complete this run.",
+    );
   });
 });

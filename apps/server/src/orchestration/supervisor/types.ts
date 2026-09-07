@@ -46,8 +46,27 @@ export interface SupervisorSelectionContext {
   /** Profile metadata is separate from routing participants so it cannot
    * replace the authoritative occurrence roster. */
   participantProfiles?: readonly SupervisorParticipantProfile[];
+  /** Zero for the initial run; positive values identify follow-up cycles. */
+  cycleIndex?: number | undefined;
   stepIndex: number;
   maxSteps: number;
+  /** Replies produced in the current cycle; prior history is not counted. */
+  currentCycleTurnCount?: number | undefined;
+  /** Number of bounded prior-cycle turns included as context. */
+  priorCycleTurnCount?: number | undefined;
+  /** A corrective call must return an eligible current-cycle dispatch. */
+  requireCurrentCycleDispatch?: boolean | undefined;
+  /**
+   * The Agent identity that handled the previous current-cycle turn. When
+   * multiple distinct Agents are configured, the next dispatch must not use
+   * this identity consecutively.
+   */
+  avoidImmediateRepeatAgentId?: string | undefined;
+  /**
+   * Set only for the bounded corrective call after an illegal repeat. The
+   * provider must choose a different Agent or declare the task complete.
+   */
+  requireDifferentAgentOrComplete?: boolean | undefined;
   previousHandoff: HandoffEnvelope | null;
   /** Most recent bounded turn history, in chronological order. */
   recentTurns?: readonly SupervisorTurnContext[];

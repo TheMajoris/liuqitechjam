@@ -13,6 +13,8 @@ import {
 } from "./workspace-view-model";
 import {
   modelResourceCapacityLabel,
+  modelResourceObservedLabel,
+  modelResourceQuotaLabel,
   modelResourceQuotaPercent,
   modelResourceQuotaTone,
   modelResourceStatusGlyph,
@@ -162,7 +164,13 @@ export function WorkspaceStage({
       )}
 
       <div
-        className={"ws-overlay " + (canRender ? "is-mapped" : "is-listed")}
+        className={
+          "ws-overlay " +
+          (canRender ? "is-mapped" : "is-listed") +
+          // While one plate is open it is the subject; the rest step back so
+          // the overlap reads as depth rather than as two broken cards.
+          (hovered === null ? "" : " is-focusing")
+        }
         style={
           canRender
             ? {
@@ -189,6 +197,14 @@ export function WorkspaceStage({
           const showCapacity = hovered === agent.agentId;
           const capacityPercent = modelResourceQuotaPercent(agent.modelResource);
           const capacityTone = modelResourceQuotaTone(agent.modelResource);
+          // Desks sit closer together than a fully-written plate is wide, so a
+          // plate states only its name at rest and opens its detail while it is
+          // being pointed at or focused — and only then. Selection and the
+          // current turn are persistent states, so letting either hold a plate
+          // open would park a card permanently over its neighbour. They read
+          // instead through the plate's own border. Everything stays in the
+          // accessibility tree either way; only the drawn width changes.
+          const expanded = showCapacity;
           return (
             <button
               key={agent.agentId}
@@ -200,7 +216,8 @@ export function WorkspaceStage({
               className={
                 "ws-plate" +
                 (agent.isSelected ? " is-selected" : "") +
-                (agent.isCurrentParticipant ? " is-active" : "")
+                (agent.isCurrentParticipant ? " is-active" : "") +
+                (expanded ? " is-expanded" : "")
               }
               data-tone={descriptor.tone}
               style={
@@ -217,14 +234,17 @@ export function WorkspaceStage({
               onFocus={() => setHovered(agent.agentId)}
               onBlur={() => setHovered(null)}
             >
-              <span className="ws-plate-name">{agent.name}</span>
-              <span className="ws-plate-state">
+              <span className="ws-plate-heading">
+                <span className="ws-plate-dot" aria-hidden="true" />
+                <span className="ws-plate-name">{agent.name}</span>
+              </span>
+              <span className={"ws-plate-state" + (expanded ? "" : " is-quiet")}>
                 <span className="ws-plate-glyph" aria-hidden="true">{descriptor.glyph}</span>
                 {descriptor.label}
                 {agent.isCurrentParticipant ? " · this turn" : ""}
               </span>
               <span
-                className="ws-plate-resource"
+                className={"ws-plate-resource" + (expanded ? "" : " is-quiet")}
                 data-resource-tone={agent.modelResource?.endpointStatus ?? "unknown"}
                 data-resource-freshness={agent.modelResource?.freshness ?? "unavailable"}
                 data-resource-capacity-tone={capacityTone}
@@ -236,7 +256,7 @@ export function WorkspaceStage({
                 </span>
                 {capacityLabel}
               </span>
-              {capacityPercent !== null && (
+              {capacityPercent !== null && expanded && (
                 <span
                   className="ws-plate-capacity-bar"
                   data-resource-capacity-tone={capacityTone}
@@ -255,7 +275,21 @@ export function WorkspaceStage({
                   role="tooltip"
                   id={capacityCardId}
                 >
-                  {capacityLabel}
+                  <span className="ws-resource-capacity-headline">{capacityLabel}</span>
+                  {agent.modelResource && (
+                    <>
+                      <span className="ws-resource-capacity-detail">
+                        {modelResourceQuotaLabel(agent.modelResource)}
+                      </span>
+                      {/* When the number was last confirmed matters more than
+                          the number itself: the provider's free-pack counters
+                          settle behind the run, so a percentage alone reads as
+                          a live meter it is not. */}
+                      <span className="ws-resource-capacity-detail">
+                        {modelResourceObservedLabel(agent.modelResource)}
+                      </span>
+                    </>
+                  )}
                 </span>
               )}
             </button>

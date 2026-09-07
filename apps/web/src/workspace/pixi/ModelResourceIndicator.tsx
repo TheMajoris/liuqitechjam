@@ -98,7 +98,14 @@ export function ModelResourceIndicator({ resource }: { resource: ModelResourceSn
   if (!resource) return null;
   return (
     <pixiContainer
-      y={-35}
+      /*
+       * Above the head is a stack, not a slot: this badge, then the activity
+       * bubble at -40..-28, then the Agent. Both used to be drawn at the same
+       * height, so a working Agent's bubble and its quota meter landed on top
+       * of one another. The position is fixed rather than conditional on a
+       * bubble being present, so the badge never hops as activity changes.
+       */
+      y={-48}
       label={modelResourceCapacityLabel(resource)}
     >
       <pixiGraphics draw={draw} />

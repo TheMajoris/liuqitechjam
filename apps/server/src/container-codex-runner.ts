@@ -7,10 +7,11 @@ import {
 import type { AppConfig } from "./config.js";
 import {
   buildCodexArgs,
+  finalizeCodexRun,
   parseCodexEventLine,
   type ParsedEvents,
 } from "./codex-runner.js";
-import { RetryableModelError, RunCancelledError } from "./errors.js";
+import { RetryableModelError } from "./errors.js";
 import type { SandboxAuditSink } from "./audit/sandbox-audit.js";
 import type { ContainerHealthSampler } from "./telemetry/container-health-sampler.js";
 import { MCP_BEARER_TOKEN_ENV } from "./tools/mcp-session-service.js";
@@ -369,24 +370,13 @@ export class ContainerCodexRunner implements AgentRunner {
         });
       }
       inspectedState = await cleanup();
-      if (result.cancelled) throw new RunCancelledError();
-      if (result.timedOut) {
-        throw new Error("Runtime timed out after " + this.config.codexTimeoutMs + " ms");
-      }
-      if (result.exitCode !== 0) {
-        throw new Error("Container runtime exited with code " + result.exitCode);
-      }
-      const output = parsed.messages.at(-1)?.trim();
-      if (!output) {
-        // Truncation is only worth reporting when it plausibly cost us the
-        // answer; a completed turn is returned regardless of dropped lines.
-        throw new Error(
-          result.outputTruncated
-            ? "Codex completed without an agent message after an oversized event was dropped; raise CODEX_MAX_OUTPUT_BYTES"
-            : "Codex completed without an agent message",
-        );
-      }
-      return { output, threadId: parsed.threadId, usage: parsed.usage };
+      return finalizeCodexRun(parsed, result, {
+        timeout: "Runtime timed out after " + this.config.codexTimeoutMs + " ms",
+        exit: "Container runtime exited with code " + result.exitCode,
+        missing: "Codex completed without an agent message",
+        missingTruncated:
+          "Codex completed without an agent message after an oversized event was dropped; raise CODEX_MAX_OUTPUT_BYTES",
+      });
     } finally {
       this.active.delete(request.agentId);
       this.healthSampler?.stop(runId);

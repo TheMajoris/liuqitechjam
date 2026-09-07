@@ -34,6 +34,11 @@ export interface McpRouteDependencies {
   telemetry?: RuntimeTelemetry;
 }
 
+export interface McpServerOptions {
+  /** Called only after an authenticated web tool returns PERMISSION_DENIED. */
+  onWebToolPermissionDenied?: (runId: string) => void;
+}
+
 function bearerToken(request: FastifyRequest): string | null {
   const header = request.headers.authorization;
   if (typeof header !== "string") return null;
@@ -93,6 +98,7 @@ function toolErrorResult(error: unknown): {
 export function createMcpServer(
   context: McpSessionContext,
   toolService: ToolService,
+  options: McpServerOptions = {},
 ): McpServer {
   // The propagation header is a transport concern. Keep it out of the
   // ToolService execution context even though it remains available to the
@@ -120,6 +126,13 @@ export function createMcpServer(
             content: [{ type: "text", text: JSON.stringify(output) }],
           };
         } catch (error) {
+          if (
+            error instanceof ToolError &&
+            error.code === "PERMISSION_DENIED" &&
+            (definition.id === "web.search" || definition.id === "web.fetch")
+          ) {
+            options.onWebToolPermissionDenied?.(context.runId);
+          }
           return toolErrorResult(error);
         }
       },
@@ -166,7 +179,11 @@ export function registerMcpRoute(
     const context = detailed.context;
 
     const handleRequest = async () => {
-      const server = createMcpServer(context, dependencies.toolService);
+      const server = createMcpServer(context, dependencies.toolService, {
+        onWebToolPermissionDenied: (runId) => {
+          dependencies.sessions.markWebToolPermissionDenied(runId);
+        },
+      });
       const transport = new StreamableHTTPServerTransport(
         {
           // A transport is created for each authenticated request. Explicitly

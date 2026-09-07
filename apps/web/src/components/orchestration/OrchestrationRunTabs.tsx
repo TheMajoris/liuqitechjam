@@ -27,7 +27,7 @@ interface OrchestrationRunTabsProps {
   agents: Agent[];
   action?: OrchestrationAction;
   onContinue?: (prompt: string, sessionId: string) => void;
-  /** Resumes the run from one recorded step; omitted when unavailable. */
+  /** Retries the run from one recorded step; omitted when unavailable. */
   onRetry?: (fromStepIndex: number) => void;
   activeTab: RunTab;
   onTabChange: (tab: RunTab) => void;
@@ -47,7 +47,7 @@ interface OrchestrationRunTabsProps {
 export function OrchestrationRunTabs({
   detail,
   agents,
-  action,
+  action = null,
   onContinue,
   onRetry,
   activeTab,
@@ -125,21 +125,33 @@ export function OrchestrationRunTabs({
             agents={agents}
             action={action}
             onContinue={onContinue}
+            onRetry={onRetry}
           />
         ) : activeTab === "activity" ? (
-          // Shape first, then the ordered record. Both read the same journal.
+          // The log is the reading order. The raw journal stays one disclosure
+          // away, so the tab opens at one row per turn rather than two charts.
           <>
             <OrchestrationGraph
               detail={detail}
               agents={agents}
               onRetry={onRetry}
               retryPending={action === "retry"}
-              // A resume starts a fresh cycle, so the run must be settled.
+              // A retry starts a fresh cycle, so the run must be settled.
               retryBlocked={
                 detail ? isOrchestrationActive(detail.session.status) : false
               }
+              retryDisabled={action !== null && action !== "retry"}
             />
-            <OrchestrationTimeline detail={detail} agents={agents} embedded />
+            <details className="orch-journal">
+              <summary>
+                <span>Raw event journal</span>
+                <span className="orch-journal-count">
+                  {detail?.events.length ?? 0}{" "}
+                  {(detail?.events.length ?? 0) === 1 ? "event" : "events"}
+                </span>
+              </summary>
+              <OrchestrationTimeline detail={detail} agents={agents} embedded />
+            </details>
           </>
         ) : (
           preview

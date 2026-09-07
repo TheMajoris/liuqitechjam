@@ -1,4 +1,5 @@
 import type { UsageTotals } from "../../types";
+import { TokenSplitBar } from "../trace/TokenHotspots";
 import {
   formatCount,
   formatDuration,
@@ -30,6 +31,10 @@ export function UsageBreakdownTable({
   // Share bars are relative to the busiest row, so the ranking is readable
   // even when every row is small in absolute terms.
   const peak = rows.reduce((max, row) => Math.max(max, row.tokens.totalTokens), 0);
+  // Heaviest first: the table answers "who is spending" before "who ran when".
+  const ranked = [...rows].sort(
+    (left, right) => right.tokens.totalTokens - left.tokens.totalTokens,
+  );
 
   if (rows.length === 0) {
     return (
@@ -50,14 +55,14 @@ export function UsageBreakdownTable({
               <th scope="col">Name</th>
               <th scope="col" className="numeric">Runs</th>
               <th scope="col" className="numeric">Success</th>
-              <th scope="col" className="numeric">Tokens</th>
+              <th scope="col" className="token-column">Tokens</th>
               <th scope="col" className="numeric">Tools</th>
               <th scope="col" className="numeric">Avg run</th>
               <th scope="col" className="numeric">Last active</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => {
+            {ranked.map((row) => {
               const name = row.name ?? row.fallbackName;
               const share = peak === 0 ? 0 : (row.tokens.totalTokens / peak) * 100;
               return (
@@ -83,14 +88,20 @@ export function UsageBreakdownTable({
                       <span className="usage-row-fail"> · {row.runs.failed} failed</span>
                     )}
                   </td>
-                  <td className="numeric">
-                    <span className="usage-bar-cell">
-                      <span className="usage-bar-track" aria-hidden="true">
-                        <span className="usage-bar-fill" style={{ width: share + "%" }} />
+                  <td className="token-column">
+                    <span className="token-cell">
+                      <span className="token-cell-figures">
+                        <strong>
+                          {row.tokens.availability === "unavailable"
+                            ? "—"
+                            : formatCount(row.tokens.totalTokens)}
+                        </strong>
                       </span>
-                      {row.tokens.availability === "unavailable"
-                        ? "—"
-                        : formatCount(row.tokens.totalTokens)}
+                      {share > 0 && (
+                        <span className="token-cell-bar" style={{ width: share + "%" }}>
+                          <TokenSplitBar hotspot={row.tokens} />
+                        </span>
+                      )}
                     </span>
                   </td>
                   <td className="numeric">{row.activity.toolCalls}</td>

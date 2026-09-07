@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildOrchestrationGraph,
-  toFlowElements,
-  FLOW_LANE_GAP,
-  FLOW_ROW_GAP,
+  laneExtents,
 } from "../../../../apps/web/src/components/orchestration/orchestration-graph";
 import type {
   OrchestrationContinuationPrompt,
@@ -488,82 +486,33 @@ describe("buildOrchestrationGraph", () => {
   });
 });
 
-describe("toFlowElements", () => {
-  it("puts lanes on the x axis and execution steps on the y axis", () => {
+describe("laneExtents", () => {
+  it("reports the first and last row each lane holds a turn on", () => {
     const graph = buildOrchestrationGraph(
       detail({
         turns: [
           turn({ id: "t1", participantId: "p1", stepIndex: 0 }),
           turn({ id: "t2", participantId: "p2", stepIndex: 1 }),
+          turn({ id: "t3", participantId: "p1", stepIndex: 2 }),
         ],
       }),
     );
 
-    const flow = toFlowElements(graph);
-
-    expect(flow.nodes[0]?.position).toEqual({ x: 0, y: 0 });
-    expect(flow.nodes[1]?.position).toEqual({
-      x: FLOW_LANE_GAP,
-      y: FLOW_ROW_GAP,
-    });
-  });
-
-  it("connects edges by turn identity rather than by parsing an edge id", () => {
-    const graph = buildOrchestrationGraph(
-      detail({
-        turns: [
-          turn({ id: "turn-with->arrow", participantId: "p1", stepIndex: 0 }),
-          turn({ id: "t2", participantId: "p2", stepIndex: 1 }),
-        ],
-      }),
-    );
-
-    const flow = toFlowElements(graph);
-
-    expect(flow.edges[0]?.source).toBe("turn-with->arrow");
-    expect(flow.edges[0]?.target).toBe("t2");
-  });
-
-  it("resolves an Agent label through the injected resolver", () => {
-    const graph = buildOrchestrationGraph(
-      detail({ turns: [turn({ id: "t1", agentId: "agent-p1", stepIndex: 0 })] }),
-    );
-
-    const flow = toFlowElements(graph, () => "Researcher");
-
-    expect(flow.nodes[0]?.data).toMatchObject({ label: "Researcher" });
-  });
-
-  it("makes turns selectable and follow-up markers inert", () => {
-    const graph = buildOrchestrationGraph(
-      detail({
-        turns: [turn({ id: "t1", stepIndex: 0, createdAt: "2026-09-07T10:00:00.000Z" })],
-        continuationPrompts: [
-          {
-            id: "prompt-1",
-            sessionId: "session-1",
-            cycleIndex: 1,
-            prompt: "keep going",
-            createdAt: "2026-09-07T10:02:00.000Z",
-          },
-        ],
-      }),
-    );
-
-    const flow = toFlowElements(graph);
-
-    expect(flow.nodes.map((node) => [node.type, node.selectable])).toEqual([
-      ["turn", true],
-      ["cycle", false],
+    expect(laneExtents(graph)).toEqual([
+      { column: 0, firstRow: 0, lastRow: 2 },
+      { column: 1, firstRow: 1, lastRow: 1 },
     ]);
-    // A follow-up spans the run, so it does not sit in a lane.
-    expect(flow.nodes[1]?.position.x).toBe(0);
   });
 
-  it("returns nothing to draw for an empty model", () => {
-    const flow = toFlowElements(buildOrchestrationGraph(null));
+  it("leaves a lane that never took a turn out of the drawing", () => {
+    const graph = buildOrchestrationGraph(
+      detail({ turns: [turn({ id: "t1", participantId: "p2", stepIndex: 0 })] }),
+    );
 
-    expect(flow.nodes).toEqual([]);
-    expect(flow.edges).toEqual([]);
+    expect(laneExtents(graph).map((lane) => lane.column)).toEqual([1]);
+  });
+
+  it("has nothing to draw for an empty model", () => {
+    expect(laneExtents(buildOrchestrationGraph(null))).toEqual([]);
   });
 });

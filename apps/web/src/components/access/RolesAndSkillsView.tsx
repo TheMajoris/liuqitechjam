@@ -1,6 +1,7 @@
 import {
   type ChangeEvent,
   type FormEvent,
+  type ReactNode,
   type KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useEffect,
@@ -40,10 +41,10 @@ interface RoleDraft {
 const MAX_MARKDOWN_BYTES = 64 * 1024;
 const UUID_PROJECT_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-const BASE_PERMISSIONS = [
+export const BASE_PERMISSIONS = [
   ["project.read", "Read workspace files", "Open files and inspect the shared Workspace."],
   ["project.write", "Edit workspace files", "Create, edit, and remove files in the Workspace."],
-  ["agent.invoke", "Run in the Workspace", "Run Agent work against the shared Workspace."],
+  ["agent.invoke", "Allow Agent runs", "Allow the Agent to start work in a shared Workspace."],
   ["project.preview.inspect", "Inspect preview", "Read the current preview status and URL."],
   ["project.preview.logs", "Read preview logs", "Read bounded logs from the Workspace preview."],
   ["project.preview.start", "Start preview", "Start the shared Workspace preview server."],
@@ -55,6 +56,50 @@ const TABS: Array<{ id: AccessTab; label: string; description: string }> = [
   { id: "roles", label: "Roles", description: "Reusable access presets" },
   { id: "skills", label: "Skill library", description: "Instruction-only guidance" },
 ];
+
+/**
+ * One section of the role editor.
+ *
+ * The three choices a role makes — permissions, tools, skills — are each a
+ * long list, and stacking all three open turned the editor into a wall of
+ * checkboxes. Collapsed, each one states how many of its options are on, so
+ * the shape of a role is legible before anything is opened.
+ */
+function RoleSection({
+  title,
+  hint,
+  selected,
+  total,
+  defaultOpen = false,
+  disabled,
+  children,
+}: {
+  title: string;
+  hint: string;
+  selected: number;
+  total: number;
+  defaultOpen?: boolean;
+  disabled: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <details className="role-section" open={defaultOpen}>
+      <summary>
+        <span className="role-section-title">{title}</span>
+        <span
+          className={"role-section-count" + (selected > 0 ? " is-on" : "")}
+        >
+          {selected} of {total}
+        </span>
+      </summary>
+      <fieldset className="role-section-body" disabled={disabled}>
+        <legend className="sr-only">{title}</legend>
+        <p className="role-card-hint">{hint}</p>
+        {children}
+      </fieldset>
+    </details>
+  );
+}
 
 function emptyDraft(): RoleDraft {
   return {
@@ -74,6 +119,23 @@ function draftFromRole(role: AgentRole): RoleDraft {
     skillIds: [...role.skillIds],
     permissionIds: [...role.permissionIds],
   };
+}
+
+function sameStringList(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const sortedLeft = [...left].sort();
+  const sortedRight = [...right].sort();
+  return sortedLeft.every((value, index) => value === sortedRight[index]);
+}
+
+export function isRoleDraftDirty(draft: RoleDraft, baseline: RoleDraft): boolean {
+  return (
+    draft.name.trim() !== baseline.name.trim() ||
+    draft.description.trim() !== baseline.description.trim() ||
+    !sameStringList(draft.toolIds, baseline.toolIds) ||
+    !sameStringList(draft.skillIds, baseline.skillIds) ||
+    !sameStringList(draft.permissionIds, baseline.permissionIds)
+  );
 }
 
 function errorMessage(reason: unknown): string {
@@ -123,6 +185,14 @@ export function RolesAndSkillsView({ agents, projects, onAgentsChanged }: Props)
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const selected = roles.find((role) => role.id === selectedId) ?? null;
+  const draftBaseline = useMemo(
+    () => (creating || !selected ? emptyDraft() : draftFromRole(selected)),
+    [creating, selected],
+  );
+  const draftDirty = useMemo(
+    () => isRoleDraftDirty(draft, draftBaseline),
+    [draft, draftBaseline],
+  );
   /** Active Workspaces, counted in the header summary. */
   const visibleWorkspaces = useMemo(() => {
     const rows = projects
@@ -148,7 +218,11 @@ export function RolesAndSkillsView({ agents, projects, onAgentsChanged }: Props)
     () => librarySkills.filter((skill) => !skill.installed && skill.source !== "built-in"),
     [librarySkills],
   );
-  const installedCount = skills.filter((skill) => skill.installed || skill.source === "built-in").length;
+  const availableSkills = useMemo(
+    () => skills.filter((skill) => skill.installed || skill.source === "built-in"),
+    [skills],
+  );
+  const installedCount = availableSkills.length;
 
   const refreshRoleAndCatalog = useCallback(async () => {
     setLoading(true);
@@ -215,7 +289,7 @@ export function RolesAndSkillsView({ agents, projects, onAgentsChanged }: Props)
   };
 
   const saveRole = async () => {
-    if (!draft.name.trim()) return;
+    if (!draft.name.trim() || !draftDirty) return;
     if (selected?.source === "system") return;
     if (
       selected &&
@@ -559,52 +633,112 @@ export function RolesAndSkillsView({ agents, projects, onAgentsChanged }: Props)
                   </label>
                 </fieldset>
 
-                <div className="role-option-grid">
-                  <fieldset className="role-form-card" disabled={busy}>
-                    <legend>Workspace access</legend>
-                    <p className="role-card-hint">Explicit permissions are the only access boundary.</p>
+                {/* What this role grants, before any section is opened. */}
+                <div className="role-digest" aria-label="What this role grants">
+                  <p>
+                    This role lets an Agent{" "}
+                    <strong>
+                      {draft.permissionIds.length === 0
+                        ? "do nothing in a Workspace"
+                        : `use ${draft.permissionIds.length} ${
+                            draft.permissionIds.length === 1 ? "permission" : "permissions"
+                          }`}
+                    </strong>
+                    {draft.toolIds.length > 0 && (
+                      <>
+                        {" with "}
+                        <strong>
+                          {draft.toolIds.length} {draft.toolIds.length === 1 ? "tool" : "tools"}
+                        </strong>
+                      </>
+                    )}
+                    {draft.skillIds.length > 0 && (
+                      <>
+                        {", guided by "}
+                        <strong>
+                          {draft.skillIds.length}{" "}
+                          {draft.skillIds.length === 1 ? "skill" : "skills"}
+                        </strong>
+                      </>
+                    )}
+                    .
+                  </p>
+                  {draft.permissionIds.length > 0 && (
+                    <div className="role-digest-chips">
+                      {draft.permissionIds.map((id) => (
+                        <code key={id}>{id}</code>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="role-sections">
+                  <RoleSection
+                    title="Workspace access"
+                    hint="Explicit permissions are the only access boundary."
+                    selected={draft.permissionIds.length}
+                    total={BASE_PERMISSIONS.length}
+                    defaultOpen
+                    disabled={busy}
+                  >
                     <div className="access-option-list">
                       {BASE_PERMISSIONS.map(([id, title, description]) => (
                         <label className="access-option" key={id}>
                           <input type="checkbox" checked={draft.permissionIds.includes(id)} onChange={() => toggleDraftValue("permissionIds", id)} />
-                          <span><strong>{title}</strong><small>{description}</small></span>
+                          <span>
+                            <strong className="access-option-title">{title}<code className="access-option-id">{id}</code></strong>
+                            <small>{description}</small>
+                          </span>
                         </label>
                       ))}
                     </div>
-                  </fieldset>
+                  </RoleSection>
 
-                  <fieldset className="role-form-card" disabled={busy}>
-                    <legend>Tools</legend>
-                    <p className="role-card-hint">Tools never grant permissions by themselves.</p>
+                  <RoleSection
+                    title="Tools"
+                    hint="Tools never grant permissions by themselves."
+                    selected={draft.toolIds.length}
+                    total={tools.length}
+                    disabled={busy}
+                  >
                     <div className="access-option-list">
                       {tools.length === 0 ? <p className="access-empty-inline">No tools available.</p> : tools.map((tool) => (
                         <label className="access-option" key={tool.id}>
                           <input type="checkbox" checked={draft.toolIds.includes(tool.id)} onChange={() => toggleDraftValue("toolIds", tool.id)} />
-                          <span><strong>{tool.title}</strong><small>{tool.description}</small></span>
+                          <span>
+                            <strong className="access-option-title">{tool.title}<code className="access-option-id">{tool.id}</code></strong>
+                            <small>{tool.description}</small>
+                            <small className="access-option-permission">Requires <code>{tool.requiredPermission}</code></small>
+                          </span>
                         </label>
                       ))}
                     </div>
-                  </fieldset>
+                  </RoleSection>
 
-                  <fieldset className="role-form-card role-skills-card" disabled={busy}>
-                    <legend>Skills</legend>
-                    <p className="role-card-hint">Instruction-only guidance. It never installs code or grants tools.</p>
+                  <RoleSection
+                    title="Skills"
+                    hint="Instruction-only guidance. It never installs code or grants tools."
+                    selected={draft.skillIds.length}
+                    total={availableSkills.length}
+                    disabled={busy}
+                  >
                     <div className="access-option-list">
-                      {skills.filter((skill) => skill.installed || skill.source === "built-in").length === 0 ? (
+                      {availableSkills.length === 0 ? (
                         <div className="access-empty-inline">No skills installed. <button type="button" className="access-inline-link" onClick={() => setTab("skills")}>Browse the library</button></div>
-                      ) : skills.filter((skill) => skill.installed || skill.source === "built-in").map((skill) => (
+                      ) : availableSkills.map((skill) => (
                         <label className="access-option" key={skill.id}>
                           <input type="checkbox" checked={draft.skillIds.includes(skill.id)} onChange={() => toggleDraftValue("skillIds", skill.id)} />
                           <span><strong>{skill.name}</strong><small>{skill.description}</small></span>
                         </label>
                       ))}
                     </div>
-                  </fieldset>
+                  </RoleSection>
                 </div>
 
                 <div className="access-actions role-save-actions">
-                  <button type="submit" className="button button-primary" disabled={busy || !draft.name.trim()}>{busy ? "Saving…" : creating ? "Create role" : "Save changes"}</button>
+                  <button type="submit" className="button button-primary" disabled={busy || !draft.name.trim() || !draftDirty}>{busy ? "Saving…" : creating ? "Create role" : "Save changes"}</button>
                   {!creating && selected && <button type="button" className="button button-danger" disabled={busy || selected.assignedAgentCount > 0} onClick={() => void removeRole()}>Delete role</button>}
+                  {draftDirty && <span className="access-action-note role-unsaved-note" role="status">Unsaved changes</span>}
                   {!creating && selected?.assignedAgentCount ? <span className="access-action-note">Assigned roles update all linked Agents.</span> : null}
                 </div>
               </form>

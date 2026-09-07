@@ -111,6 +111,10 @@ export interface ActiveOrchestrationSession {
   cycleIndex: number;
   /** Runtime-only supervisor model captured when the cycle was accepted. */
   supervisorModel?: string | undefined;
+  /** Agent whose failed checkpoint may be explicitly retried while errored. */
+  retryAgentId?: string | undefined;
+  /** A retry may consume the one errored-agent recovery allowance once. */
+  retryAgentPending: boolean;
   controller: AbortController;
   invoker: PlatformAgentInvokerContract;
   selector?: OrchestrationParticipantSelector;

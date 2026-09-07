@@ -29,7 +29,10 @@ export interface OrchestrationHookContext {
 
 export interface OrchestrationHookDependencies {
   store: Storage;
-  validateParticipant(participant: OrchestrationParticipant): Promise<void>;
+  validateParticipant(
+    participant: OrchestrationParticipant,
+    options?: { allowErrored?: boolean },
+  ): Promise<void>;
   cancelChildRun(runId: string): Promise<void>;
 }
 
