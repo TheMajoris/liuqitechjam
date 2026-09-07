@@ -224,6 +224,17 @@ export class AgentService {
       }
       this.conversations.migrateLegacyConversations(database);
     });
+
+    // Existing private workspaces may still contain the pre-runtime skill
+    // payload. Refresh only known platform-managed files; arbitrary
+    // AGENTS.md files and removed workspaces are intentionally left alone.
+    // Migration is best effort so a filesystem problem does not change the
+    // pre-existing startup behavior for otherwise readable Agents.
+    await Promise.all(
+      this.store.snapshot().agents.map((agent) =>
+        this.workspaces.refreshInstructions(agent).catch(() => undefined),
+      ),
+    );
   }
 
   // ------------------------------------------------- private conversations
@@ -335,7 +346,7 @@ export class AgentService {
     let workspaceCreated = false;
     let persisted = false;
     try {
-      await this.workspaces.create(agent, await this.runtimeSkillContext(agent));
+      await this.workspaces.create(agent);
       workspaceCreated = true;
       await this.store.mutate((database) => database.agents.push(agent));
       persisted = true;
@@ -476,7 +487,7 @@ export class AgentService {
       return structuredClone(agent);
     });
     try {
-      await this.workspaces.writeInstructions(updated, await this.runtimeSkillContext(updated));
+      await this.workspaces.writeInstructions(updated);
       return updated;
     } catch (error) {
       // Restore both the persisted identity fact and generated instructions if
@@ -486,7 +497,7 @@ export class AgentService {
         if (stored) Object.assign(stored, structuredClone(before));
       });
       await this.workspaces
-        .writeInstructions(before, await this.runtimeSkillContext(before))
+        .writeInstructions(before)
         .catch(() => undefined);
       throw error;
     }

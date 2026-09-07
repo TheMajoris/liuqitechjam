@@ -6,7 +6,6 @@ import {
 import type { Principal, ProjectRole } from "../access/access-types.js";
 import type { Storage } from "../store.js";
 import type { Agent, Database } from "../types.js";
-import type { SkillRuntimeContext } from "../skills/skill-types.js";
 import type { SkillService } from "../skills/skill-service.js";
 import { ProjectError } from "./project-errors.js";
 import { ProjectWorkspaceManager } from "./project-workspace.js";
@@ -907,16 +906,11 @@ export class ProjectService {
       agentId: agent.id,
       resource: { kind: "project", id: project.id },
     });
-    let skillContext: SkillRuntimeContext | undefined;
-    if (this.skillService) {
-      try {
-        skillContext = await this.skillService.runtimeContext(agent, project.id);
-      } catch {
-        // Capability metadata is additive context; a transient lookup failure
-        // must not bypass the existing Project instruction safeguards.
-      }
-    }
-    await this.workspaces.writeTurnInstructions(project, agent, skillContext);
+    // Mutable skill guidance is composed once by AgentRuntimePromptComposer
+    // immediately before execution. The Project writer owns only the stable
+    // identity/scope contract, so resolving skills here would duplicate the
+    // capability lookup and audit event without changing AGENTS.md.
+    await this.workspaces.writeTurnInstructions(project, agent);
   }
 
   // ------------------------------------------------------------ write leases

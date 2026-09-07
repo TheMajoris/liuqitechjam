@@ -41,6 +41,7 @@ const mastraExecutionTurnSchema: z.ZodType<OrchestrationExecutionTurn> = z.objec
 const mastraContextTurnSchema: z.ZodType<SharedConversationTurn> = z.object({
   participantId: z.string().min(1),
   agentId: z.string().min(1),
+  runId: z.string().min(1).optional(),
   position: z.number().int().nonnegative(),
   stepIndex: z.number().int().nonnegative().optional(),
   output: z.string().max(ORCHESTRATION_LIMITS.maxSafeOutputLength),

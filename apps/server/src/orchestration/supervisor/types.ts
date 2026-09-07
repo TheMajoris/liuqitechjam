@@ -30,6 +30,8 @@ export interface SupervisorParticipantProfile extends OrchestrationParticipant {
 export interface SupervisorTurnContext {
   participantId: string;
   agentId: string;
+  /** Stable child execution identity when the source turn has one. */
+  runId?: string | undefined;
   position: number;
   stepIndex?: number;
   output: string;
@@ -55,7 +57,7 @@ export interface SupervisorProviderOptions {
   signal?: AbortSignal;
   /** Optional per-call override; providers still enforce their own default. */
   timeoutMs?: number;
-  /** Runtime-only model selected from the session's supervisor Agent. */
+  /** Runtime-only supervisor model captured when the cycle was accepted. */
   model?: string;
 }
 

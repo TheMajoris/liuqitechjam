@@ -408,7 +408,9 @@ catalogue and each Agent's persisted `modelRef`. `SUPERVISOR_MODEL` must be a
 model or endpoint identifier accepted by the inference endpoint and is kept
 separate from worker assignments.
 
-Insights › Supervisor model lists every running endpoint with its consumption
+Supervisor routing is a model, not an Agent: no one in the roster supervises,
+and no Agent is consumed by supervising. Insights › Supervisor model lists every
+running endpoint with its consumption
 and persists the choice server-wide; it wins over `SUPERVISOR_MODEL` until it is
 cleared. Whichever endpoint is active is reserved for routing — it is withheld
 from Agent (worker) selection and rejected by worker resolution, so Agents still

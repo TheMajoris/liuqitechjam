@@ -136,8 +136,8 @@ export function validateDraft(
   const errors: DraftErrors = {};
   // A Conversation created inside a Workspace may start life as an empty
   // draft. It is still a real persisted Conversation, but it cannot run until
-  // a task and at least one valid roster Agent have been supplied. Every
-  // supervisor-mode draft also carries its dedicated supervisor Agent.
+  // a task and at least one valid roster Agent have been supplied. Supervisor
+  // mode adds nothing here: routing uses the server-wide supervisor model.
   const workspaceScoped = Boolean(draft.projectId?.trim());
   // Legacy callers that opt into a Workspace must actually name it.
   if (draft.projectName !== undefined && !draft.projectName.trim()) {

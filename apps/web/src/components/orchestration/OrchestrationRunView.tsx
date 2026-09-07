@@ -114,7 +114,7 @@ export function OrchestrationRunView({
               title={
                 canStart
                   ? "Start conversation"
-                  : "Add a task, at least one Agent, and a Supervisor Agent before starting"
+                  : "Add a task and at least one Agent before starting"
               }
               onClick={() => onStart(session.id)}
             >

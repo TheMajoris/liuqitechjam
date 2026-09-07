@@ -39,6 +39,8 @@ export interface HandoffEnvelope extends HandoffSource {
 export interface SharedConversationTurn {
   participantId: string;
   agentId: string;
+  /** Stable child execution identity when the source turn has one. */
+  runId?: string | undefined;
   position: number;
   stepIndex?: number | undefined;
   output: string;
@@ -149,6 +151,48 @@ function safeIdentifier(value: unknown): string {
   return safe.length > 160 ? safe.slice(0, 160) : safe || "unknown";
 }
 
+function reliableIdentityPart(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+/**
+ * Compare a handoff source with a shared turn using a reliable execution
+ * identity. Text and roster position are deliberately not part of this key:
+ * repeated answers and repeated positions can occur in distinct executions.
+ * Legacy records without all three identity fields remain distinct.
+ */
+export function hasSameExecutionIdentity(
+  source:
+    | Pick<HandoffSource, "sourceParticipantId" | "sourceAgentId" | "sourceRunId">
+    | null
+    | undefined,
+  turn:
+    | Pick<SharedConversationTurn, "participantId" | "agentId" | "runId">
+    | null
+    | undefined,
+): boolean {
+  if (!source || !turn) return false;
+  const sourceParticipantId = reliableIdentityPart(source.sourceParticipantId);
+  const sourceAgentId = reliableIdentityPart(source.sourceAgentId);
+  const sourceRunId = reliableIdentityPart(source.sourceRunId);
+  const participantId = reliableIdentityPart(turn.participantId);
+  const agentId = reliableIdentityPart(turn.agentId);
+  const runId = reliableIdentityPart(turn.runId);
+  return (
+    sourceParticipantId !== undefined &&
+    sourceAgentId !== undefined &&
+    sourceRunId !== undefined &&
+    participantId !== undefined &&
+    agentId !== undefined &&
+    runId !== undefined &&
+    sourceParticipantId === participantId &&
+    sourceAgentId === agentId &&
+    sourceRunId === runId
+  );
+}
+
 /**
  * Create the bounded, safe data envelope that can cross between Agents.
  * The envelope carries no workspace, credential, command, or routing state.
@@ -230,9 +274,11 @@ export function createSharedConversationProjection(
       "[TURN OUTPUT TRUNCATED]",
     );
     const stepIndex = normalizedStepIndex(turn.stepIndex);
+    const runId = reliableIdentityPart(turn.runId);
     return {
       participantId: safeIdentifier(turn.participantId),
       agentId: safeIdentifier(turn.agentId),
+      ...(runId === undefined ? {} : { runId: safeIdentifier(runId) }),
       position: normalizedPosition(turn.position),
       ...(stepIndex === undefined ? {} : { stepIndex }),
       output: output.value,
@@ -292,7 +338,7 @@ function renderPrompt(
           const step =
             turn.stepIndex === undefined ? "" : String(turn.stepIndex);
           return [
-            `<turn participant_id="${escapeXml(safeIdentifier(turn.participantId))}" agent_id="${escapeXml(safeIdentifier(turn.agentId))}" position="${normalizedPosition(turn.position)}" step_index="${escapeXml(step)}" truncated="${String(Boolean(turn.outputTruncated))}">`,
+            `<turn participant_id="${escapeXml(safeIdentifier(turn.participantId))}" agent_id="${escapeXml(safeIdentifier(turn.agentId))}" run_id="${escapeXml(turn.runId === undefined ? "" : safeIdentifier(turn.runId))}" position="${normalizedPosition(turn.position)}" step_index="${escapeXml(step)}" truncated="${String(Boolean(turn.outputTruncated))}">`,
             "<untrusted_agent_output>",
             escapeXml(turn.output),
             "</untrusted_agent_output>",
@@ -495,7 +541,9 @@ export function buildHandoffPrompt(
     projectionLimits.maxRecentTurnsChars = limits.maxRecentTurnsChars;
   }
   const recentTurns = createSharedConversationProjection(
-    [...(input.contextTurns ?? []), ...(input.recentTurns ?? [])],
+    [...(input.contextTurns ?? []), ...(input.recentTurns ?? [])].filter(
+      (turn) => !hasSameExecutionIdentity(input.previous, turn),
+    ),
     projectionLimits,
   );
   return fitPrompt(

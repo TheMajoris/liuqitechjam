@@ -22,7 +22,7 @@ codex_sandbox_mode="${CODEX_SANDBOX_MODE:-workspace-write}"
 search_provider="${SEARCH_PROVIDER:-searxng}"
 searxng_image="${SEARXNG_IMAGE:-searxng/searxng:latest}"
 searxng_container_name="${SEARXNG_CONTAINER_NAME:-launchpad-searxng}"
-searxng_port="${SEARXNG_PORT:-8080}"
+searxng_port="${SEARXNG_PORT:-8081}"
 searxng_auto_start="${SEARXNG_AUTO_START:-1}"
 
 log() {
@@ -77,8 +77,8 @@ detect_engine() {
   return 1
 }
 
-if [[ -z "${ARK_API_KEY:-}" || -z "${SUPERVISOR_MODEL:-}" \
-  || -z "${BYTEPLUS_ACCESS_KEY:-}" || -z "${BYTEPLUS_SECRET_KEY:-}" ]]; then
+if [[ -z "${ARK_API_KEY:-}" || -z "${SUPERVISOR_MODEL:-}" ||
+  -z "${BYTEPLUS_ACCESS_KEY:-}" || -z "${BYTEPLUS_SECRET_KEY:-}" ]]; then
   log "ARK_API_KEY, SUPERVISOR_MODEL, BYTEPLUS_ACCESS_KEY, and BYTEPLUS_SECRET_KEY are required."
   log "Copy .env.example to .env, fill the ModelArk settings, and retry."
   exit 2
@@ -90,7 +90,7 @@ command -v node >/dev/null 2>&1 || {
 }
 
 node_major="$(node -p 'Number(process.versions.node.split(".")[0])')"
-if (( node_major < 22 )); then
+if ((node_major < 22)); then
   log "Node.js 22+ is required; found $(node --version)."
   exit 2
 fi
@@ -223,14 +223,14 @@ if ! "$engine" run --rm \
   --mount "type=bind,src=$AGENT_WORKSPACE_ROOT,dst=/workspace" \
   --mount "type=bind,src=$CODEX_HOME,dst=/codex-home" \
   "$runtime_image" sh -lc \
-    'touch /workspace/.launchpad-write-test /codex-home/.launchpad-write-test && rm /workspace/.launchpad-write-test /codex-home/.launchpad-write-test'; then
+  'touch /workspace/.launchpad-write-test /codex-home/.launchpad-write-test && rm /workspace/.launchpad-write-test /codex-home/.launchpad-write-test'; then
   log "The container engine cannot mount $local_state_root."
   log "Set LOCAL_POC_DATA_ROOT to a directory shared with Docker/Colima/Podman."
   exit 2
 fi
 
-if [[ "$codex_sandbox_mode" == "workspace-write" ]] \
-  && ! "$engine" run --rm "$runtime_image" \
+if [[ "$codex_sandbox_mode" == "workspace-write" ]] &&
+  ! "$engine" run --rm "$runtime_image" \
     codex sandbox linux --full-auto -- true >/dev/null 2>&1; then
   log "Codex Landlock is unavailable in this Linux Runtime."
   log "Falling back to danger-full-access inside the disposable container boundary."
@@ -250,12 +250,12 @@ export CONTAINER_ENGINE="$engine"
 export CONTAINER_RUNTIME_IMAGE="$runtime_image"
 if [[ -z "${MCP_CONTAINER_URL:-}" ]]; then
   case "$(basename "$engine")" in
-    podman)
-      mcp_container_host="host.containers.internal"
-      ;;
-    *)
-      mcp_container_host="host.docker.internal"
-      ;;
+  podman)
+    mcp_container_host="host.containers.internal"
+    ;;
+  *)
+    mcp_container_host="host.docker.internal"
+    ;;
   esac
   export MCP_CONTAINER_URL="http://${mcp_container_host}:${PORT}/mcp"
 fi

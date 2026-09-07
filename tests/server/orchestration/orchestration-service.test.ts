@@ -376,7 +376,7 @@ describe("OrchestrationService", () => {
     expect(agents[0]?.status).toBe("ready");
   });
 
-  it("snapshots the selected supervisor Agent model and passes it to routing", async () => {
+  it("snapshots the server-wide supervisor model and passes it to routing", async () => {
     const store = await makeStore();
     const agents = agentIds.map((id) => makeAgent(id));
     const supervisorModel = {
@@ -408,21 +408,59 @@ describe("OrchestrationService", () => {
         position: 0,
       }]),
       mode: "supervisor",
-      supervisorAgentId: agentIds[1],
     });
+
+    // No Agent is designated to supervise, and none is consumed by it.
+    expect(created.supervisorAgentId).toBeUndefined();
 
     await service.startSession(created.id);
     const terminal = await waitForTerminal(service, created.id);
     expect(terminal.status).toBe("completed");
     expect(selectedModel).toBe(supervisorModel.modelId);
     expect(terminal).toMatchObject({
-      supervisorAgentId: agentIds[1],
       supervisorModelRef: supervisorModel,
       supervisorModelCatalogRevision: 7,
     });
+    expect(terminal.supervisorAgentId).toBeUndefined();
   });
 
-  it("assigns a Workspace Agent and starts an empty draft from its first prompt", async () => {
+  it("routes with no Agents in the roster at all", async () => {
+    const store = await makeStore();
+    const supervisorModel = {
+      providerId: "volcengine_ark",
+      modelId: "ep-supervisor",
+    } as const;
+    const service = new OrchestrationService({
+      store,
+      agents: makeAgentsAccess([]),
+      invoker: new ImmediateInvoker(),
+      selectNextParticipant: async () => ({
+        kind: "end",
+        reason: "supervisor_completed",
+      }),
+      resolveSupervisorModel: () => ({
+        modelRef: supervisorModel,
+        modelId: supervisorModel.modelId,
+      }),
+    });
+
+    // Supervision costs no Agent, so an empty roster is a roster problem only
+    // — never a missing-supervisor problem.
+    const created = await service.createSession({
+      name: "No roster",
+      originalPrompt: "",
+      participants: [],
+      projectId: "44444444-4444-4444-8444-444444444444",
+      mode: "supervisor",
+      maxSteps: 4,
+      perAgentTimeoutMs: 1_000,
+    });
+
+    expect(created.status).toBe("draft");
+    expect(created.supervisorAgentId).toBeUndefined();
+  });
+
+  it("starts an empty Workspace draft from its first prompt", async () => {
     const store = await makeStore();
     const projectId = "44444444-4444-4444-8444-444444444444";
     const agents = [makeAgent(agentIds[0]!)];
@@ -479,7 +517,7 @@ describe("OrchestrationService", () => {
     });
 
     expect(created.status).toBe("draft");
-    expect(created.supervisorAgentId).toBe(agents[0]!.id);
+    expect(created.supervisorAgentId).toBeUndefined();
 
     const accepted = await service.startSession(created.id, "Ship the change");
     expect(["queued", "running", "completed"]).toContain(accepted.status);
@@ -487,7 +525,6 @@ describe("OrchestrationService", () => {
     expect(terminal).toMatchObject({
       status: "completed",
       originalPrompt: "Ship the change",
-      supervisorAgentId: agents[0]!.id,
       supervisorModelRef: supervisorModel,
       supervisorModelCatalogRevision: 8,
     });
@@ -500,7 +537,7 @@ describe("OrchestrationService", () => {
     ]);
   });
 
-  it("repairs a legacy supervisor draft before accepting its first run", async () => {
+  it("runs a legacy draft that still carries a supervisor Agent ID", async () => {
     const store = await makeStore();
     const agents = [makeAgent(agentIds[0]!)];
     const supervisorModel = {
@@ -530,18 +567,19 @@ describe("OrchestrationService", () => {
         position: 0,
       }]),
       mode: "supervisor",
-      supervisorAgentId: agents[0]!.id,
     });
+    // Records written before routing became a model still carry the field.
+    // It must stay loadable and must not influence which model routes.
     await store.mutate((database) => {
       const session = database.orchestrations.find((item) => item.id === created.id);
-      if (session) delete session.supervisorAgentId;
+      if (session) session.supervisorAgentId = agents[0]!.id;
     });
 
     const accepted = await service.startSession(created.id);
     expect(["queued", "running", "completed"]).toContain(accepted.status);
     const terminal = await waitForTerminal(service, created.id);
     expect(terminal.status).toBe("completed");
-    expect(terminal.supervisorAgentId).toBe(agents[0]!.id);
+    expect(terminal.supervisorModelRef).toEqual(supervisorModel);
   });
 
   it("audits one span tree rooted at the orchestration for every child Run", async () => {

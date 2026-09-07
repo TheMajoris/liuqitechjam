@@ -64,12 +64,13 @@ export class AgentRuntimePromptComposer {
   }
 
   private composeWithoutPreview(prompt: string, extraLines: readonly string[]): string {
-    return extraLines.length === 0
-      ? prompt
-      : composeRuntimeContextPrompt(
-          prompt,
-          { status: "not_started" } satisfies AgentPreviewContext,
-          extraLines,
-        );
+    // Keep a runtime envelope even when the optional Preview provider is not
+    // configured. The envelope carries the response-language policy and the
+    // user/platform boundary that used to be repeated in AGENTS.md.
+    return composeRuntimeContextPrompt(
+      prompt,
+      { status: "not_started" } satisfies AgentPreviewContext,
+      extraLines,
+    );
   }
 }

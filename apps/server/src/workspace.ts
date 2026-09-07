@@ -1,8 +1,49 @@
-import { lstat, mkdir, rename, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { SkillRuntimeContext } from "./skills/skill-types.js";
 import type { Agent } from "./types.js";
-import { AGENT_RESPONSE_LANGUAGE_POLICY } from "./response-language-policy.js";
+import { PLATFORM_RUNTIME_CONTEXT_REFERENCE } from "./preview/preview-context-provider.js";
+
+/** Bump when the platform-owned instruction layout changes. */
+export const PLATFORM_INSTRUCTIONS_VERSION = 2;
+export const PLATFORM_INSTRUCTIONS_MARKER =
+  `<!-- lqam:platform-instructions:v${PLATFORM_INSTRUCTIONS_VERSION} -->`;
+
+const PLATFORM_INSTRUCTIONS_HEADER = "# Platform-managed Agent instructions";
+const LEGACY_PLATFORM_INSTRUCTION_FOOTERS = [
+  "This file is regenerated when the Agent configuration is updated.",
+  "This file is regenerated for whichever Agent is currently working.",
+] as const;
+
+/**
+ * Recognizes only files produced by the platform instruction writers.
+ *
+ * The marker handles the current format. The footer checks are the bounded
+ * compatibility path for pre-marker files so migration never sweeps an
+ * arbitrary user-authored AGENTS.md.
+ */
+export function isPlatformManagedInstructions(content: string): boolean {
+  const firstLine = content.split(/\r?\n/u, 1)[0];
+  return (
+    firstLine === PLATFORM_INSTRUCTIONS_HEADER &&
+    (content.includes(PLATFORM_INSTRUCTIONS_MARKER) ||
+      LEGACY_PLATFORM_INSTRUCTION_FOOTERS.some((footer) => content.includes(footer)))
+  );
+}
+
+export function hasCurrentPlatformInstructions(content: string): boolean {
+  return (
+    content.split(/\r?\n/u, 1)[0] === PLATFORM_INSTRUCTIONS_HEADER &&
+    content.includes(PLATFORM_INSTRUCTIONS_MARKER)
+  );
+}
+
+export type InstructionRefreshResult =
+  | "created"
+  | "updated"
+  | "current"
+  | "skipped"
+  | "workspace_missing";
 
 export class WorkspaceManager {
   constructor(private readonly root: string) {}
@@ -37,9 +78,18 @@ export class WorkspaceManager {
     );
   }
 
-  async writeInstructions(agent: Agent, skillContext?: SkillRuntimeContext): Promise<void> {
+  /**
+   * Writes only the stable Agent/workspace contract. Skill bodies and
+   * capability state are mutable run-time facts and are delivered once by
+   * AgentRuntimePromptComposer instead of being copied into AGENTS.md.
+   *
+   * `skillContext` remains accepted for source compatibility with lifecycle
+   * callers; it is intentionally ignored by this canonical writer.
+   */
+  async writeInstructions(agent: Agent, _skillContext?: SkillRuntimeContext): Promise<void> {
     const content = [
-      "# Platform-managed Agent instructions",
+      PLATFORM_INSTRUCTIONS_HEADER,
+      PLATFORM_INSTRUCTIONS_MARKER,
       "",
       "You are the coding Agent named " + agent.name + ".",
       agent.description ? "Purpose: " + agent.description : "",
@@ -48,11 +98,10 @@ export class WorkspaceManager {
       "",
       agent.instructions ||
         "Help the user complete coding tasks in this workspace. Explain material results concisely.",
-      ...skillInstructionLines(skillContext),
       "",
-      "## Response language",
+      "## Runtime context",
       "",
-      AGENT_RESPONSE_LANGUAGE_POLICY,
+      PLATFORM_RUNTIME_CONTEXT_REFERENCE,
       "",
       "## Workspace rules",
       "",
@@ -67,6 +116,37 @@ export class WorkspaceManager {
       .filter((line, index, lines) => !(line === "" && lines[index - 1] === ""))
       .join("\n");
     await writeFile(path.join(agent.workspacePath, "AGENTS.md"), content, "utf8");
+  }
+
+  /**
+   * Refreshes a known Agent workspace when its platform-owned instructions
+   * predate the current layout. Arbitrary AGENTS.md files are left untouched.
+   * A missing AGENTS.md is created only when the known workspace directory is
+   * present; a removed workspace remains the existing execution-time error.
+   */
+  async refreshInstructions(
+    agent: Agent,
+    _skillContext?: SkillRuntimeContext,
+  ): Promise<InstructionRefreshResult> {
+    const instructionsPath = path.join(agent.workspacePath, "AGENTS.md");
+    let existing: string;
+    try {
+      existing = await readFile(instructionsPath, "utf8");
+    } catch (error) {
+      if (!isErrno(error, "ENOENT")) throw error;
+      try {
+        await lstat(agent.workspacePath);
+      } catch (workspaceError) {
+        if (isErrno(workspaceError, "ENOENT")) return "workspace_missing";
+        throw workspaceError;
+      }
+      await this.writeInstructions(agent);
+      return "created";
+    }
+    if (hasCurrentPlatformInstructions(existing)) return "current";
+    if (!isPlatformManagedInstructions(existing)) return "skipped";
+    await this.writeInstructions(agent);
+    return "updated";
   }
 
   async archive(agent: Agent): Promise<string | null> {
@@ -109,31 +189,4 @@ function isErrno(error: unknown, code: string): error is NodeJS.ErrnoException {
     "code" in error &&
     (error as { code?: unknown }).code === code
   );
-}
-
-function skillInstructionLines(context: SkillRuntimeContext | undefined): string[] {
-  if (!context || context.skills.length === 0) return [];
-  const lines = ["", "## Assigned platform skills", ""];
-  for (const skill of context.skills) {
-    lines.push("### " + skill.name);
-    lines.push(skill.instructions);
-    if (skill.capabilities.length > 0) {
-      lines.push("");
-      lines.push("Capability availability:");
-      for (const capability of skill.capabilities) {
-        lines.push(
-          "- " +
-            capability.toolId +
-            ": " +
-            capability.availability.replaceAll("_", " ") +
-            " (" +
-            capability.reason +
-            ")",
-        );
-      }
-    }
-    lines.push("");
-  }
-  lines.push("Skill assignment never grants tools; use only capabilities marked available.");
-  return lines;
 }

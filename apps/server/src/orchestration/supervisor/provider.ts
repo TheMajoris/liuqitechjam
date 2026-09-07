@@ -183,7 +183,7 @@ export class ArkResponsesSupervisorProvider implements SupervisorProvider {
         "Supervisor requires ARK_API_KEY",
       );
     }
-    // A model may be supplied per call by a supervisor Agent. Keep accepting
+    // The session supplies its resolved supervisor model per call. Keep accepting
     // a configured default for legacy callers, but do not require a global
     // model merely to construct the provider.
     const timeoutMs = positiveLimit(

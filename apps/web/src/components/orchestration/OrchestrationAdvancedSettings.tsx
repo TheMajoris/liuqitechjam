@@ -121,7 +121,7 @@ export function OrchestrationAdvancedSettings({
             aria-describedby="orch-mode-help"
             onChange={(event) => onModeChange(event.target.value as OrchestrationMode)}
           >
-            <option value="supervisor">Supervisor Agent</option>
+            <option value="supervisor">Supervisor model</option>
             <option value="sequential">Follow Agent order once</option>
             <option value="round_robin">Keep cycling through Agent order</option>
           </select>
