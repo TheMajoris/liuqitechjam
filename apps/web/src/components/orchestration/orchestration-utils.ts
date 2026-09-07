@@ -250,6 +250,18 @@ export function turnStatusLabel(status: OrchestrationTurn["status"]): string {
 }
 
 /**
+ * Engine vocabulary that must never reach a product surface.
+ *
+ * Safe summaries are bounded but still model- or engine-authored, so every
+ * view that shows one tests it first and falls back to its own wording.
+ */
+const INTERNAL_WORDING = /\b(supervisor|mastra|langgraph|graph|workflow)\b/i;
+
+export function isInternalWording(text: string | null | undefined): boolean {
+  return INTERNAL_WORDING.test(text?.trim() ?? "");
+}
+
+/**
  * Product-level failure wording for people who did not configure the run.
  * Timeline keeps the raw codes and per-event detail for technical review.
  */
@@ -292,7 +304,7 @@ export function humanizeFailure(
     default:
       {
         const fallbackText = fallback?.trim() ?? "";
-        return /\b(supervisor|mastra|langgraph|graph|workflow)\b/i.test(fallbackText)
+        return isInternalWording(fallbackText)
           ? "Something went wrong while running this conversation."
           : fallbackText || "Something went wrong while running this conversation.";
       }
@@ -304,6 +316,7 @@ export function eventLabel(type: OrchestrationEventType): string {
     orchestration_created: "Session created",
     orchestration_started: "Session started",
     orchestration_continued: "Conversation continued",
+    orchestration_retried: "Resumed from an earlier turn",
     supervisor_decision: "Next participant selected",
     participant_dispatched: "Agent turn dispatched",
     run_completed: "Agent turn completed",

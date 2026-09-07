@@ -2079,6 +2079,7 @@ textarea:focus {
 .orch-run-view,
 .orch-run-tablist,
 .orch-chat,
+.orch-graph,
 .orch-timeline-embedded,
 .orch-run-loading {
   display: grid;
@@ -3165,6 +3166,498 @@ textarea:focus {
   background: transparent;
   box-shadow: none;
   backdrop-filter: none;
+}
+
+/*
+ * Execution graph. Lanes are columns and execution steps are rows, so the
+ * canvas keeps a git-graph reading while a flow library owns the viewport.
+ * Node geometry lives in orchestration-graph.ts; only paint lives here.
+ */
+.orch-graph {
+  gap: 0;
+  padding-block: 20px 4px;
+}
+
+.orch-graph-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.orch-graph-head h2 {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.orch-graph-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.orch-graph-legend > li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+}
+
+.orch-graph-legend-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: hsl(var(--orch-graph-hue) 52% 52%);
+}
+
+.orch-graph-legend-name {
+  font-weight: 600;
+}
+
+.orch-graph-legend-role {
+  overflow: hidden;
+  color: var(--orch-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Canvas and inspector share the band; the inspector takes a fixed rail. */
+.orch-graph-stage {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+.orch-graph-stage.has-inspector {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 280px);
+}
+
+@media (max-width: 860px) {
+  .orch-graph-stage.has-inspector {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* The flow needs an explicit height; it measures its own container. */
+.orch-graph-flow {
+  height: clamp(260px, 44vh, 520px);
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--orch-line-soft);
+  border-radius: var(--orch-radius-card);
+  background: var(--orch-surface);
+}
+
+/* Holds the canvas height while the flow library is being fetched. */
+.orch-graph-flow-loading {
+  width: 100%;
+  height: 100%;
+  background:
+    linear-gradient(100deg, #efece4 30%, #f6f4ee 50%, #efece4 70%)
+    0 0 / 300% 100%;
+  animation: orch-graph-shimmer 1.4s ease-out infinite;
+}
+
+@keyframes orch-graph-shimmer {
+  to {
+    background-position: -150% 0;
+  }
+}
+
+/* The library paints its own surface; hand it the paper palette instead. */
+.orch-graph-flow .react-flow__background {
+  background: transparent;
+}
+
+.orch-graph-flow .react-flow__controls {
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.orch-graph-flow .react-flow__controls-button {
+  border: 1px solid var(--orch-line-soft);
+  border-bottom-width: 0;
+  color: var(--orch-ink);
+  background: var(--orch-surface-solid);
+}
+
+.orch-graph-flow .react-flow__controls-button:last-child {
+  border-bottom-width: 1px;
+}
+
+.orch-graph-flow .react-flow__attribution {
+  background: transparent;
+  font-size: 9px;
+}
+
+/* Handles exist only so edges have anchors; they are never interactive. */
+.orch-flow-node .react-flow__handle {
+  width: 1px;
+  min-width: 1px;
+  height: 1px;
+  min-height: 1px;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.orch-flow-card {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--orch-line);
+  border-radius: 10px;
+  padding: 8px 10px 9px;
+  color: var(--orch-ink);
+  background: var(--orch-surface-solid);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.orch-flow-card:hover {
+  border-color: hsl(var(--orch-graph-hue) 45% 62%);
+}
+
+.orch-flow-card:focus-visible {
+  outline: 2px solid var(--orch-accent);
+  outline-offset: 2px;
+}
+
+.orch-flow-card.is-selected {
+  border-color: hsl(var(--orch-graph-hue) 50% 50%);
+  box-shadow: 0 0 0 2px hsl(var(--orch-graph-hue) 60% 88%);
+}
+
+.orch-flow-card-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.orch-flow-dot {
+  flex-shrink: 0;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: hsl(var(--orch-graph-hue) 52% 52%);
+}
+
+.orch-flow-card.is-failed .orch-flow-dot {
+  background: var(--orch-danger);
+}
+
+.orch-flow-card.is-cancelled .orch-flow-dot {
+  background: var(--orch-muted);
+}
+
+/* A turn still in flight is hollow: nothing is recorded about it yet. */
+.orch-flow-card.is-running .orch-flow-dot {
+  border: 2px solid hsl(var(--orch-graph-hue) 52% 52%);
+  background: var(--orch-surface-solid);
+  animation: orch-flow-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes orch-flow-pulse {
+  50% {
+    transform: scale(1.35);
+  }
+}
+
+.orch-flow-step {
+  flex-shrink: 0;
+  color: var(--orch-muted);
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.orch-flow-name {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orch-flow-card-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding-inline-start: 15px;
+}
+
+.orch-flow-status {
+  overflow: hidden;
+  color: var(--orch-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orch-flow-card.is-failed .orch-flow-status {
+  color: var(--orch-danger);
+}
+
+.orch-flow-card.is-completed .orch-flow-status {
+  color: var(--orch-success);
+}
+
+.orch-flow-duration {
+  flex-shrink: 0;
+  color: var(--orch-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.orch-flow-marker {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 340px;
+  max-width: 340px;
+}
+
+.orch-flow-marker-tag {
+  flex-shrink: 0;
+  border: 1px solid var(--orch-line);
+  border-radius: 999px;
+  padding: 1px 8px;
+  color: var(--orch-muted);
+  background: var(--orch-surface-solid);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.orch-flow-marker-prompt {
+  overflow: hidden;
+  color: var(--orch-ink);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orch-flow-edge .react-flow__edge-path {
+  stroke: var(--orch-line);
+  stroke-width: 1.5;
+}
+
+/* A recorded handoff actually carried a result across; show it as solid. */
+.orch-flow-edge.is-handoff .react-flow__edge-path {
+  stroke: hsl(258deg 40% 62%);
+  stroke-width: 2;
+}
+
+/* Only bounded context crosses a follow-up boundary, so the strand breaks. */
+.orch-flow-edge.is-cross-cycle .react-flow__edge-path {
+  stroke-dasharray: 4 4;
+  stroke-width: 1;
+}
+
+/* Turn inspector */
+.orch-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  max-height: clamp(260px, 44vh, 520px);
+  overflow-y: auto;
+  border: 1px solid var(--orch-line-soft);
+  border-radius: var(--orch-radius-card);
+  padding: 14px;
+  background: var(--orch-surface-solid);
+}
+
+.orch-inspector-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.orch-inspector-head h3 {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.orch-inspector-close {
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 6px;
+  padding: 2px 7px;
+  color: var(--orch-muted);
+  background: transparent;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.orch-inspector-close:hover {
+  color: var(--orch-ink);
+  background: rgba(120, 120, 128, 0.12);
+}
+
+.orch-inspector-facts {
+  display: grid;
+  gap: 8px 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.orch-inspector-facts dt {
+  color: var(--orch-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.orch-inspector-facts dd {
+  margin: 1px 0 0;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orch-inspector-facts dd[data-status="completed"] {
+  color: var(--orch-success);
+}
+
+.orch-inspector-facts dd[data-status="failed"],
+.orch-inspector-facts dd[data-status="timed_out"] {
+  color: var(--orch-danger);
+}
+
+.orch-inspector-failure {
+  display: grid;
+  gap: 5px;
+  justify-items: start;
+  margin: 0;
+  border: 1px solid rgba(197, 83, 83, 0.3);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--orch-danger);
+  background: rgba(197, 83, 83, 0.07);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.orch-inspector-section {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.orch-inspector-section h4 {
+  color: var(--orch-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.orch-inspector-section p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* Agent text is untrusted and unbounded in shape; clamp it, never trim it. */
+.orch-inspector-quote {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+  color: var(--orch-muted);
+  overflow-wrap: anywhere;
+}
+
+.orch-inspector-empty {
+  color: var(--orch-muted);
+  font-style: italic;
+}
+
+.orch-inspector-events {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.orch-inspector-events > li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 10px;
+}
+
+.orch-inspector-event-name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orch-inspector-events time {
+  margin-inline-start: auto;
+  flex-shrink: 0;
+  color: var(--orch-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.orch-inspector-resume {
+  display: grid;
+  gap: 6px;
+  margin-top: auto;
+  border-top: 1px solid var(--orch-line-soft);
+  padding-top: 10px;
+}
+
+.orch-inspector-resume-action {
+  border: 1px solid var(--orch-accent);
+  border-radius: var(--orch-radius-control);
+  padding: 7px 12px;
+  color: #ffffff;
+  background: var(--orch-accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.orch-inspector-resume-action:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.orch-inspector-resume-action:disabled {
+  border-color: var(--orch-line);
+  color: var(--orch-muted);
+  background: rgba(120, 120, 128, 0.12);
+  cursor: not-allowed;
+}
+
+.orch-inspector-note {
+  margin: 0;
+  color: var(--orch-muted);
+  font-size: 10px;
+  line-height: 1.5;
 }
 
 .orch-timeline-heading {

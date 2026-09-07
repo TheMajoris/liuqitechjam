@@ -286,15 +286,56 @@ export class OrchestrationJournal {
     };
   }
 
-  /** Return only completed safe turns from prior cycles, bounded for context. */
-  contextTurns(sessionId: string, maxSteps: number): OrchestrationExecutionTurn[] {
+  /**
+   * The highest persisted execution step, or null when nothing ran yet.
+   *
+   * Retry and continuation both need this to keep new turns above every
+   * recorded one: persisted step indexes are global and never reused.
+   */
+  highestStepIndex(sessionId: string): number | null {
+    let highest: number | null = null;
+    for (const turn of this.store.snapshot().orchestrationTurns) {
+      if (turn.sessionId !== sessionId || turn.stepIndex === undefined) continue;
+      if (highest === null || turn.stepIndex > highest) highest = turn.stepIndex;
+    }
+    return highest;
+  }
+
+  /** The recorded turn holding one global execution step, if it exists. */
+  turnAtStep(sessionId: string, stepIndex: number): OrchestrationTurn | null {
+    const match = this.store
+      .snapshot()
+      .orchestrationTurns.filter(
+        (turn) => turn.sessionId === sessionId && turn.stepIndex === stepIndex,
+      )
+      .sort(compareTurns)
+      .at(-1);
+    return match ? cloneTurn(match) : null;
+  }
+
+  /**
+   * Return only completed safe turns from prior cycles, bounded for context.
+   *
+   * `before` truncates the projection to the work that preceded one step, so
+   * a retried turn is offered the same history it saw the first time rather
+   * than the outputs of the turns that followed it.
+   */
+  contextTurns(
+    sessionId: string,
+    maxSteps: number,
+    before?: number,
+  ): OrchestrationExecutionTurn[] {
     return this.store
       .snapshot()
       .orchestrationTurns.filter(
         (turn) =>
           turn.sessionId === sessionId &&
           turn.status === "completed" &&
-          turn.safeOutput !== null,
+          turn.safeOutput !== null &&
+          // A legacy turn has no step index and cannot be placed relative to
+          // the retry point, so it is excluded rather than guessed at.
+          (before === undefined ||
+            (turn.stepIndex !== undefined && turn.stepIndex < before)),
       )
       .sort(compareTurns)
       .slice(-Math.min(MAX_CONTEXT_TURNS, Math.max(0, maxSteps)))

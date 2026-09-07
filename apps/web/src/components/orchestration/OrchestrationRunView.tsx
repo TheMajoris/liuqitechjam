@@ -6,6 +6,7 @@ import type {
   Project,
 } from "../../types";
 import { ParticipantBar } from "./ParticipantBar";
+import type { OrchestrationAction } from "./use-orchestration";
 import {
   agentName,
   humanizeFailure,
@@ -20,7 +21,7 @@ interface OrchestrationRunViewProps {
   /** Present when this Team collaborates on a shared Project. */
   project?: Project | null;
   replyCount: number;
-  action?: "create" | "start" | "stop" | "continue" | "delete" | null;
+  action?: OrchestrationAction;
   onStart: (sessionId: string) => void;
   onStop: (sessionId: string) => void;
   onDelete: (sessionId: string) => void;

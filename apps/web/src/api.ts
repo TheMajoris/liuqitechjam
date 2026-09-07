@@ -449,6 +449,15 @@ export const api = {
       "/api/orchestrations/" + id + "/continue",
       { method: "POST", body: JSON.stringify(body) },
     ),
+  /**
+   * Re-run one recorded execution step and everything after it. History is
+   * appended, not rewritten, and the shared Workspace files are not rewound.
+   */
+  retryOrchestration: (id: string, fromStepIndex: number) =>
+    request<{ session: OrchestrationSession }>(
+      "/api/orchestrations/" + id + "/retry",
+      { method: "POST", body: JSON.stringify({ fromStepIndex }) },
+    ),
   deleteOrchestration: (id: string) =>
     request<{ deleted: boolean }>("/api/orchestrations/" + id, {
       method: "DELETE",

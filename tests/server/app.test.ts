@@ -155,6 +155,7 @@ describe("HTTP boundary", () => {
       startSession: async () => session,
       stopSession: async () => session,
       continueSession: async () => session,
+      retryFromStep: async () => session,
       deleteSession: async () => ({ deleted: true }),
     };
     const audit = fakeAudit();

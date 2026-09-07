@@ -2,6 +2,7 @@ import { z } from "zod";
 import type {
   CreateOrchestrationInput,
   ContinueOrchestrationInput,
+  RetryOrchestrationInput,
   HandoffEnvelope,
   OrchestrationCompletionReason,
   OrchestrationContinuationPrompt,
@@ -69,6 +70,7 @@ const orchestrationEventTypeValues = [
   "orchestration_created",
   "orchestration_started",
   "orchestration_continued",
+  "orchestration_retried",
   "participant_dispatched",
   "supervisor_decision",
   "run_completed",
@@ -272,6 +274,22 @@ export const ContinueOrchestrationSchema: z.ZodType<ContinueOrchestrationInput> 
   });
 
 export const ContinueOrchestrationInputSchema = ContinueOrchestrationSchema;
+
+/**
+ * A retry names one recorded execution step. The ceiling is the session step
+ * limit because persisted step indexes are global and grow across cycles.
+ */
+export const RetryOrchestrationSchema: z.ZodType<RetryOrchestrationInput> = z
+  .object({
+    fromStepIndex: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(ORCHESTRATION_LIMITS.maxTurnsPerSession),
+  })
+  .strict();
+
+export const RetryOrchestrationInputSchema = RetryOrchestrationSchema;
 
 /** Optional first prompt for atomically materializing and starting a draft. */
 export const StartOrchestrationSchema: z.ZodType<StartOrchestrationInput> = z

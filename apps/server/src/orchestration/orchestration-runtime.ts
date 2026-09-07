@@ -96,6 +96,17 @@ export interface ActiveOrchestrationSession {
   cyclePrompt: string;
   /** Number added to internal step indexes before persistence. */
   stepOffset: number;
+  /**
+   * Engine-internal step the cycle starts from. Zero for a normal cycle; a
+   * retry seeds it so deterministic routing resumes at the chosen roster
+   * position instead of restarting the roster.
+   */
+  startStepIndex: number;
+  /**
+   * Truncates the historical context projection to work recorded before this
+   * global step. Only a retry sets it; a normal cycle sees all prior turns.
+   */
+  contextBeforeStepIndex: number | undefined;
   /** One-based continuation number; zero identifies the initial cycle. */
   cycleIndex: number;
   /** Runtime-only supervisor model captured when the cycle was accepted. */

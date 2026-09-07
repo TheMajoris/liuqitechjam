@@ -201,6 +201,13 @@ export function OrchestrationWorkspace({
     [orchestration],
   );
 
+  const handleRetry = useCallback(
+    (fromStepIndex: number) => {
+      void orchestration.retryFromStep(fromStepIndex).catch(() => undefined);
+    },
+    [orchestration],
+  );
+
   /** Cosmetic-only edit. Refreshes the Agent list so the room repaints. */
   const handleAppearanceChange = useCallback(
     async (agentId: string, appearance: AgentAppearance) => {
@@ -411,6 +418,7 @@ export function OrchestrationWorkspace({
               agents={agents}
               action={orchestration.action}
               onContinue={handleContinue}
+              onRetry={handleRetry}
               activeTab={activeTab}
               onTabChange={setActiveTab}
               workspace={workspaceView}

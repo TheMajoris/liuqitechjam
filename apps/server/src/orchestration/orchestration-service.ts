@@ -4,6 +4,7 @@ import type { Agent } from "../types.js";
 import type { Storage } from "../store.js";
 import {
   ContinueOrchestrationSchema,
+  RetryOrchestrationSchema,
   CreateOrchestrationSchema,
   ORCHESTRATION_LIMITS,
   OrchestrationErrorCodeSchema,
@@ -540,6 +541,160 @@ export class OrchestrationService {
   }
 
   /**
+   * Re-run one recorded execution step and everything the roster owes after it.
+   *
+   * History is appended, never rewritten: the abandoned turns stay in the
+   * journal, and the retry takes fresh global step indexes above every
+   * recorded one. Only the historical context the engine is offered is
+   * truncated, so the retried participant sees what it saw the first time.
+   *
+   * The shared Project workspace is NOT rewound. Files written by the turns
+   * after the checkpoint are still on disk, because Project workspaces are
+   * unversioned directories. Callers must say so before offering this.
+   */
+  async retryFromStep(
+    id: string,
+    fromStepIndex: number,
+  ): Promise<OrchestrationSession> {
+    const parsed = RetryOrchestrationSchema.safeParse({ fromStepIndex });
+    if (!parsed.success) {
+      throw new HttpError(422, "Invalid retry request");
+    }
+    const step = parsed.data.fromStepIndex;
+
+    const current = this.findSession(id);
+    this.assertActiveProject(current.projectId);
+    if (!statusIsTerminal(current.status)) {
+      throw lifecycleConflict(
+        current.status === "draft"
+          ? "Draft orchestrations cannot be retried"
+          : "Stop the active orchestration before retrying it",
+      );
+    }
+    if (this.activeSessions.has(id)) {
+      // A terminal record can briefly coexist with its in-process cleanup.
+      throw lifecycleConflict("Orchestration is still settling");
+    }
+
+    const checkpoint = this.journal.turnAtStep(id, step);
+    if (!checkpoint) {
+      throw new HttpError(404, "No recorded turn at that execution step");
+    }
+    const participant = current.participants.find(
+      (item) => item.id === checkpoint.participantId,
+    );
+    if (!participant) {
+      throw lifecycleConflict(
+        "The roster occurrence that took this turn is no longer configured",
+      );
+    }
+
+    await this.preflightRoster(current);
+    const supervisorModel = await this.preflightSupervisor(current);
+
+    const accepted = await this.store.mutate((database) => {
+      const session = database.orchestrations.find((item) => item.id === id);
+      if (!session) throw new HttpError(404, "Orchestration not found");
+      if (session.projectId !== undefined && session.projectId !== null) {
+        const project = database.projects.find((item) => item.id === session.projectId);
+        if (!project || project.status !== "active") {
+          throw lifecycleConflict("This Workspace is archived or no longer available");
+        }
+      }
+      if (!statusIsTerminal(session.status)) {
+        throw lifecycleConflict(
+          session.status === "draft"
+            ? "Draft orchestrations cannot be retried"
+            : "Stop the active orchestration before retrying it",
+        );
+      }
+      if (supervisorModel !== undefined) {
+        session.supervisorModelRef = structuredClone(supervisorModel.modelRef);
+        if (supervisorModel.catalogRevision === undefined) {
+          delete session.supervisorModelCatalogRevision;
+        } else {
+          session.supervisorModelCatalogRevision = supervisorModel.catalogRevision;
+        }
+      }
+
+      // The retry re-runs the newest user intent, which is the last follow-up
+      // when one exists. A retry authors no prompt of its own, so the
+      // continuation record and its cycle number are left untouched.
+      const cycles = database.orchestrationContinuationPrompts
+        .filter((item) => item.sessionId === id)
+        .sort((left, right) => left.cycleIndex - right.cycleIndex);
+      const latest = cycles.at(-1);
+      const cyclePrompt = latest?.prompt ?? session.originalPrompt;
+      const cycleIndex = latest?.cycleIndex ?? 0;
+
+      // Deterministic routing maps the engine cursor onto a roster position,
+      // so seeding it resumes at the chosen participant. Automatic turn
+      // taking chooses freely, so seeding would only consume its budget.
+      const deterministic = (session.mode ?? "sequential") !== "supervisor";
+      const startStepIndex = deterministic ? participant.position : 0;
+      const highest = database.orchestrationTurns
+        .filter((item) => item.sessionId === id)
+        .reduce(
+          (maximum, item) =>
+            Math.max(maximum, item.stepIndex === undefined ? 0 : item.stepIndex),
+          0,
+        );
+      // Persisted index is stepOffset + engine step. This keeps the first new
+      // turn above every recorded one, and may be negative when the seeded
+      // cursor is itself above the highest recorded step.
+      const stepOffset = highest + 1 - startStepIndex;
+      const timestamp = now();
+
+      session.stepIndex = highest + 1;
+      session.status = "queued";
+      session.currentParticipantId = null;
+      session.currentRunId = null;
+      session.completionReason = null;
+      session.errorCode = null;
+      session.errorMessage = null;
+      session.startedAt = timestamp;
+      session.completedAt = null;
+      session.updatedAt = timestamp;
+      appendEvent(database, session, "orchestration_retried", {
+        participantId: participant.id,
+        agentId: participant.agentId,
+        safeSummary:
+          "Retrying from step " + String(step + 1) + " with " + participant.role,
+      });
+      return {
+        session: structuredClone(session),
+        cyclePrompt,
+        cycleIndex,
+        stepOffset,
+        startStepIndex,
+      };
+    });
+
+    await this.recordLifecycle(
+      accepted.session.id,
+      // A retry is a continuation with a truncated context, and shares its
+      // audit event so the audit vocabulary stays stable.
+      "orchestration_continued",
+      "Orchestration retried from a recorded step",
+      {
+        metadata: {
+          retryFromStepIndex: step,
+          cycleIndex: accepted.cycleIndex,
+          stepOffset: accepted.stepOffset,
+        },
+      },
+    );
+    this.launch(accepted.session, {
+      cyclePrompt: accepted.cyclePrompt,
+      cycleIndex: accepted.cycleIndex,
+      stepOffset: accepted.stepOffset,
+      startStepIndex: accepted.startStepIndex,
+      contextBeforeStepIndex: step,
+    });
+    return cloneSession(accepted.session);
+  }
+
+  /**
    * Stop every active conversation owned by one Project, retaining all of its
    * persisted history. Workspace archive uses this path: archiving must make
    * the workspace safe to move without turning a recoverable archive into a
@@ -943,6 +1098,8 @@ export class OrchestrationService {
       cyclePrompt?: string;
       cycleIndex?: number;
       stepOffset?: number;
+      startStepIndex?: number;
+      contextBeforeStepIndex?: number;
     } = {},
   ): void {
     let invoker: PlatformAgentInvokerContract;
@@ -975,6 +1132,8 @@ export class OrchestrationService {
       id: session.id,
       cyclePrompt: cycle.cyclePrompt ?? session.originalPrompt,
       stepOffset: cycle.stepOffset ?? 0,
+      startStepIndex: cycle.startStepIndex ?? 0,
+      contextBeforeStepIndex: cycle.contextBeforeStepIndex,
       cycleIndex: cycle.cycleIndex ?? 0,
       ...(session.supervisorModelRef?.modelId === undefined
         ? {}
@@ -1149,11 +1308,16 @@ export class OrchestrationService {
         maxSteps: session.maxSteps,
         // Each continuation is a fresh internal cycle. Persisted turn indexes
         // remain global through context.stepOffset in the lifecycle hooks.
-        stepIndex: 0,
+        // A retry seeds the cursor so routing resumes at the chosen step.
+        stepIndex: context.startStepIndex,
         lastRunId: null,
         lastOutput: null,
         turns: [],
-        contextTurns: this.journal.contextTurns(session.id, session.maxSteps),
+        contextTurns: this.journal.contextTurns(
+          session.id,
+          session.maxSteps,
+          context.contextBeforeStepIndex,
+        ),
         status: "running",
         errorCode: null,
       };
