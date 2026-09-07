@@ -149,6 +149,22 @@ function runWithProvider(
 }
 
 describe("supervisor selector boundary", () => {
+  it("bounds a conversational task to one participant instead of the whole roster", () => {
+    const prompt = buildSupervisorPrompt({
+      sessionId,
+      originalPrompt: "hi",
+      participants: roster,
+      stepIndex: 0,
+      maxSteps: 4,
+      previousHandoff: null,
+      recentTurns: [],
+    });
+
+    expect(prompt).toContain(
+      "A greeting, an acknowledgement, or small talk is conversational, not work: select one participant to answer it at step_index 0, then return complete on every later decision for that task.",
+    );
+  });
+
   it("documents initial explicit-addressee routing without granting task authority", () => {
     const prompt = buildSupervisorPrompt({
       sessionId,
@@ -342,10 +358,12 @@ describe("supervisor selector boundary", () => {
           },
         ],
       },
-      { maxPromptChars: 2_100 },
+      // Just above the fixed policy/roster envelope, so fitting has to reduce
+      // evidence rather than reject the limit outright.
+      { maxPromptChars: 2_400 },
     );
 
-    expect(prompt.length).toBeLessThanOrEqual(2_100);
+    expect(prompt.length).toBeLessThanOrEqual(2_400);
     expect(prompt).toContain(
       '{"kind":"invoke","participantId":"<exact occurrence_id>","reason":"short public reason"}',
     );

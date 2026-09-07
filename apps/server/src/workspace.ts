@@ -5,11 +5,27 @@ import type { Agent } from "./types.js";
 import { PLATFORM_RUNTIME_CONTEXT_REFERENCE } from "./preview/preview-context-provider.js";
 
 /** Bump when the platform-owned instruction layout changes. */
-export const PLATFORM_INSTRUCTIONS_VERSION = 2;
+export const PLATFORM_INSTRUCTIONS_VERSION = 3;
 export const PLATFORM_INSTRUCTIONS_MARKER =
   `<!-- lqam:platform-instructions:v${PLATFORM_INSTRUCTIONS_VERSION} -->`;
 
-const PLATFORM_INSTRUCTIONS_HEADER = "# Platform-managed Agent instructions";
+export const PLATFORM_INSTRUCTIONS_HEADER = "# Platform-managed Agent instructions";
+
+/**
+ * Frames the configured Agent instructions as a standing description of this
+ * Agent rather than a task that is already in flight. Both the private and the
+ * shared Project writer emit it directly above the configured text.
+ */
+export const INSTRUCTIONS_SCOPE_NOTE =
+  "The following describes who you are and how you work when the user asks for work. " +
+  "It is standing guidance, not a task that is already assigned. " +
+  "Never start the work it describes on your own: act only on the user's current request.";
+
+/** Shared workspace rules that keep effort proportional to the request. */
+export const REQUEST_SCOPE_RULES = [
+  "- Match your response to what the user actually asked for.",
+  "- Greetings, small talk, and questions call for a short reply only; do not create, modify, or delete files, install dependencies, or start builds for them.",
+] as const;
 const LEGACY_PLATFORM_INSTRUCTION_FOOTERS = [
   "This file is regenerated when the Agent configuration is updated.",
   "This file is regenerated for whichever Agent is currently working.",
@@ -96,6 +112,11 @@ export class WorkspaceManager {
       "",
       "## Instructions",
       "",
+      // Standing guidance, not a queued task. Without this framing a worker
+      // reads its configured instructions as work to start immediately and
+      // acts on them even when the user only said hello.
+      INSTRUCTIONS_SCOPE_NOTE,
+      "",
       agent.instructions ||
         "Help the user complete coding tasks in this workspace. Explain material results concisely.",
       "",
@@ -105,6 +126,7 @@ export class WorkspaceManager {
       "",
       "## Workspace rules",
       "",
+      ...REQUEST_SCOPE_RULES,
       "- Work only inside this workspace unless the user explicitly requests otherwise.",
       "- Preserve existing user files and avoid destructive operations.",
       "- Build and test changes when practical.",

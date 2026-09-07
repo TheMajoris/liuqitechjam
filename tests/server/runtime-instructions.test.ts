@@ -2,11 +2,16 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentRuntimePromptComposer } from "../../apps/server/src/agent-runtime-prompt.js";
+import {
+  AgentRuntimePromptComposer,
+  RUNTIME_INSTRUCTIONS_MAX_CHARS,
+} from "../../apps/server/src/agent-runtime-prompt.js";
 import {
   hasCurrentPlatformInstructions,
+  INSTRUCTIONS_SCOPE_NOTE,
   isPlatformManagedInstructions,
   PLATFORM_INSTRUCTIONS_MARKER,
+  REQUEST_SCOPE_RULES,
   WorkspaceManager,
 } from "../../apps/server/src/workspace.js";
 import { ProjectWorkspaceManager } from "../../apps/server/src/projects/project-workspace.js";
@@ -86,6 +91,13 @@ describe("canonical runtime instruction delivery", () => {
     expect(instructions).toContain(PLATFORM_INSTRUCTIONS_MARKER);
     expect(instructions).toContain(currentAgent.instructions);
     expect(instructions).toContain("current response-language policy");
+    // Configured instructions are a description of the Agent, not a task the
+    // Agent should start on its own the next time it is prompted.
+    expect(instructions).toContain(INSTRUCTIONS_SCOPE_NOTE);
+    expect(instructions.indexOf(INSTRUCTIONS_SCOPE_NOTE)).toBeLessThan(
+      instructions.indexOf(currentAgent.instructions),
+    );
+    for (const rule of REQUEST_SCOPE_RULES) expect(instructions).toContain(rule);
     expect(instructions).not.toContain("Review every changed line carefully.");
     expect(instructions).not.toContain("Capability availability:");
 
@@ -136,7 +148,7 @@ describe("canonical runtime instruction delivery", () => {
     await projectManager.initialize();
     const project = {
       id: "project-runtime-test",
-      name: "Shared Project",
+      name: "Acme Store",
       description: "A shared artifact",
       workspacePath: projectManager.workspacePath("project-runtime-test"),
       teamId: null,
@@ -147,13 +159,82 @@ describe("canonical runtime instruction delivery", () => {
     };
     await projectManager.create(project);
     const currentAgent = agent(path.join(root, "unused"));
-    await projectManager.writeTurnInstructions(project, currentAgent, skillContext);
-    const instructions = await readFile(path.join(project.workspacePath, "AGENTS.md"), "utf8");
-    expect(instructions).toContain(PLATFORM_INSTRUCTIONS_MARKER);
-    expect(instructions).toContain('This workspace belongs to the Project named Shared Project.');
-    expect(instructions).toContain("## Shared Project workspace");
-    expect(instructions).not.toContain("Review every changed line carefully.");
-    expect(instructions).not.toContain("Capability availability:");
+    const contract = await readFile(path.join(project.workspacePath, "AGENTS.md"), "utf8");
+    expect(contract).toContain(PLATFORM_INSTRUCTIONS_MARKER);
+    expect(contract).toContain("## Shared Project workspace");
+    for (const rule of REQUEST_SCOPE_RULES) expect(contract).toContain(rule);
+    // A shared directory cannot name one of several Team Agents. Identity,
+    // standing guidance, skills, and the renamable Project name are all
+    // per-turn facts carried by the runtime envelope instead.
+    expect(contract).not.toContain(currentAgent.name);
+    expect(contract).not.toContain(currentAgent.instructions);
+    expect(contract).not.toContain(project.name);
+    expect(contract).not.toContain("Review every changed line carefully.");
+    expect(contract).not.toContain("Capability availability:");
+
+    // Steady state is a read; a stale platform-owned file migrates in place.
+    expect(await projectManager.ensureWorkspaceContract(project)).toBe("current");
+    await writeFile(
+      path.join(project.workspacePath, "AGENTS.md"),
+      [
+        "# Platform-managed Agent instructions",
+        "",
+        "You are the coding Agent named Bernard.",
+        "",
+        "This file is regenerated for whichever Agent is currently working.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    expect(await projectManager.ensureWorkspaceContract(project)).toBe("updated");
+    const migrated = await readFile(path.join(project.workspacePath, "AGENTS.md"), "utf8");
+    expect(migrated).not.toContain("Bernard");
+
+    const userAuthored = "# Team notes\n\nKeep this exact file.\n";
+    await writeFile(path.join(project.workspacePath, "AGENTS.md"), userAuthored, "utf8");
+    expect(await projectManager.ensureWorkspaceContract(project)).toBe("skipped");
+    await expect(
+      readFile(path.join(project.workspacePath, "AGENTS.md"), "utf8"),
+    ).resolves.toBe(userAuthored);
+  });
+
+  it("carries identity and standing guidance on every turn in both workspace kinds", async () => {
+    const currentAgent = agent("/tmp/unused");
+    const composer = new AgentRuntimePromptComposer(
+      () => ({ getForAgent: async () => ({ status: "not_started" }) }),
+      async () => skillContext,
+    );
+
+    const direct = await composer.compose(currentAgent, "hi", null);
+    expect(direct).toContain('agent.name = "Runtime Agent"');
+    expect(direct).toContain("<agent_instructions>");
+    expect(direct).toContain(currentAgent.instructions);
+    // A resumed thread still holds blocks composed for earlier turns, and a
+    // shared Project thread can hold ones written for a different Agent.
+    expect(direct).toContain("This block replaces any earlier platform_runtime_context");
+
+    const projectTurn = await composer.compose(currentAgent, "hi", {
+      projectId: "project-runtime-test",
+      projectName: "Acme Store",
+      workspacePath: "/tmp/unused",
+      codexThreadId: null,
+      previewStatus: "not_started",
+    });
+    expect(projectTurn).toContain('agent.name = "Runtime Agent"');
+    expect(projectTurn).toContain(currentAgent.instructions);
+    expect(projectTurn).toContain('project.name = "Acme Store"');
+  });
+
+  it("bounds configured instructions delivered per turn", async () => {
+    const longAgent = { ...agent("/tmp/unused"), instructions: "x".repeat(9_000) };
+    const composer = new AgentRuntimePromptComposer(
+      () => undefined,
+      async () => undefined,
+    );
+    const prompt = await composer.compose(longAgent, "hi", null);
+    expect(prompt).toContain("[INSTRUCTIONS TRUNCATED]");
+    expect(prompt).toContain("x".repeat(RUNTIME_INSTRUCTIONS_MAX_CHARS));
+    expect(prompt).not.toContain("x".repeat(RUNTIME_INSTRUCTIONS_MAX_CHARS + 1));
   });
 });
 
