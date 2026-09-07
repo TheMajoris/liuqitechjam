@@ -13,6 +13,10 @@ import {
 } from "./access/authorization-service.js";
 import { humanPrincipal } from "./access/access-types.js";
 import type { AgentService } from "./agent-service.js";
+import {
+  AgentDraftRequestSchema,
+  type AgentAuthoringService,
+} from "./agent-authoring.js";
 import { registerAgentMiddlewareRoutes } from "./http/agent-middleware-routes.js";
 import { registerAgentMetricsRoutes } from "./http/agent-metrics-routes.js";
 import type { AgentMetricsService } from "./usage/agent-metrics.js";
@@ -45,6 +49,7 @@ import {
   CreateOrchestrationSchema,
   OrchestrationRouteParamsSchema,
   StartOrchestrationSchema,
+  UpdateOrchestrationSchema,
 } from "./orchestration/schemas.js";
 import type {
   CreateOrchestrationInput,
@@ -74,6 +79,11 @@ export interface OrchestrationServiceContract {
   stopSession(id: string): Promise<OrchestrationSession>;
   continueSession(id: string, prompt: string): Promise<OrchestrationSession>;
   retryFromStep(id: string, fromStepIndex: number): Promise<OrchestrationSession>;
+  /** Prompt-policy edit; optional so route tests can omit it. */
+  updateSession?(
+    id: string,
+    input: { clarifyFirst: boolean },
+  ): Promise<OrchestrationSession>;
   deleteSession(id: string): Promise<{ deleted: boolean }>;
   /** Root trace span for this orchestration; optional so route tests can omit it. */
   orchestrationSpan?(id: string): AuditSpan;
@@ -127,6 +137,7 @@ const appearanceBody = z.object({
   hair: z.number().int().min(0).max(5).optional(),
   skin: z.number().int().min(0).max(3).optional(),
   accessory: z.enum(["none", "glasses", "headset", "cap"]).optional(),
+  figure: z.enum(["neutral", "feminine", "masculine"]).optional(),
 }).strict();
 
 const createAgentBody = z.object({
@@ -317,6 +328,7 @@ export async function createApp(
   mcp?: McpRouteDependencies,
   modelCatalog?: ModelCatalogServiceContract,
   agentMetrics?: AgentMetricsService,
+  agentAuthoring?: AgentAuthoringService,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -634,6 +646,28 @@ export async function createApp(
     return reply.code(202).send({ session });
   });
 
+  /**
+   * Prompt-policy settings for one Conversation.
+   *
+   * Separate from start/continue because it changes nothing about the run in
+   * flight: it records how the next cycle should be prompted.
+   */
+  app.patch("/api/orchestrations/:id", async (request) => {
+    const { id } = parseOrchestrationParams(request.params);
+    const orchestration = requireOrchestrationService(orchestrationService);
+    if (!orchestration.updateSession) {
+      throw new HttpError(501, "This server cannot change conversation settings");
+    }
+    const parsed = UpdateOrchestrationSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new OrchestrationValidationError(
+        "Invalid conversation settings",
+        parsed.error.issues,
+      );
+    }
+    return { session: await orchestration.updateSession(id, parsed.data) };
+  });
+
   app.delete("/api/orchestrations/:id", async (request) => {
     const { id } = parseOrchestrationParams(request.params);
     return requireOrchestrationService(orchestrationService).deleteSession(id);
@@ -657,6 +691,34 @@ export async function createApp(
     const body = parseAgentInput(createAgentBody, request.body);
     const agent = await service.createAgent(body);
     return reply.code(201).send({ agent });
+  });
+
+  /**
+   * Writing help for the create/settings form.
+   *
+   * Suggestion-only: the response is text the form shows for review, and
+   * nothing is persisted here. It confers no capability, so it deliberately
+   * lives beside the Agent routes rather than inside the Agent mutation path.
+   */
+  app.get("/api/agent-drafts", async () => ({
+    available: agentAuthoring?.available() === true,
+  }));
+
+  app.post("/api/agent-drafts", async (request) => {
+    if (!agentAuthoring) {
+      throw new HttpError(
+        503,
+        "Drafting help is not enabled on this server.",
+      );
+    }
+    const parsed = AgentDraftRequestSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new HttpError(
+        422,
+        "Describe the Agent you want in a sentence or two before asking for a draft.",
+      );
+    }
+    return { draft: await agentAuthoring.draft(parsed.data) };
   });
 
   app.get("/api/agents/:id", async (request) => {

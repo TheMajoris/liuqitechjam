@@ -1,5 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { canvasSupported } from "./pixi/canvas-support";
+import type { WorkspaceCrew } from "./pixi/art/avatar-look";
+import type { PerkId } from "./pixi/art/perks";
 import {
   MAX_SEATS,
   seatLayout,
@@ -38,6 +40,10 @@ const PLATE_OFFSET = { x: 0, y: 5 } as const;
 interface WorkspaceStageProps {
   viewModel: WorkspaceViewModel;
   replies: number;
+  /** Optional office furniture; cosmetic, owned by the view. */
+  perks?: ReadonlySet<PerkId>;
+  /** People or robots, for the whole room. */
+  crew?: WorkspaceCrew;
   onSelectAgent: (agentId: string) => void;
   onOpenConversation: () => void;
   onOpenPreview: () => void;
@@ -54,6 +60,8 @@ interface WorkspaceStageProps {
 export function WorkspaceStage({
   viewModel,
   replies,
+  perks,
+  crew = "people",
   onSelectAgent,
   onOpenConversation,
   onOpenPreview,
@@ -61,6 +69,17 @@ export function WorkspaceStage({
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [hovered, setHovered] = useState<string | null>(null);
+  /**
+   * The last plate that was pointed at, kept after the pointer leaves.
+   *
+   * Desks are closer together than a plate is wide, so plates overlap and the
+   * one underneath is unreadable. Raising on hover fixed reading it and broke
+   * comparing them: the plate dropped back the instant the pointer moved, so
+   * you could never look at a raised plate and something else at once. This
+   * holds the raise until another plate takes it — the room only ever has one
+   * plate on top, and it is the one you last showed interest in.
+   */
+  const [raised, setRaised] = useState<string | null>(null);
   const [renderFailed, setRenderFailed] = useState(false);
   const [supported] = useState(canvasSupported);
 
@@ -128,6 +147,11 @@ export function WorkspaceStage({
     plate.style.top = `${Math.round((y + PLATE_OFFSET.y) * live.scale)}px`;
   }, []);
 
+  const hover = useCallback((agentId: string | null) => {
+    setHovered(agentId);
+    if (agentId !== null) setRaised(agentId);
+  }, []);
+
   const onFailure = useCallback(() => setRenderFailed(true), []);
   const canRender = supported && !renderFailed && size.width > 0 && size.height > 0;
   const overflow = viewModel.agents.length - seats.length;
@@ -143,8 +167,10 @@ export function WorkspaceStage({
             transform={transform}
             hoveredAgentId={hovered}
             replies={replies}
+            perks={perks}
+            crew={crew}
             onSelectAgent={onSelectAgent}
-            onHoverAgent={setHovered}
+            onHoverAgent={hover}
             onOpenConversation={onOpenConversation}
             onOpenPreview={onOpenPreview}
             onAgentPosition={handleAgentPosition}
@@ -217,7 +243,8 @@ export function WorkspaceStage({
                 "ws-plate" +
                 (agent.isSelected ? " is-selected" : "") +
                 (agent.isCurrentParticipant ? " is-active" : "") +
-                (expanded ? " is-expanded" : "")
+                (expanded ? " is-expanded" : "") +
+                (raised === agent.agentId ? " is-raised" : "")
               }
               data-tone={descriptor.tone}
               style={
@@ -228,10 +255,13 @@ export function WorkspaceStage({
               aria-pressed={agent.isSelected}
               aria-describedby={showCapacity ? capacityCardId : undefined}
               title={capacityLabel}
-              onClick={() => onSelectAgent(agent.agentId)}
-              onMouseEnter={() => setHovered(agent.agentId)}
+              onClick={() => {
+                setRaised(agent.agentId);
+                onSelectAgent(agent.agentId);
+              }}
+              onMouseEnter={() => hover(agent.agentId)}
               onMouseLeave={() => setHovered(null)}
-              onFocus={() => setHovered(agent.agentId)}
+              onFocus={() => hover(agent.agentId)}
               onBlur={() => setHovered(null)}
             >
               <span className="ws-plate-heading">

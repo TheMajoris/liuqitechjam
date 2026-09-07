@@ -35,20 +35,17 @@ interface OrchestrationAdvancedSettingsProps {
  * selection that would not be honored.
  */
 export function SupervisorModelNotice() {
-  const [modelId, setModelId] = useState<string | null>(null);
-  const [unavailable, setUnavailable] = useState(false);
+  const [configured, setConfigured] = useState<boolean | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     void api
       .supervisorModel()
       .then((current) => {
-        if (cancelled) return;
-        setModelId(current.modelRef?.modelId ?? null);
-        setUnavailable(current.modelRef === null);
+        if (!cancelled) setConfigured(current.modelRef !== null);
       })
       .catch(() => {
-        if (!cancelled) setUnavailable(true);
+        if (!cancelled) setConfigured(false);
       });
     return () => {
       cancelled = true;
@@ -58,12 +55,20 @@ export function SupervisorModelNotice() {
   return (
     <div className="orch-field">
       <span className="orch-field-label">Routing</span>
+      {/*
+        Whether routing is configured is what someone setting up a Conversation
+        needs; which endpoint serves it is infrastructure. The raw endpoint ID
+        used to be printed here, on a screen anyone with app access can reach
+        and screenshot — it names a live billable endpoint in the operator's
+        provider account, so it belongs on the operator's own page, next to the
+        control that changes it, and nowhere else.
+      */}
       <span className="orch-field-help" role="status">
-        {modelId === null
-          ? unavailable
-            ? "No supervisor model is configured. Set one in Insights › Supervisor model before starting a supervised Conversation."
-            : "Checking the configured supervisor model…"
-          : `Routed by the supervisor model ${modelId}. It is a server-wide setting, changed in Insights › Supervisor model.`}
+        {configured === null
+          ? "Checking the configured supervisor model…"
+          : configured
+            ? "A supervisor model picks who speaks next. It is a server-wide setting, changed in Insights › Supervisor model."
+            : "No supervisor model is configured. Set one in Insights › Supervisor model before starting a supervised Conversation."}
       </span>
     </div>
   );

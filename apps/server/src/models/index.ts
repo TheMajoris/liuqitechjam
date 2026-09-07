@@ -13,9 +13,11 @@ export {
   type ModelCatalogReader,
 } from "./catalog.js";
 export {
+  findAgentsOnReservedModel,
   releaseAgentsFromReservedModel,
   type ReservationAgentService,
   type ReservationOutcome,
+  type ReservedModelConflict,
 } from "./supervisor-reservation.js";
 export {
   ArkModelProvider,

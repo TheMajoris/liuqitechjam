@@ -484,6 +484,7 @@ export function buildWorkspaceViewModel(source: WorkspaceSource): WorkspaceViewM
         projectRole: projectRoleFor(source.project, agentId),
         available: agent !== undefined,
         lifecycle: agent?.status ?? "unknown",
+        lastError: agent?.lastError?.trim() || null,
         seatIndex: index,
         station: resolveStation(activity, activeTool, sandboxActivity),
         activeTool,

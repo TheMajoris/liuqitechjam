@@ -6,8 +6,10 @@ import { AgentSprite } from "./AgentSprite";
 import { Desk, DeskChair } from "./Desk";
 import { HandoffToken } from "./HandoffToken";
 import { BoardStation, PreviewStation } from "./Stations";
+import { Perks } from "./Perks";
 import { Room } from "./Room";
-import { avatarLook } from "./art/avatar-look";
+import { avatarLook, type WorkspaceCrew } from "./art/avatar-look";
+import type { PerkId } from "./art/perks";
 import { agentPresentation } from "./agent-presentation";
 import { officeSeats, type StageTransform, type WorkspaceSeat } from "../workspace-layout";
 import { PREVIEW_ACTIVITY_LABEL } from "../workspace-view-model";
@@ -23,6 +25,10 @@ export interface WorkspaceSceneProps {
   onHoverAgent: (agentId: string | null) => void;
   onOpenConversation: () => void;
   onOpenPreview: () => void;
+  /** Optional office furniture. Cosmetic, and never a station. */
+  perks?: ReadonlySet<PerkId>;
+  /** People or robots. One choice for the whole room. */
+  crew?: WorkspaceCrew;
   /** Reports where an Agent currently stands, so its HTML plate can follow. */
   onAgentPosition?: (agentId: string, x: number, y: number) => void;
 }
@@ -47,6 +53,8 @@ export function WorkspaceScene({
   onHoverAgent,
   onOpenConversation,
   onOpenPreview,
+  perks,
+  crew = "people",
   onAgentPosition,
 }: WorkspaceSceneProps) {
   const seated = useMemo(
@@ -109,6 +117,7 @@ export function WorkspaceScene({
   return (
     <pixiContainer ref={rootRef}>
       <Room />
+      {perks && <Perks enabled={perks} />}
       <PreviewStation
         status={viewModel.previewStatus}
         onActivate={onOpenPreview}
@@ -147,6 +156,7 @@ export function WorkspaceScene({
             agent={agent}
             seat={seat}
             hovered={hoveredAgentId === agent.agentId}
+            crew={crew}
             onSelect={onSelectAgent}
             onHoverChange={onHoverAgent}
             {...(onAgentPosition ? { onPositionChange: onAgentPosition } : {})}

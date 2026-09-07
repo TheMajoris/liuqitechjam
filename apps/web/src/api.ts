@@ -31,6 +31,13 @@ import type {
   RunStatus,
 } from "./types";
 
+/** A suggested Agent, as returned by the drafting endpoint. */
+export interface AgentDraft {
+  name: string | null;
+  description: string | null;
+  instructions: string | null;
+}
+
 export interface AuditTraceQuery {
   agentId?: string;
   projectId?: string;
@@ -278,6 +285,25 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  /** Whether this server can draft Agent copy at all. */
+  agentDraftAvailable: () =>
+    request<{ available: boolean }>("/api/agent-drafts"),
+  /**
+   * Ask for a suggested description and system instructions. Suggestion only:
+   * the response is text for the form to show, and nothing is persisted until
+   * the person saves the Agent themselves.
+   */
+  draftAgent: (body: {
+    intent: string;
+    name?: string;
+    description?: string;
+    instructions?: string;
+    fields?: Array<"name" | "description" | "instructions">;
+  }) =>
+    request<{ draft: AgentDraft }>("/api/agent-drafts", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   createAgent: (body: {
     name: string;
     description: string;
@@ -458,6 +484,12 @@ export const api = {
       "/api/orchestrations/" + id + "/retry",
       { method: "POST", body: JSON.stringify({ fromStepIndex }) },
     ),
+  /** Prompt-policy edit for one Conversation; grants nothing. */
+  updateOrchestration: (id: string, body: { clarifyFirst: boolean }) =>
+    request<{ session: OrchestrationSession }>("/api/orchestrations/" + id, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
   deleteOrchestration: (id: string) =>
     request<{ deleted: boolean }>("/api/orchestrations/" + id, {
       method: "DELETE",

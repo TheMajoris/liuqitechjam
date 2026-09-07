@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { AgentService } from "./agent-service.js";
+import { createAgentAuthoringService } from "./agent-authoring.js";
 import { createApp } from "./app.js";
 import { isArkConfigured, loadConfig, writeCodexConfig } from "./config.js";
 import { createRunner } from "./runner-factory.js";
@@ -13,7 +14,7 @@ import {
   createModelRegistry,
   createWorkerModelResolver,
   normalizeModelRef,
-  releaseAgentsFromReservedModel,
+  findAgentsOnReservedModel,
 } from "./models/index.js";
 import {
   JsonStore,
@@ -295,40 +296,32 @@ await projectService.initialize();
 await previewService.initialize();
 
 /**
- * Worker resolution rejects the endpoint reserved for supervisor routing, so
- * an Agent persisted against it before that rule existed can no longer run.
- * Repair those assignments once at startup. A provider outage here must never
- * block boot, and the same reconciliation runs again whenever an operator
- * changes the supervisor endpoint.
+ * Report — never repair — Agents pointed at the reserved supervisor endpoint.
+ *
+ * Worker resolution rejects that endpoint, so an Agent assigned to it cannot
+ * run. Booting used to rewrite those assignments to the catalog default, which
+ * meant a restart silently moved an Agent onto a different model while its
+ * owner was mid-conversation. A model assignment is the operator's choice, so
+ * it is left exactly as persisted and the conflict is reported instead: the
+ * Agent surfaces `modelConflict`, and changing the supervisor endpoint through
+ * `PUT /api/supervisor-model` still offers the explicit, acknowledged move.
  */
-const reconcileReservedSupervisorEndpoint = async (
+const reportReservedSupervisorEndpointConflicts = (
   log: { warn(details: unknown, message: string): void },
-): Promise<void> => {
+): void => {
   try {
     const reservedModelId = resolvedSupervisorModelId();
     if (reservedModelId.length === 0) return;
-    const availableModels = await modelRegistry.listModels(
-      ARK_WORKER_PROVIDER_ID,
-      "worker",
-    );
-    const reassignments = await releaseAgentsFromReservedModel({
-      agentService: service,
-      reservedModelId,
-      availableModels,
-      preferredModelRef: modelCatalog.get().defaultModelRef ?? null,
-    });
-    for (const outcome of reassignments) {
+    for (const conflict of findAgentsOnReservedModel(service, reservedModelId)) {
       log.warn(
-        { reservedModelId, ...outcome },
-        outcome.skippedReason === undefined
-          ? "Moved Agent off the endpoint reserved for supervisor routing"
-          : "Could not move Agent off the endpoint reserved for supervisor routing",
+        { reservedModelId, ...conflict },
+        "Agent is assigned to the endpoint reserved for supervisor routing and cannot run until it is reassigned",
       );
     }
   } catch (error) {
     log.warn(
       { error },
-      "Could not reconcile Agent assignments against the reserved supervisor endpoint",
+      "Could not check Agent assignments against the reserved supervisor endpoint",
     );
   }
 };
@@ -336,6 +329,21 @@ const reconcileReservedSupervisorEndpoint = async (
 // Credentials decide whether the selector exists at all. The model itself is
 // resolved per selection, so an operator can point the supervisor at a
 // different endpoint without restarting the server.
+/**
+ * Optional writing help for the Agent form. It borrows the supervisor endpoint
+ * when one is set and otherwise the catalog's default worker endpoint, so no
+ * extra configuration is needed to turn it on and nothing is reserved for it.
+ */
+const agentAuthoring = createAgentAuthoringService(config, () => {
+  const supervisor = resolvedSupervisorModelId();
+  if (supervisor.length > 0) return supervisor;
+  try {
+    return modelCatalog.get().defaultModelRef?.modelId ?? "";
+  } catch {
+    return "";
+  }
+});
+
 const supervisorSelector = isArkConfigured(config)
   ? createOrchestrationParticipantSelector(
       new ArkResponsesSupervisorProvider({
@@ -417,9 +425,10 @@ const app = await createApp(
   },
   modelCatalog,
   agentMetrics,
+  agentAuthoring,
 );
 
-await reconcileReservedSupervisorEndpoint(app.log);
+reportReservedSupervisorEndpointConflicts(app.log);
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");

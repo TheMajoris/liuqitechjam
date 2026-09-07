@@ -234,6 +234,8 @@ export const CreateOrchestrationSchema: z.ZodType<CreateOrchestrationInput> =
     originalPrompt: orchestrationPromptSchema,
     participants: OrchestrationDraftParticipantsSchema,
     mode: OrchestrationModeSchema.optional(),
+    /** Ask before acting; prompt policy only, so it is freely optional. */
+    clarifyFirst: z.boolean().optional(),
     /** Opt-in shared Project scope; omitted Teams remain text-only. */
     projectId: idSchema.optional(),
     maxSteps: z.number().int().positive().max(ORCHESTRATION_LIMITS.maxSteps),
@@ -308,6 +310,20 @@ export const StartOrchestrationSchema: z.ZodType<StartOrchestrationInput> = z
 
 export const StartOrchestrationInputSchema = StartOrchestrationSchema;
 
+/**
+ * Settings a person may change on an existing Conversation.
+ *
+ * Only prompt-shaping policy lives here. Roster, task, mode, and limits stay
+ * immutable after creation so a settled record still explains the run it
+ * produced; `clarifyFirst` is safe to move because it grants nothing and only
+ * applies from the next cycle onward.
+ */
+export const UpdateOrchestrationSchema = z
+  .object({
+    clarifyFirst: z.boolean(),
+  })
+  .strict();
+
 export const OrchestrationSessionSchema: z.ZodType<OrchestrationSession> =
   z.object({
     id: idSchema,
@@ -327,6 +343,8 @@ export const OrchestrationSessionSchema: z.ZodType<OrchestrationSession> =
     supervisorAgentId: idSchema.optional(),
     supervisorModelRef: ModelRefSchema.optional(),
     supervisorModelCatalogRevision: z.union([z.string().min(1), z.number().finite()]).optional(),
+    /** Ask before acting; absent on records written before it existed. */
+    clarifyFirst: z.boolean().optional(),
     /** Absent on Teams persisted before Projects existed. */
     projectId: idSchema.nullable().optional(),
     completionReason: OrchestrationCompletionReasonSchema.nullable().optional(),

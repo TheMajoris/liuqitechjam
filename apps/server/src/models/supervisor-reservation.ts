@@ -31,12 +31,48 @@ function referencesReserved(
   return modelRef?.modelId === reservedModelId;
 }
 
+export interface ReservedModelConflict {
+  agentId: string;
+  agentName: string;
+  /** True when the Agent's primary assignment is the reserved endpoint. */
+  primary: boolean;
+  /** How many of the Agent's fallbacks point at the reserved endpoint. */
+  fallbacks: number;
+}
+
+/**
+ * Which Agents are pointed at the endpoint reserved for supervisor routing.
+ *
+ * Read-only on purpose. A worker model assignment is the operator's choice, so
+ * nothing that merely observes a conflict — a restart, a catalog poll — may
+ * rewrite it; the conflict is reported and the operator decides. Only the
+ * explicit supervisor-endpoint change offers the acknowledged move below.
+ */
+export function findAgentsOnReservedModel(
+  agentService: Pick<ReservationAgentService, "listAgents">,
+  reservedModelId: string,
+): ReservedModelConflict[] {
+  const reserved = reservedModelId.trim();
+  if (reserved.length === 0) return [];
+  const conflicts: ReservedModelConflict[] = [];
+  for (const agent of agentService.listAgents()) {
+    const primary = referencesReserved(agent.modelRef, reserved);
+    const fallbacks = (agent.fallbackModelRefs ?? []).filter((fallback) =>
+      referencesReserved(fallback, reserved),
+    ).length;
+    if (!primary && fallbacks === 0) continue;
+    conflicts.push({ agentId: agent.id, agentName: agent.name, primary, fallbacks });
+  }
+  return conflicts;
+}
+
 /**
  * Move every Agent off the endpoint reserved for supervisor routing.
  *
  * Worker resolution rejects the reserved endpoint, so an Agent left pointing
  * at it cannot run at all. Reassigning is therefore the repair, not a silent
- * preference change: each move is reported so the caller can surface it.
+ * preference change — which is exactly why only the operator's own supervisor
+ * change calls this, and why every move is reported back for display.
  */
 export async function releaseAgentsFromReservedModel(options: {
   agentService: ReservationAgentService;

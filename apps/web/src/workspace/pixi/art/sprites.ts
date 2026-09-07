@@ -186,3 +186,142 @@ export function rotateRows(grid: PixelGrid, offset: number): PixelGrid {
 }
 
 export const SCREEN_FRAME_COUNT = 4;
+
+/* ==========================================================================
+   Figure: the silhouette an Agent's character is drawn with.
+
+   One body drawing still serves every Agent; the figure adds a small overlay
+   on top of it. Doing it as overlays rather than three full body sets keeps
+   the walk cycle, the hands, and the face offsets in exactly one place, so a
+   change to the pose cannot drift between figures.
+
+   These are presentation only. Nothing about an Agent's capabilities, its
+   role, or its permissions is derived from the figure it is drawn with.
+   ========================================================================== */
+
+export const AVATAR_FIGURES = ["neutral", "feminine", "masculine"] as const;
+export type AvatarFigure = (typeof AVATAR_FIGURES)[number];
+
+/** Hair overlays sit over the head and shoulders, starting two rows down. */
+export const FIGURE_HAIR_OFFSET = { x: 0, y: 2 } as const;
+
+export const AVATAR_FIGURE_HAIR = {
+  // The base drawing already carries a mid-length cut.
+  neutral: ["................"],
+  // Long hair falling either side of the head, ending at the shoulder.
+  feminine: [
+    "................",
+    "................",
+    "................",
+    ".k............k.",
+    ".kh..........hk.",
+    ".kh..........hk.",
+    ".kh..........hk.",
+    ".kh..........hk.",
+    ".khh........hhk.",
+    ".khh........hhk.",
+    ".kh..........hk.",
+    "..k..........k..",
+  ],
+  // A flat crop with sideburns.
+  masculine: [
+    "................",
+    "................",
+    "................",
+    "...hhhhhhhhhh...",
+    "................",
+    "................",
+    "...h........h...",
+  ],
+} as const satisfies Record<AvatarFigure, PixelGrid>;
+
+/** Outfit overlays replace the hip rows, so the walk frames stay untouched. */
+export const FIGURE_OUTFIT_OFFSET = { x: 0, y: 19 } as const;
+
+export const AVATAR_FIGURE_OUTFIT = {
+  neutral: ["................"],
+  // A flared hem over the trousers, which still show through below it.
+  feminine: [
+    "..kCCCCCCCCCCk..",
+    ".kCCCCCCCCCCCCk.",
+  ],
+  masculine: ["................"],
+} as const satisfies Record<AvatarFigure, PixelGrid>;
+
+/* ==========================================================================
+   Robot crew.
+
+   A whole-room alternative to the people: same poses, same stations, same
+   state vocabulary, drawn as machines that stand at their desks. The idle
+   life — wandering, breaks, dozing — is deliberately switched off for them,
+   because "always at its post" is the entire point of the mode.
+   ========================================================================== */
+
+const BOT_STAND: PixelGrid = [
+  "................",
+  ".......kk.......",
+  "......kaak......",
+  "....kkkkkkkk....",
+  "...kmmmmmmmmk...",
+  "...kmwwwwwwmk...",
+  "...kmwaaaawmk...",
+  "...kmwwwwwwmk...",
+  "...kmmmmmmmmk...",
+  "....kmmmmmmk....",
+  ".....kmmmmk.....",
+  ".....kmmmmk.....",
+  "....kcccccck....",
+  "..kkcccaaccckk..",
+  "..kmcccaacccmk..",
+  "..kmcccaacccmk..",
+  "..kmccccccccmk..",
+  "..kmccccccccmk..",
+  "...kCCCCCCCCk...",
+  "...kmmmmmmmmk...",
+  "...kmmmmmmmmk...",
+  "...kmmm..mmmk...",
+  "...kbbk..kbbk...",
+  "................",
+];
+
+const BOT_WALK_A: PixelGrid = [
+  ...BOT_STAND.slice(0, 21),
+  "..kmmk..kmmk....",
+  ".kbbbk...kbbk...",
+  "................",
+];
+
+const BOT_WALK_B: PixelGrid = [
+  ...BOT_STAND.slice(0, 21),
+  "....kmmmmmmk....",
+  "....kbbkkbbk....",
+  "................",
+];
+
+export const ROBOT_BODIES = {
+  stand: BOT_STAND,
+  walkA: BOT_WALK_A,
+  walkB: BOT_WALK_B,
+} as const satisfies Record<AvatarBody, PixelGrid>;
+
+/**
+ * The visor, as an eight-by-four overlay on the same offsets the faces use.
+ *
+ * A robot reports state with its lamp rather than an expression, so each entry
+ * is the same bar at a different width or colour. `sleep` is a standby dot
+ * rather than closed eyes: nothing here is ever asleep.
+ */
+export const ROBOT_FACES = {
+  neutral: ["........", "..aaaa..", "........", "........"],
+  focus: ["........", ".aaaaaa.", "........", "........"],
+  think: ["........", "..a..a..", "........", "........"],
+  happy: ["........", "..aaaa..", "...aa...", "........"],
+  worried: ["........", "..ee.ee.", "........", "........"],
+  sleep: ["........", "...ee...", "........", "........"],
+} as const satisfies Record<AvatarFace, PixelGrid>;
+
+/** Manipulators at the keyboard; the same two-frame loop as the hands. */
+export const ROBOT_HANDS = {
+  a: ["mm....mm", "........"],
+  b: ["........", "mm....mm"],
+} as const satisfies Record<AvatarHands, PixelGrid>;

@@ -2,8 +2,9 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Client } from "pg";
+import { LATEST_SCHEMA_VERSION } from "./schema-version.js";
 
-export const LATEST_SCHEMA_VERSION = 1;
+export { LATEST_SCHEMA_VERSION };
 
 export interface MigrationOptions {
   /** Administrator/owner URL. Never use the runtime application URL here. */

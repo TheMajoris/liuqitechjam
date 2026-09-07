@@ -1,4 +1,5 @@
 import type { AgentAppearance } from "../types";
+import type { ConversationFailure } from "../components/orchestration/failure-diagnosis";
 import { AgentAvatar } from "../components/orchestration/AgentAvatar";
 import { AgentSkinEditor } from "./AgentSkinEditor";
 import { MarkdownMessage } from "../components/MarkdownMessage";
@@ -37,6 +38,10 @@ interface AgentInspectorProps {
   onClose?: () => void;
   /** Cosmetic-only character edit; absent hides the appearance controls. */
   onAppearanceChange?: (agentId: string, appearance: AgentAppearance) => Promise<void>;
+  /** The Conversation's failure, when this Agent is the one that hit it. */
+  failure?: ConversationFailure | null;
+  /** Opens the Activity tab so the person can retry from the failed step. */
+  onOpenActivity?: (() => void) | undefined;
 }
 
 /**
@@ -56,6 +61,8 @@ export function AgentInspector({
   onOpenAgent,
   onClose = () => undefined,
   onAppearanceChange,
+  failure = null,
+  onOpenActivity,
 }: AgentInspectorProps) {
   const history = useMetricsHistory(agent?.agentId ?? null, agent?.metrics ?? null);
 
@@ -74,6 +81,14 @@ export function AgentInspector({
   const descriptor = WORKSPACE_ACTIVITY[agent.activity];
   const stopped = agent.lifecycle === "stopped";
   const action: AgentLifecycleAction = stopped ? "start" : "stop";
+  // An Agent that failed and was then stopped is stopped — but saying only
+  // that hides the reason it is not running. The error outranks the tidy word
+  // whenever the platform still holds one.
+  const unresolvedError =
+    agent.lastError ??
+    (failure && failure.agentId === agent.agentId ? failure.agentError ?? failure.summary : null);
+  const showsError = unresolvedError !== null && agent.activity !== "working";
+  const fixes = failure && failure.agentId === agent.agentId ? failure.fixes : [];
 
   return (
     <aside className="ws-inspector" aria-label={`Inspector for ${agent.name}`}>
@@ -93,13 +108,40 @@ export function AgentInspector({
         </button>
       </header>
 
-      <div className="ws-inspector-status" data-tone={descriptor.tone}>
-        <span className="ws-inspector-status-glyph" aria-hidden="true">{descriptor.glyph}</span>
+      <div
+        className="ws-inspector-status"
+        data-tone={showsError ? "danger" : descriptor.tone}
+      >
+        <span className="ws-inspector-status-glyph" aria-hidden="true">
+          {showsError ? "⚠" : descriptor.glyph}
+        </span>
         <div>
-          <strong>{descriptor.label}</strong>
-          <span>{descriptor.detail}</span>
+          <strong>
+            {showsError && stopped ? "Stopped after an error" : descriptor.label}
+          </strong>
+          <span>{showsError ? unresolvedError : descriptor.detail}</span>
         </div>
       </div>
+
+      {fixes.length > 0 && (
+        <section className="ws-inspector-block ws-inspector-fixes">
+          <h4>What to try</h4>
+          <ul>
+            {fixes.map((fix) => (
+              <li key={fix.label}>{fix.label}</li>
+            ))}
+          </ul>
+          {onOpenActivity && (
+            <button
+              type="button"
+              className="button button-ghost"
+              onClick={onOpenActivity}
+            >
+              Open Activity to retry the failed step
+            </button>
+          )}
+        </section>
+      )}
 
       {agent.activeTool && (
         <section className="ws-inspector-block">

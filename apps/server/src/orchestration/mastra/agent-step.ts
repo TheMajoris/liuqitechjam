@@ -496,6 +496,7 @@ export async function executeMastraOrchestrationStep(
     {
       originalPrompt: state.originalPrompt,
       participant,
+      clarifyFirst: options.clarifyFirst === true,
       ...(state.contextTurns === undefined
         ? {}
         : { contextTurns: state.contextTurns }),

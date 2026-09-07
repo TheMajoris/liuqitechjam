@@ -59,6 +59,12 @@ export interface HandoffLimits {
 export interface HandoffRequest {
   originalPrompt: string;
   participant: HandoffParticipant;
+  /**
+   * Ask before acting. Adds a clarification rule to the safety contract so an
+   * Agent that is missing something asks the person instead of guessing. It is
+   * prompt text only and confers nothing.
+   */
+  clarifyFirst?: boolean | undefined;
   /** Current-cycle shared turns; legacy callers may omit it. */
   recentTurns?: readonly SharedConversationTurn[] | undefined;
   /** Prior-cycle authoritative turns used only for shared-context projection. */
@@ -309,11 +315,27 @@ export function createSharedConversationProjection(
   return retained.reverse();
 }
 
+/**
+ * The extra contract lines used by "always clarify".
+ *
+ * Written as rules inside the existing safety contract rather than as a second
+ * block, so the ordering the Agent already follows is preserved and nothing
+ * here can be mistaken for the untrusted handoff data above it.
+ */
+const CLARIFY_FIRST_RULES: readonly string[] = [
+  "- Ask before acting: if anything about the task is ambiguous, underspecified, or open to more than one reasonable reading, ask the person a question instead of guessing.",
+  "- Put your questions first, as a short numbered list of at most three, and ask only what actually changes what you would do.",
+  "- Do not create, edit, or delete files, and do not run commands, while a question of yours is unanswered.",
+  "- When the shared conversation already answers a question, treat it as answered and do not ask again.",
+  "- Once nothing is left to ask, say so plainly and carry out the task.",
+];
+
 function renderPrompt(
   originalPrompt: string,
   participant: HandoffParticipant,
   recentTurns: readonly SharedConversationTurn[],
   envelope: HandoffEnvelope | null,
+  clarifyFirst = false,
 ): string {
   const role = escapeXml(safePromptText(participant.role, 160, "[ROLE TRUNCATED]"));
   const participantId = escapeXml(safeIdentifier(participant.id));
@@ -374,6 +396,7 @@ function renderPrompt(
     "- Scale your turn to the original task: a greeting, an acknowledgement, or a question that only needs an answer calls for a short reply, not implementation work.",
     "- Your role describes how you work when work is requested. Never start building, scaffolding, or editing files that the original task did not ask for.",
     "- Continue from work that has already been completed rather than restarting it, unless restarting is necessary for the task.",
+    ...(clarifyFirst ? CLARIFY_FIRST_RULES : []),
     "- " + AGENT_RESPONSE_LANGUAGE_POLICY,
     "- Return only your normal participant response as ordinary output.",
   ].join("\n");
@@ -385,6 +408,7 @@ function fitPrompt(
   recentTurns: readonly SharedConversationTurn[],
   envelope: HandoffEnvelope | null,
   maxPromptChars: number,
+  clarifyFirst = false,
 ): { prompt: string; envelope: HandoffEnvelope | null } {
   let boundedEnvelope = envelope;
   let boundedRecentTurns = [...recentTurns];
@@ -393,6 +417,7 @@ function fitPrompt(
     participant,
     boundedRecentTurns,
     boundedEnvelope,
+    clarifyFirst,
   );
   if (prompt.length <= maxPromptChars) {
     return { prompt, envelope: boundedEnvelope };
@@ -406,6 +431,7 @@ function fitPrompt(
       participant,
       boundedRecentTurns,
       { ...boundedEnvelope, content: "" },
+      clarifyFirst,
     );
     const available = Math.max(0, maxPromptChars - withoutOutput.length);
     const reduced = truncateText(boundedEnvelope.content, available);
@@ -419,6 +445,7 @@ function fitPrompt(
       participant,
       boundedRecentTurns,
       boundedEnvelope,
+      clarifyFirst,
     );
   }
   if (prompt.length <= maxPromptChars) {
@@ -439,6 +466,7 @@ function fitPrompt(
         participant,
         [{ ...onlyTurn, output: "" }],
         boundedEnvelope,
+        clarifyFirst,
       );
       const available = Math.max(0, maxPromptChars - withoutOutput.length);
       const reduced = truncateText(
@@ -463,6 +491,7 @@ function fitPrompt(
       participant,
       boundedRecentTurns,
       boundedEnvelope,
+      clarifyFirst,
     );
   }
   if (prompt.length <= maxPromptChars) {
@@ -476,6 +505,7 @@ function fitPrompt(
     participant,
     boundedRecentTurns,
     boundedEnvelope,
+    clarifyFirst,
   );
   const available = Math.max(0, maxPromptChars - withoutTask.length);
   const reducedTask = truncateText(originalPrompt, available, "[TASK TRUNCATED]");
@@ -484,6 +514,7 @@ function fitPrompt(
     participant,
     boundedRecentTurns,
     boundedEnvelope,
+    clarifyFirst,
   );
   if (prompt.length <= maxPromptChars) {
     return { prompt, envelope: boundedEnvelope };
@@ -554,5 +585,6 @@ export function buildHandoffPrompt(
     recentTurns,
     envelope,
     maxPromptChars,
+    input.clarifyFirst === true,
   );
 }

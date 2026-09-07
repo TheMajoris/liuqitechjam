@@ -5,6 +5,7 @@ import { emptyDatabase, normalizeDatabase } from "../store.js";
 import type { Database } from "../types.js";
 import { normalizeAuditEvent } from "../audit/audit-normalize.js";
 import type { AuditEvent } from "../audit/audit-types.js";
+import { LATEST_SCHEMA_VERSION } from "./schema-version.js";
 
 /** The runtime adapter deliberately has no migration side effects. */
 export const POSTGRES_SCHEMA = "launchpad";
@@ -718,11 +719,21 @@ export class PostgresStore implements Storage {
         throw new Error("Another Launchpad server already owns PostgreSQL persistence");
       }
       await this.verifyRuntimeRole(client);
+      // The applied schema must be exactly the one this build was written
+      // against — ahead is as wrong as behind, because an older server cannot
+      // know what a newer migration changed underneath it. Compared against
+      // the migration manifest rather than a literal so adding a migration is
+      // one edit, not two that can silently disagree.
       const version = await client.query<VersionRow>(
         `SELECT max(version) AS version FROM ${POSTGRES_SCHEMA}.schema_migrations`,
       );
-      if (Number(version.rows[0]?.version ?? 0) !== 1) {
-        throw new Error("PostgreSQL schema is not migrated; run the migration command with DATABASE_ADMIN_URL");
+      const applied = Number(version.rows[0]?.version ?? 0);
+      if (applied !== LATEST_SCHEMA_VERSION) {
+        throw new Error(
+          `PostgreSQL schema is at version ${applied}, but this server expects ` +
+            `${LATEST_SCHEMA_VERSION}. Run the migration command with DATABASE_ADMIN_URL ` +
+            "(npm run db:migrate).",
+        );
       }
       this.client = client;
       const loaded = await loadDatabaseSnapshot(client);

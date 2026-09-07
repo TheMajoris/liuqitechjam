@@ -7,9 +7,18 @@ import {
   avatarLook,
   bodyTexture,
   faceTexture,
+  figureHairTexture,
+  figureOutfitTexture,
   handsTexture,
+  type WorkspaceCrew,
 } from "./art/avatar-look";
-import { ACCESSORY_OFFSET, FACE_OFFSET, HANDS_OFFSET } from "./art/sprites";
+import {
+  ACCESSORY_OFFSET,
+  FACE_OFFSET,
+  FIGURE_HAIR_OFFSET,
+  FIGURE_OUTFIT_OFFSET,
+  HANDS_OFFSET,
+} from "./art/sprites";
 import { agentPresentation } from "./agent-presentation";
 import { useReducedMotion } from "./use-reduced-motion";
 import { AgentIndicator } from "./AgentIndicator";
@@ -60,6 +69,8 @@ interface AgentSpriteProps {
   agent: WorkspaceAgentViewModel;
   seat: WorkspaceSeat;
   hovered: boolean;
+  /** People or robots. A room-wide choice, passed down unchanged. */
+  crew?: WorkspaceCrew;
   onSelect: (agentId: string) => void;
   onHoverChange: (agentId: string | null) => void;
   /** Where this Agent stands right now, reported every frame it is drawn. */
@@ -79,6 +90,7 @@ export function AgentSprite({
   agent,
   seat,
   hovered,
+  crew = "people",
   onSelect,
   onHoverChange,
   onPositionChange,
@@ -86,6 +98,12 @@ export function AgentSprite({
   const look = avatarLook(agent.agentId, agent.appearance);
   const presentation = agentPresentation(agent.activity);
   const reducedMotion = useReducedMotion();
+  // Robots hold their post. Wandering, coffee breaks, and dozing are what make
+  // the people feel alive; switching them off is the whole point of the mode,
+  // so it is treated exactly like the reduced-motion preference already is.
+  const stillCrew = crew === "robots";
+  const figureHair = stillCrew ? null : figureHairTexture(agent.agentId, agent.appearance);
+  const figureOutfit = stillCrew ? null : figureOutfitTexture(agent.agentId, agent.appearance);
 
   const containerRef = useRef<Container>(null);
   const bodyRef = useRef<Sprite>(null);
@@ -127,7 +145,17 @@ export function AgentSprite({
   // A change of station — or of seat, when the roster grows — is the only
   // thing that makes an Agent walk. The route is recomputed from wherever the
   // Agent currently stands, so an interrupted walk resolves cleanly.
+  //
+  // Switching to robots is also a reason to recompute: whoever was dozing in
+  // the lounge has to come back to their post, and the flags that put them
+  // there must be cleared or the new sprite would stand at its desk asleep.
   useEffect(() => {
+    if (stillCrew) {
+      dozing.current = false;
+      onBreak.current = false;
+      napUntil.current = 0;
+      breakUntil.current = 0;
+    }
     const next = walkRoute(seat, position.current, agent.station);
     if (reducedMotion) {
       // Arrive rather than travel: the destination is the information.
@@ -137,7 +165,7 @@ export function AgentSprite({
       return;
     }
     route.current = next;
-  }, [agent.station, reducedMotion, seat]);
+  }, [agent.station, reducedMotion, seat, stillCrew]);
 
   useEffect(() => {
     if (agent.activity === "success" && !reducedMotion) {
@@ -171,7 +199,7 @@ export function AgentSprite({
     // Idle life: drift around the pod for a while, then go and sleep. The
     // decision itself is a pure function, so the behaviour is unit-tested
     // rather than only observable by watching the room.
-    if (!reducedMotion) {
+    if (!reducedMotion && !stillCrew) {
       const now = performance.now();
       const action = nextIdleAction({
         isIdle,
@@ -235,6 +263,7 @@ export function AgentSprite({
           agent.agentId,
           Math.floor(clock.current / 130) % 2 === 0 ? "a" : "b",
           agent.appearance,
+          crew,
         );
         if (hands.texture !== texture) hands.texture = texture;
       }
@@ -264,6 +293,7 @@ export function AgentSprite({
         agent.agentId,
         asleep ? "sleep" : presentation.face,
         agent.appearance,
+        crew,
       );
       if (face.texture !== texture) face.texture = texture;
     }
@@ -353,23 +383,44 @@ export function AgentSprite({
       <pixiGraphics draw={drawHalo} />
       <pixiSprite
         ref={bodyRef}
-        texture={bodyTexture(agent.agentId, "stand", agent.appearance)}
+        texture={bodyTexture(agent.agentId, "stand", agent.appearance, crew)}
         anchor={{ x: 0.5, y: 1 }}
       />
-      <pixiSprite
-        texture={accessoryTexture(agent.agentId, agent.appearance)}
-        x={ACCESSORY_OFFSET.x - 8}
-        y={ACCESSORY_OFFSET.y - 24}
-      />
+      {/* Figure overlays sit between the body and the face, so long hair falls
+          behind the features and a hem covers the trousers without hiding the
+          legs the walk cycle animates. */}
+      {figureOutfit && (
+        <pixiSprite
+          texture={figureOutfit}
+          x={FIGURE_OUTFIT_OFFSET.x - 8}
+          y={FIGURE_OUTFIT_OFFSET.y - 24}
+        />
+      )}
+      {figureHair && (
+        <pixiSprite
+          texture={figureHair}
+          x={FIGURE_HAIR_OFFSET.x - 8}
+          y={FIGURE_HAIR_OFFSET.y - 24}
+        />
+      )}
+      {/* The robot's own head carries its antenna and visor; a hat or a pair
+          of glasses on top of that reads as a rendering mistake. */}
+      {!stillCrew && (
+        <pixiSprite
+          texture={accessoryTexture(agent.agentId, agent.appearance)}
+          x={ACCESSORY_OFFSET.x - 8}
+          y={ACCESSORY_OFFSET.y - 24}
+        />
+      )}
       <pixiSprite
         ref={faceRef}
-        texture={faceTexture(agent.agentId, presentation.face, agent.appearance)}
+        texture={faceTexture(agent.agentId, presentation.face, agent.appearance, crew)}
         x={FACE_OFFSET.x - 8}
         y={FACE_OFFSET.y - 24}
       />
       <pixiSprite
         ref={handsRef}
-        texture={handsTexture(agent.agentId, "a", agent.appearance)}
+        texture={handsTexture(agent.agentId, "a", agent.appearance, crew)}
         x={HANDS_OFFSET.x - 8}
         y={HANDS_OFFSET.y - 24}
         visible={false}

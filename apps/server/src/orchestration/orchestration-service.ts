@@ -264,6 +264,7 @@ export class OrchestrationService {
       ),
       participants,
       mode,
+      ...(normalized.clarifyFirst ? { clarifyFirst: true } : {}),
       ...(normalized.projectId ? { projectId: normalized.projectId } : {}),
       completionReason: null,
       status: "draft",
@@ -792,6 +793,40 @@ export class OrchestrationService {
    * Agent catalog entries, Agent messages/runs, workspaces, and private Codex
    * thread state are deliberately outside this mutation and remain intact.
    */
+  /**
+   * Change a Conversation's prompt policy.
+   *
+   * Only `clarifyFirst` is settable, and only because it grants nothing: it
+   * adds rules to the participant prompt and is read fresh when each cycle is
+   * dispatched. Editing it while a cycle is in flight would change the rules
+   * halfway through a run the transcript already records, so an active session
+   * is rejected and the change lands on the next start or continuation.
+   */
+  async updateSession(
+    id: string,
+    input: { clarifyFirst: boolean },
+  ): Promise<OrchestrationSession> {
+    const current = this.findSession(id);
+    if (statusIsActive(current.status) || this.activeSessions.has(id)) {
+      throw lifecycleConflict(
+        "Stop the conversation before changing how its Agents work",
+      );
+    }
+    return this.store.mutate((database) => {
+      const session = database.orchestrations.find((item) => item.id === id);
+      if (!session) throw new HttpError(404, "Orchestration not found");
+      if (statusIsActive(session.status) || this.activeSessions.has(id)) {
+        throw lifecycleConflict(
+          "Stop the conversation before changing how its Agents work",
+        );
+      }
+      if (input.clarifyFirst) session.clarifyFirst = true;
+      else delete session.clarifyFirst;
+      session.updatedAt = now();
+      return structuredClone(session);
+    });
+  }
+
   async deleteSession(id: string): Promise<{ deleted: boolean }> {
     const current = this.findSession(id);
     if (statusIsActive(current.status) || this.activeSessions.has(id)) {
@@ -1474,6 +1509,7 @@ export class OrchestrationService {
           ? {}
           : { supervisorTimeoutMs: context.supervisorTimeoutMs }),
         participantProfiles,
+        clarifyFirst: session.clarifyFirst === true,
         perAgentTimeoutMs: session.perAgentTimeoutMs,
         ...(session.projectId ? { projectId: session.projectId } : {}),
         orchestrationId: session.id,

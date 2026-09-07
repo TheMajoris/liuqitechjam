@@ -11,6 +11,7 @@ import {
 } from "react";
 import { api } from "../../api";
 import { AgentAvatar } from "../orchestration/AgentAvatar";
+import { useConfirm } from "../ConfirmDialog";
 import type {
   Agent,
   AgentRole,
@@ -163,6 +164,7 @@ function domainFor(url: string): string {
 }
 
 export function RolesAndSkillsView({ agents, projects, onAgentsChanged }: Props) {
+  const confirm = useConfirm();
   const [tab, setTab] = useState<AccessTab>("roles");
   const [roles, setRoles] = useState<AgentRole[]>([]);
   const [tools, setTools] = useState<ToolMetadata[]>([]);
@@ -288,18 +290,7 @@ export function RolesAndSkillsView({ agents, projects, onAgentsChanged }: Props)
     }));
   };
 
-  const saveRole = async () => {
-    if (!draft.name.trim() || !draftDirty) return;
-    if (selected?.source === "system") return;
-    if (
-      selected &&
-      selected.assignedAgentCount > 0 &&
-      !window.confirm(
-        `This changes ${selected.assignedAgentCount} assigned Agent${selected.assignedAgentCount === 1 ? "" : "s"}. Continue?`,
-      )
-    ) {
-      return;
-    }
+  const applySaveRole = async () => {
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -331,13 +322,45 @@ export function RolesAndSkillsView({ agents, projects, onAgentsChanged }: Props)
     }
   };
 
-  const removeRole = async () => {
+  /**
+   * A role edit reaches every Agent already assigned to it, so that reach is
+   * stated before the write rather than after it.
+   */
+  const saveRole = () => {
+    if (!draft.name.trim() || !draftDirty) return;
+    if (selected?.source === "system") return;
+    const assigned = selected?.assignedAgentCount ?? 0;
+    if (assigned === 0) {
+      void applySaveRole();
+      return;
+    }
+    confirm({
+      title: `Update “${selected!.name}” for ${assigned} Agent${assigned === 1 ? "" : "s"}?`,
+      body:
+        "Every Agent holding this role picks up the new skills and permissions " +
+        "immediately, in every Workspace.",
+      confirmLabel: "Update role",
+      tone: "primary",
+      onConfirm: () => void applySaveRole(),
+    });
+  };
+
+  const removeRole = () => {
     if (!selected || selected.source === "system" || selected.assignedAgentCount > 0) return;
-    if (!window.confirm(`Delete role “${selected.name}”?`)) return;
+    const role = selected;
+    confirm({
+      title: `Delete “${role.name}”?`,
+      body: "No Agent holds this role, so nothing loses a skill or a permission.",
+      confirmLabel: "Delete role",
+      onConfirm: () => void applyRemoveRole(role.id),
+    });
+  };
+
+  const applyRemoveRole = async (roleId: string) => {
     setBusy(true);
     setError(null);
     try {
-      await api.deleteRole(selected.id);
+      await api.deleteRole(roleId);
       setCreating(false);
       setSelectedId(null);
       await refreshRoleAndCatalog();

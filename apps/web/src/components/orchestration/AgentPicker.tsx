@@ -25,6 +25,8 @@ interface AgentPickerProps {
   showOrder?: boolean;
   /** Worker assignments are informational and cannot be changed here. */
   modelProviders?: ModelProviderDescriptor[];
+  /** Opens the Agent create form; absent hides the empty state's action. */
+  onCreateAgent?: (() => void) | undefined;
   onChange: (participants: OrchestrationParticipant[]) => void;
 }
 
@@ -35,11 +37,26 @@ export function AgentPicker({
   error,
   showOrder = false,
   modelProviders = [],
+  onCreateAgent,
   onChange,
 }: AgentPickerProps) {
   const [catalogOpen, setCatalogOpen] = useState(true);
 
+  /**
+   * One seat per Agent.
+   *
+   * The roster contract allows an Agent to appear twice, and deterministic
+   * modes would honour that order — but nothing downstream distinguishes the
+   * two occurrences: the room seats an Agent once, the inspector describes one
+   * Agent, and the runtime holds one busy lock per Agent, so a second seat
+   * cannot take its turn while the first one is running. Offering it produced
+   * a roster that could not execute, so the catalog now shows who is already
+   * in and stops there.
+   */
+  const chosen = new Set(participants.map((participant) => participant.agentId));
+
   const add = (agent: Agent) => {
+    if (chosen.has(agent.id)) return;
     onChange(
       normalizeParticipants([
         ...participants,
@@ -135,42 +152,66 @@ export function AgentPicker({
 
       {showCatalog &&
         (agents.length === 0 ? (
+          // The dead end this used to be: "create an Agent first" with no way
+          // to do it, on the very screen a new user reaches first.
           <div className="orch-picker-empty" id="orch-catalog" role="status">
             <strong>No Agents yet</strong>
-            <span>Create an Agent first, then invite it here.</span>
+            <span>
+              An Agent is one worker you can put in this room. Make one now, or
+              leave this empty and add them later.
+            </span>
+            {onCreateAgent && (
+              <button
+                type="button"
+                className="orch-button orch-button-primary"
+                disabled={disabled}
+                onClick={onCreateAgent}
+              >
+                <span aria-hidden="true">＋</span> Create an Agent
+              </button>
+            )}
           </div>
         ) : (
           <div className="orch-catalog" id="orch-catalog">
             <span className="orch-eyebrow">Add an Agent</span>
             <ul className="orch-agent-grid">
-              {agents.map((agent) => (
-                <li key={agent.id}>
-                  <button
-                    type="button"
-                    className="orch-agent-chip"
-                    disabled={disabled}
-                    aria-label={`Add ${agent.name} to the conversation`}
-                    onClick={() => add(agent)}
-                  >
-                    <AgentAvatar agentId={agent.id} name={agent.name} />
-                    <span className="orch-agent-chip-copy">
-                      <strong>{agent.name}</strong>
-                      <span>{agent.description || "Coding Agent"}</span>
-                      <span className="orch-agent-chip-model">
-                        {formatAgentWorkerModel(agent, modelProviders)}
+              {agents.map((agent) => {
+                const alreadyIn = chosen.has(agent.id);
+                return (
+                  <li key={agent.id}>
+                    <button
+                      type="button"
+                      className={"orch-agent-chip" + (alreadyIn ? " is-chosen" : "")}
+                      disabled={disabled || alreadyIn}
+                      aria-label={
+                        alreadyIn
+                          ? `${agent.name} is already in the conversation`
+                          : `Add ${agent.name} to the conversation`
+                      }
+                      onClick={() => add(agent)}
+                    >
+                      <AgentAvatar agentId={agent.id} name={agent.name} />
+                      <span className="orch-agent-chip-copy">
+                        <strong>{agent.name}</strong>
+                        <span>{agent.description || "Coding Agent"}</span>
+                        <span className="orch-agent-chip-model">
+                          {formatAgentWorkerModel(agent, modelProviders)}
+                        </span>
                       </span>
-                    </span>
-                    {agent.status === "ready" ? (
-                      <span className="orch-sr-only">Ready</span>
-                    ) : (
-                      <span className={`orch-agent-status orch-agent-status-${agent.status}`}>
-                        {agent.status}
+                      {agent.status === "ready" ? (
+                        <span className="orch-sr-only">Ready</span>
+                      ) : (
+                        <span className={`orch-agent-status orch-agent-status-${agent.status}`}>
+                          {agent.status}
+                        </span>
+                      )}
+                      <span className="orch-agent-chip-count" aria-hidden="true">
+                        {alreadyIn ? "✓" : "+"}
                       </span>
-                    )}
-                    <span className="orch-agent-chip-count" aria-hidden="true">+</span>
-                  </button>
-                </li>
-              ))}
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           </div>
         ))}

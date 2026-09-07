@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { AgentAvatar } from "../components/orchestration/AgentAvatar";
 
 export interface WorkspaceRosterMember {
@@ -13,6 +14,8 @@ export interface WorkspaceRosterMember {
 export interface WorkspaceRosterAddable {
   id: string;
   name: string;
+  /** Shown under the name so a roster of six is still distinguishable. */
+  description?: string | undefined;
 }
 
 interface WorkspaceRosterProps {
@@ -22,7 +25,8 @@ interface WorkspaceRosterProps {
   busy: boolean;
   error: string | null;
   onRemove: (agentId: string) => void;
-  onAdd: (agentId: string) => void;
+  /** Attaches every chosen Agent; the caller decides how to batch the writes. */
+  onAdd: (agentIds: string[]) => void;
   onSelectAgent: (agentId: string) => void;
 }
 
@@ -43,6 +47,21 @@ export function WorkspaceRoster({
   onAdd,
   onSelectAgent,
 }: WorkspaceRosterProps) {
+  // Staged locally: filling a room is one decision about who belongs in it,
+  // not one decision per Agent. The select-one-then-reload dropdown this
+  // replaces re-rendered the whole roster between every pick.
+  const [staged, setStaged] = useState<string[]>([]);
+  const addable = new Set(addableAgents.map((agent) => agent.id));
+  const selected = staged.filter((agentId) => addable.has(agentId));
+
+  const toggle = (agentId: string) => {
+    setStaged((current) =>
+      current.includes(agentId)
+        ? current.filter((item) => item !== agentId)
+        : [...current, agentId],
+    );
+  };
+
   return (
     <section className="ws-roster" aria-label={`Agents in ${projectName}`}>
       <header className="ws-roster-head">
@@ -98,25 +117,73 @@ export function WorkspaceRoster({
 
       {/* Only offered while an Agent is actually left to add. */}
       {addableAgents.length > 0 ? (
-        <label className="ws-roster-add">
-          <span className="ws-roster-role-label">Add an Agent to this room</span>
-          <select
-            aria-label={`Add an Agent to workspace ${projectName}`}
-            value=""
-            disabled={busy}
-            onChange={(event) => {
-              const agentId = event.target.value;
-              if (agentId) onAdd(agentId);
-            }}
+        <div className="ws-roster-add">
+          <div className="ws-roster-add-head">
+            <span className="ws-roster-role-label" id="ws-roster-add-label">
+              Add Agents to this room
+            </span>
+            <span className="ws-roster-add-count" aria-live="polite">
+              {selected.length === 0
+                ? `${addableAgents.length} available`
+                : `${selected.length} selected`}
+            </span>
+          </div>
+          <ul
+            className="ws-roster-add-list"
+            role="group"
+            aria-labelledby="ws-roster-add-label"
           >
-            <option value="">Choose an Agent…</option>
-            {addableAgents.map((agent) => (
-              <option value={agent.id} key={agent.id}>
-                {agent.name}
-              </option>
-            ))}
-          </select>
-        </label>
+            {addableAgents.map((agent) => {
+              const checked = selected.includes(agent.id);
+              return (
+                <li key={agent.id}>
+                  <label
+                    className={"ws-roster-add-option" + (checked ? " is-checked" : "")}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={busy}
+                      onChange={() => toggle(agent.id)}
+                    />
+                    <AgentAvatar agentId={agent.id} name={agent.name} size="sm" />
+                    <span className="ws-roster-add-copy">
+                      <strong>{agent.name}</strong>
+                      {agent.description && <span>{agent.description}</span>}
+                    </span>
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
+          <div className="ws-roster-add-actions">
+            {selected.length > 0 && (
+              <button
+                type="button"
+                className="button button-ghost"
+                disabled={busy}
+                onClick={() => setStaged([])}
+              >
+                Clear
+              </button>
+            )}
+            <button
+              type="button"
+              className="button button-primary"
+              disabled={busy || selected.length === 0}
+              onClick={() => {
+                onAdd(selected);
+                setStaged([]);
+              }}
+            >
+              {busy
+                ? "Adding…"
+                : selected.length <= 1
+                  ? "Add to room"
+                  : `Add ${selected.length} Agents`}
+            </button>
+          </div>
+        </div>
       ) : members.length > 0 ? (
         <p className="ws-roster-all">
           <span className="ws-roster-all-check" aria-hidden="true">✓</span>

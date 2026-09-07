@@ -8920,10 +8920,810 @@ button.assignment-archive:hover:not(:disabled) {
 .ws-plate {
   transition:
     border-color 140ms var(--ease-out),
-    box-shadow 140ms var(--ease-out),
-    opacity 140ms var(--ease-out);
+    box-shadow 160ms var(--ease-out),
+    opacity 140ms var(--ease-out),
+    transform 160ms var(--ease-out);
 }
 
 .ws-plate.is-expanded {
   box-shadow: var(--elevation-2);
+}
+
+/* ============================================================================
+   Review pass: confirmations, discoverable creation, batch membership,
+   readable failures, and plates that stay where you put them.
+   ========================================================================= */
+
+/* --- Confirmation dialog ------------------------------------------------- */
+
+.confirm-backdrop {
+  align-items: center;
+  justify-content: center;
+}
+
+.confirm-modal {
+  width: min(440px, calc(100vw - 32px));
+  padding: 22px 22px 16px;
+  gap: 0;
+}
+
+.confirm-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.confirm-head h2 {
+  margin: 0 0 6px;
+  font-size: 17px;
+  letter-spacing: -0.01em;
+}
+
+.confirm-head p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.confirm-glyph {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.confirm-glyph.is-danger {
+  color: #ae4646;
+  background: #f7e9e7;
+}
+
+.confirm-glyph.is-primary {
+  color: var(--purple-dark);
+  background: var(--purple-soft);
+}
+
+.confirm-footer {
+  margin-top: 20px;
+  padding: 0;
+  border-top: 0;
+}
+
+/* --- Creating things is a first-class action ----------------------------- */
+
+.create-actions {
+  display: grid;
+  gap: 8px;
+}
+
+/* Secondary weight: clearly a button, clearly not the primary one. */
+.button-secondary {
+  color: var(--purple-dark);
+  background: var(--purple-soft);
+  box-shadow: inset 0 0 0 1px rgba(105, 84, 217, 0.18);
+}
+
+.button-secondary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: #e6e1ff;
+}
+
+.create-actions .button-secondary.create-button {
+  background: var(--purple-soft);
+}
+
+.rail-item.rail-secondary {
+  color: var(--purple-dark);
+  background: var(--purple-soft);
+}
+
+.empty-sidebar .button {
+  margin-top: 10px;
+  min-height: 32px;
+  font-size: 12px;
+}
+
+.orch-picker-empty .orch-button {
+  margin-top: 10px;
+}
+
+/* An Agent already in the room says so instead of offering a second seat. */
+.orch-agent-chip.is-chosen {
+  opacity: 1;
+  border-color: rgba(51, 144, 109, 0.4);
+  background: rgba(51, 144, 109, 0.07);
+  cursor: default;
+}
+
+.orch-agent-chip.is-chosen .orch-agent-chip-count {
+  color: var(--green);
+}
+
+/* --- Workspace membership: choose several, then add ---------------------- */
+
+.ws-roster-add {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--hairline);
+}
+
+.ws-roster-add-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ws-roster-add-count {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ws-roster-add-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  max-height: 232px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.ws-roster-add-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--paper);
+  cursor: pointer;
+  transition: border-color 140ms var(--ease-out), background 140ms var(--ease-out);
+}
+
+.ws-roster-add-option:hover {
+  border-color: rgba(105, 84, 217, 0.35);
+  background: #fff;
+}
+
+.ws-roster-add-option.is-checked {
+  border-color: var(--purple);
+  background: var(--purple-soft);
+}
+
+.ws-roster-add-option input {
+  flex: 0 0 auto;
+  accent-color: var(--purple);
+}
+
+.ws-roster-add-copy {
+  display: grid;
+  min-width: 0;
+}
+
+.ws-roster-add-copy strong {
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-roster-add-copy span {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-roster-add-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* --- A plate you looked at stays readable -------------------------------- */
+
+/*
+ * `z-index` cannot be interpolated, so the lift is carried by transform and
+ * shadow — those animate — while the stacking order flips immediately. The
+ * result reads as the plate coming forward rather than blinking in front.
+ */
+.ws-plate.is-raised {
+  z-index: 6;
+  box-shadow: var(--elevation-2);
+  border-color: #b9b4a6;
+}
+
+.ws-plate.is-raised.is-expanded {
+  z-index: 7;
+}
+
+.ws-overlay.is-mapped > .ws-plate.is-raised {
+  transform: translate(-50%, -2px);
+}
+
+/* The dimming pass must never re-hide the plate that was raised on purpose. */
+.ws-overlay.is-focusing > .ws-plate.is-raised {
+  opacity: 1;
+}
+
+/* --- Failures name the Agent and say what to try ------------------------- */
+
+.orch-failure-alert {
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.orch-failure-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.orch-failure-agent {
+  font-size: 13px;
+}
+
+.orch-failure-detail {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.orch-failure-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.ws-inspector-fixes ul {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 5px;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.ws-inspector-fixes .button {
+  margin-top: 10px;
+  width: 100%;
+  min-height: 32px;
+  font-size: 12px;
+}
+
+/* --- Agent pane tabs behave like buttons --------------------------------- */
+
+/*
+ * These were bare `.button`s: no background, no hover, no pressed state, so
+ * the only thing distinguishing the open tab from the closed one was nothing.
+ */
+.agent-pane-tabs .button {
+  min-height: 32px;
+  padding: 0 13px;
+  font-size: 12.5px;
+  color: #464741;
+  background: #f0efea;
+}
+
+.agent-pane-tabs .button:hover:not(:disabled) {
+  background: #e4e2da;
+}
+
+.agent-pane-tabs .button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.agent-pane-tabs .button.is-active {
+  color: var(--purple-dark);
+  background: var(--purple-soft);
+  box-shadow: inset 0 0 0 1px rgba(105, 84, 217, 0.28);
+}
+
+.agent-pane-tabs .button.is-active:hover:not(:disabled) {
+  background: #e6e1ff;
+}
+
+/* ============================================================================
+   Room settings, writing help, the clarify switch, and the guided tour.
+   ========================================================================= */
+
+/* --- Room settings ------------------------------------------------------- */
+
+.ws-decor-control {
+  position: relative;
+}
+
+.ws-inspector-toggle.is-active {
+  color: var(--purple-dark);
+  background: var(--purple-soft);
+  border-color: rgba(105, 84, 217, 0.32);
+}
+
+.ws-decor-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  width: min(340px, calc(100vw - 32px));
+  max-height: min(70vh, 560px);
+  overflow-y: auto;
+  padding: 16px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+  box-shadow: var(--elevation-2);
+}
+
+.ws-decor-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ws-decor-head h3 {
+  margin: 2px 0 0;
+  font-size: 15px;
+}
+
+.ws-decor-note {
+  margin: 10px 0 14px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.ws-decor-group {
+  margin: 0 0 14px;
+  padding: 0;
+  border: 0;
+}
+
+.ws-decor-group legend {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 0 0 8px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ws-decor-crew {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.ws-decor-crew-option {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms var(--ease-out), background 140ms var(--ease-out);
+}
+
+.ws-decor-crew-option strong {
+  font-size: 12.5px;
+}
+
+.ws-decor-crew-option span {
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.ws-decor-crew-option:hover {
+  border-color: rgba(105, 84, 217, 0.35);
+}
+
+.ws-decor-crew-option.is-active {
+  border-color: var(--purple);
+  background: var(--purple-soft);
+}
+
+.ws-decor-perks {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ws-decor-perk {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background 140ms var(--ease-out);
+}
+
+.ws-decor-perk:hover {
+  background: #f4f3ee;
+}
+
+.ws-decor-perk.is-on {
+  border-color: rgba(105, 84, 217, 0.28);
+  background: var(--purple-soft);
+}
+
+.ws-decor-perk input {
+  margin-top: 2px;
+  accent-color: var(--purple);
+}
+
+.ws-decor-perk-copy {
+  display: grid;
+  gap: 1px;
+}
+
+.ws-decor-perk-copy strong {
+  font-size: 12.5px;
+}
+
+.ws-decor-perk-copy span {
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.ws-decor-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+
+.ws-decor-actions .button {
+  min-height: 32px;
+  font-size: 12px;
+}
+
+/* --- Writing help -------------------------------------------------------- */
+
+.agent-draft {
+  margin: 4px 0 2px;
+  padding: 12px 14px;
+  border: 1px dashed rgba(105, 84, 217, 0.35);
+  border-radius: var(--radius-lg);
+  background: rgba(239, 236, 255, 0.45);
+}
+
+.agent-draft-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-draft-head h4 {
+  margin: 2px 0 0;
+  font-size: 13.5px;
+}
+
+.agent-draft-head .button {
+  min-height: 32px;
+  font-size: 12px;
+}
+
+.agent-draft-body {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.agent-draft-field {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.agent-draft-field textarea {
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--paper);
+  resize: vertical;
+}
+
+.agent-draft-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.agent-draft-actions .button {
+  min-height: 32px;
+  font-size: 12px;
+}
+
+.agent-draft-note {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.agent-draft-result {
+  display: grid;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.agent-draft-preview {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--paper);
+}
+
+.agent-draft-preview p,
+.agent-draft-preview pre {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agent-draft-preview pre {
+  font-family: inherit;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+/* --- Ask before acting --------------------------------------------------- */
+
+.orch-switch {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 13px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+  cursor: pointer;
+  transition: border-color 140ms var(--ease-out), background 140ms var(--ease-out);
+}
+
+.orch-switch:hover {
+  border-color: rgba(105, 84, 217, 0.3);
+}
+
+.orch-switch.is-on {
+  border-color: rgba(105, 84, 217, 0.45);
+  background: var(--purple-soft);
+}
+
+.orch-switch.is-inline {
+  margin: 10px 0 0;
+}
+
+.orch-switch input {
+  margin-top: 2px;
+  accent-color: var(--purple);
+}
+
+.orch-switch:has(input:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.orch-switch-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.orch-switch-copy strong {
+  font-size: 12.5px;
+}
+
+.orch-switch-copy span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* --- Guided tour --------------------------------------------------------- */
+
+.sidebar-tour {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 12px 8px;
+  padding: 8px 10px;
+  border: 1px dashed var(--hairline);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 140ms var(--ease-out), border-color 140ms var(--ease-out);
+}
+
+.sidebar-tour:hover {
+  color: var(--purple-dark);
+  border-color: rgba(105, 84, 217, 0.4);
+}
+
+.tutorial-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+}
+
+/*
+ * One box, one enormous spread shadow. The shadow is the scrim and the box is
+ * the hole, so the cut-out follows the target with a single transition instead
+ * of four panels that can disagree mid-animation.
+ */
+.tutorial-scrim {
+  position: absolute;
+  inset: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: 0 0 0 100vmax rgba(26, 25, 22, 0.55);
+  transition:
+    top 220ms var(--ease-out),
+    left 220ms var(--ease-out),
+    width 220ms var(--ease-out),
+    height 220ms var(--ease-out);
+}
+
+.tutorial-scrim.has-spot {
+  inset: auto;
+  border-radius: 12px;
+  outline: 2px solid rgba(255, 255, 255, 0.85);
+  outline-offset: 0;
+}
+
+/*
+ * With no target the box already fills the viewport, so its outward shadow
+ * falls entirely off screen and dims nothing. A plain fill is the scrim then.
+ */
+.tutorial-scrim:not(.has-spot) {
+  background: rgba(26, 25, 22, 0.55);
+  box-shadow: none;
+}
+
+.tutorial-card {
+  position: absolute;
+  width: 340px;
+  max-width: calc(100vw - 24px);
+  padding: 16px 18px 14px;
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+  box-shadow: var(--elevation-2);
+  animation: tutorial-in 220ms var(--ease-out);
+}
+
+@keyframes tutorial-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.tutorial-card.is-centred {
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  animation: none;
+}
+
+.tutorial-progress {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.tutorial-pip {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--line);
+  transition: background 200ms var(--ease-out);
+}
+
+.tutorial-pip.is-done {
+  background: rgba(105, 84, 217, 0.45);
+}
+
+.tutorial-pip.is-current {
+  background: var(--purple);
+}
+
+.tutorial-count {
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tutorial-body h2 {
+  margin: 6px 0 8px;
+  font-size: 17px;
+  letter-spacing: -0.01em;
+}
+
+.tutorial-body p {
+  margin: 0;
+  color: #4a4b45;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.tutorial-goal {
+  margin-top: 10px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--purple-soft);
+  color: var(--purple-dark);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.tutorial-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.tutorial-nav {
+  display: flex;
+  gap: 8px;
+}
+
+.tutorial-actions .button {
+  min-height: 34px;
+  font-size: 12.5px;
+}
+
+.tutorial-skip {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.tutorial-skip:hover {
+  color: var(--ink);
 }

@@ -263,12 +263,19 @@ export interface ModelCatalogResponse extends ModelProvidersResponse {
 
 export type AgentAccessory = "none" | "glasses" | "headset" | "cap";
 
+/**
+ * The silhouette a character is drawn with. Presentation only: nothing about
+ * an Agent's role, skills, or permissions is derived from it.
+ */
+export type AgentFigure = "neutral" | "feminine" | "masculine";
+
 /** Cosmetic character choices for the 2D workspace. Never an authorization input. */
 export interface AgentAppearance {
   hue?: number;
   hair?: number;
   skin?: number;
   accessory?: AgentAccessory;
+  figure?: AgentFigure;
 }
 
 export interface Agent {
@@ -558,6 +565,12 @@ export interface OrchestrationSession {
   /** Supervisor model captured when the current cycle was accepted. */
   supervisorModelRef?: ModelRef | null;
   completionReason?: OrchestrationCompletionReason | null;
+  /**
+   * Ask before acting. Adds a clarification rule to every participant prompt.
+   * Prompt policy only: it grants nothing and changes no routing, so it can be
+   * toggled on a settled Conversation and applies from the next cycle.
+   */
+  clarifyFirst?: boolean;
   status: OrchestrationStatus;
   currentParticipantId: string | null;
   currentRunId: string | null;
@@ -626,6 +639,8 @@ export interface CreateOrchestrationInput {
   originalPrompt: string;
   participants: OrchestrationParticipant[];
   mode: OrchestrationMode;
+  /** Ask before acting; see OrchestrationSession.clarifyFirst. */
+  clarifyFirst?: boolean;
   projectId?: string;
   maxSteps: number;
   perAgentTimeoutMs: number;

@@ -145,3 +145,58 @@ describe("buildHandoffPrompt", () => {
   });
 
 });
+
+describe("buildHandoffPrompt with clarifyFirst", () => {
+  const request = {
+    originalPrompt: "Build the thing.",
+    participant,
+    previous: null,
+  };
+
+  it("adds no clarification rules by default", () => {
+    const { prompt } = buildHandoffPrompt(request);
+    expect(prompt).not.toContain("Ask before acting");
+  });
+
+  it("tells the Agent to ask before it changes anything", () => {
+    const { prompt } = buildHandoffPrompt({ ...request, clarifyFirst: true });
+    expect(prompt).toContain("Ask before acting");
+    expect(prompt).toContain("at most three");
+    expect(prompt).toContain("do not run commands, while a question of yours is unanswered");
+  });
+
+  it("keeps the rules inside the existing safety contract", () => {
+    const { prompt } = buildHandoffPrompt({ ...request, clarifyFirst: true });
+    const contract = prompt.indexOf("Handoff safety contract:");
+    const clarify = prompt.indexOf("Ask before acting");
+    const output = prompt.indexOf("Return only your normal participant response");
+    expect(contract).toBeGreaterThanOrEqual(0);
+    // Between the contract heading and its closing rule: it is one list, not a
+    // second block that could be mistaken for handoff data.
+    expect(clarify).toBeGreaterThan(contract);
+    expect(clarify).toBeLessThan(output);
+  });
+
+  it("keeps the rules when oversized content is shortened around them", () => {
+    // The contract is the fixed part of the prompt and the untrusted content is
+    // what gets spent first, so a budget that fits the contract keeps the rules
+    // no matter how much output the previous Agent produced.
+    const { prompt } = buildHandoffPrompt(
+      {
+        originalPrompt: "x".repeat(5_000),
+        participant,
+        previous: {
+          sourceParticipantId: "participant-1",
+          sourceAgentId: "agent-1",
+          sourceRunId: "run-1",
+          content: "y".repeat(5_000),
+        },
+        clarifyFirst: true,
+      },
+      { maxPromptChars: 3_000 },
+    );
+    expect(prompt.length).toBeLessThanOrEqual(3_000);
+    expect(prompt).toContain("Ask before acting");
+    expect(prompt).toContain("Handoff safety contract:");
+  });
+});

@@ -34,6 +34,8 @@ interface OrchestrationComposerProps {
   mode?: "workspace" | "conversation";
   workspace?: Project | null;
   initialParticipants?: OrchestrationParticipant[];
+  /** Opens the Agent create form when the roster is empty. */
+  onCreateAgent?: (() => void) | undefined;
 }
 
 /** Automatic turn taking is the product default for new Conversations. */
@@ -42,6 +44,7 @@ const initialDraft: OrchestrationDraft = {
   originalPrompt: "",
   participants: [],
   mode: "supervisor",
+  clarifyFirst: false,
   maxSteps: 20,
   perAgentTimeoutMs: 300_000,
 };
@@ -52,9 +55,47 @@ const initialWorkspaceDraft: WorkspaceDraft = {
   participants: [],
   initialTask: "",
   mode: "supervisor",
+  clarifyFirst: false,
   maxSteps: 20,
   perAgentTimeoutMs: 300_000,
 };
+
+
+/**
+ * "Ask before acting" as a plain switch.
+ *
+ * The wording is deliberately about behaviour, not about prompts: what the
+ * person is choosing is whether a half-specified task gets built anyway or
+ * gets questioned first. It is safe to offer anywhere because it grants
+ * nothing — it only adds rules to what each Agent is told.
+ */
+function ClarifyFirstToggle({
+  checked,
+  disabled,
+  onChange,
+}: {
+  checked: boolean;
+  disabled: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <label className={"orch-switch" + (checked ? " is-on" : "")}>
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      <span className="orch-switch-copy">
+        <strong>Always clarify first</strong>
+        <span>
+          Agents ask you questions until the task is unambiguous, and hold off
+          on changing files until you have answered.
+        </span>
+      </span>
+    </label>
+  );
+}
 
 export function OrchestrationComposer({
   agents,
@@ -66,6 +107,7 @@ export function OrchestrationComposer({
   mode = "conversation",
   workspace = null,
   initialParticipants = [],
+  onCreateAgent,
 }: OrchestrationComposerProps) {
   const initialConversationParticipants = normalizeParticipants(initialParticipants);
   const [draft, setDraft] = useState<OrchestrationDraft>(() => ({
@@ -126,6 +168,7 @@ export function OrchestrationComposer({
       try {
         await onCreateWorkspace({
           ...workspaceDraft,
+          clarifyFirst: workspaceDraft.clarifyFirst === true,
           name: workspaceDraft.name.trim(),
           description: workspaceDraft.description?.trim() || undefined,
           initialTask: workspaceDraft.initialTask.trim(),
@@ -240,6 +283,7 @@ export function OrchestrationComposer({
             disabled={busy}
             error={errors.participants}
             showOrder={false}
+            onCreateAgent={onCreateAgent}
             onChange={updateWorkspaceParticipants}
           />
         </section>
@@ -268,6 +312,14 @@ export function OrchestrationComposer({
             Adding a task starts the first Conversation. No task means nothing runs yet.
           </span>
         </div>
+
+        <ClarifyFirstToggle
+          checked={workspaceDraft.clarifyFirst === true}
+          disabled={busy}
+          onChange={(clarifyFirst) =>
+            setWorkspaceDraft((current) => ({ ...current, clarifyFirst }))
+          }
+        />
 
         {workspaceDraft.mode === "supervisor" && <SupervisorModelNotice />}
 
@@ -333,6 +385,7 @@ export function OrchestrationComposer({
         disabled={busy}
         error={errors.participants}
         showOrder={isOrderedMode(draft.mode)}
+        onCreateAgent={onCreateAgent}
         onChange={updateParticipants}
       />
 
@@ -361,6 +414,12 @@ export function OrchestrationComposer({
           <span className="orch-field-error" id="orch-prompt-error">{errors.originalPrompt}</span>
         )}
       </div>
+
+      <ClarifyFirstToggle
+        checked={draft.clarifyFirst === true}
+        disabled={busy}
+        onChange={(clarifyFirst) => setDraft((current) => ({ ...current, clarifyFirst }))}
+      />
 
       <OrchestrationAdvancedSettings
         name={draft.name}

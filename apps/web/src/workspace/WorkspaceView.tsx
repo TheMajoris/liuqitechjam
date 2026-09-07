@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import type { AgentAppearance } from "../types";
+import type { ConversationFailure } from "../components/orchestration/failure-diagnosis";
 import { AgentInspector, type AgentLifecycleAction } from "./AgentInspector";
+import { WorkspaceDecorPanel } from "./WorkspaceDecorPanel";
 import { WorkspaceStage } from "./WorkspaceStage";
+import { useWorkspaceDecor } from "./use-workspace-decor";
 import { PREVIEW_ACTIVITY_LABEL, type WorkspaceViewModel } from "./workspace-view-model";
 import type { PreviewAction } from "./use-project-preview";
 
@@ -19,6 +22,10 @@ interface WorkspaceViewProps {
   onAppearanceChange?: (agentId: string, appearance: AgentAppearance) => Promise<void>;
   /** Room membership and Workspace roles; owned by the caller that has the Project. */
   roster?: ReactNode;
+  /** The Conversation's failure, so the inspector can explain and advise. */
+  failure?: ConversationFailure | null;
+  /** Opens the Activity tab; omitted when there is no Conversation open. */
+  onOpenActivity?: (() => void) | undefined;
 }
 
 const INSPECTOR_PREFERENCE_KEY = "launchpad.workspaceInspector";
@@ -45,8 +52,13 @@ export function WorkspaceView({
   onPreviewAction,
   onAppearanceChange,
   roster,
+  failure = null,
+  onOpenActivity,
 }: WorkspaceViewProps) {
   const [inspectorOpen, setInspectorOpen] = useState(readInspectorPreference);
+  const [decorOpen, setDecorOpen] = useState(false);
+  // Keyed by Workspace so two teams can keep two very different offices.
+  const decor = useWorkspaceDecor(viewModel.projectId);
   const selected =
     viewModel.agents.find((agent) => agent.agentId === viewModel.selectedAgentId) ?? null;
   const previewRunning = viewModel.previewStatus === "running";
@@ -113,6 +125,21 @@ export function WorkspaceView({
             )}
 
           </div>
+          <div className="ws-decor-control">
+            <button
+              type="button"
+              className={"ws-inspector-toggle" + (decorOpen ? " is-active" : "")}
+              aria-expanded={decorOpen}
+              aria-haspopup="dialog"
+              onClick={() => setDecorOpen((value) => !value)}
+            >
+              <span aria-hidden="true">✦</span>
+              Room
+            </button>
+            {decorOpen && (
+              <WorkspaceDecorPanel decor={decor} onClose={() => setDecorOpen(false)} />
+            )}
+          </div>
           <button
             type="button"
             className="ws-inspector-toggle"
@@ -130,6 +157,8 @@ export function WorkspaceView({
         <WorkspaceStage
           viewModel={viewModel}
           replies={replies}
+          perks={decor.perks}
+          crew={decor.crew}
           onSelectAgent={selectAgent}
           onOpenConversation={onOpenConversation}
           onOpenPreview={onOpenPreview}
@@ -143,6 +172,8 @@ export function WorkspaceView({
             onOpenConversation={onOpenConversation}
             onOpenAgent={onOpenAgent}
             onClose={() => setInspectorOpen(false)}
+            failure={failure}
+            onOpenActivity={onOpenActivity}
             {...(onAppearanceChange ? { onAppearanceChange } : {})}
           />
         )}

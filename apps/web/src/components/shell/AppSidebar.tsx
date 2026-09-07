@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useConfirm } from "../ConfirmDialog";
 import type {
   Agent,
   OrchestrationSession,
@@ -42,6 +43,8 @@ interface AppSidebarProps {
   onDeleteSession: (sessionId: string) => void;
   onSelectAgent: (agentId: string) => void;
   onCreateConversation: () => void;
+  /** Replays the guided tour on demand. */
+  onReplayTutorial: () => void;
 }
 
 function agentStatusLabel(status: Agent["status"]): string {
@@ -72,6 +75,7 @@ function ConversationRow({
   onSelect: (sessionId: string) => void;
   onDelete: (sessionId: string) => void;
 }) {
+  const confirm = useConfirm();
   const active = isOrchestrationActive(session.status);
   return (
     <div className={"conversation-row" + (selected ? " is-selected" : "")}>
@@ -99,9 +103,16 @@ function ConversationRow({
         aria-label={`Delete conversation ${session.name}`}
         title={active ? "Stop before deleting" : "Delete conversation"}
         disabled={active || busy}
-        onClick={() => {
-          if (window.confirm(`Delete conversation "${session.name}"?`)) onDelete(session.id);
-        }}
+        onClick={() =>
+          confirm({
+            title: `Delete "${session.name}"?`,
+            body:
+              "Its replies, activity log, and retry history go with it. " +
+              "The Workspace, its shared files, and the Agents stay.",
+            confirmLabel: "Delete conversation",
+            onConfirm: () => onDelete(session.id),
+          })
+        }
       >
         <span aria-hidden="true">×</span>
       </button>
@@ -137,6 +148,7 @@ export function AppSidebar({
   onDeleteSession,
   onSelectAgent,
   onCreateConversation,
+  onReplayTutorial,
 }: AppSidebarProps) {
   const activeProjects = projects.filter((project) => project.status === "active");
   const [openWorkspaceMenuId, setOpenWorkspaceMenuId] = useState<string | null>(null);
@@ -205,6 +217,16 @@ export function AppSidebar({
           <span className="rail-tip" aria-hidden="true">New workspace</span>
         </button>
 
+        <button
+          type="button"
+          className="rail-item rail-secondary"
+          aria-label="New Agent"
+          onClick={onNewAgent}
+        >
+          <span aria-hidden="true">◈</span>
+          <span className="rail-tip" aria-hidden="true">New Agent</span>
+        </button>
+
         <div className="rail-divider" role="presentation" />
 
         <nav className="rail-list" aria-label="Agents">
@@ -262,6 +284,15 @@ export function AppSidebar({
           </button>
           <button
             type="button"
+            className="rail-item"
+            aria-label="Replay the tour"
+            onClick={onReplayTutorial}
+          >
+            <span aria-hidden="true">◆</span>
+            <span className="rail-tip" aria-hidden="true">Replay the tour</span>
+          </button>
+          <button
+            type="button"
             className={"rail-item" + (view === "workspace" ? " is-active" : "")}
             aria-label={`Workspaces (${activeProjects.length})`}
             onClick={onToggleCollapsed}
@@ -298,10 +329,24 @@ export function AppSidebar({
         </button>
       </div>
 
-      <button type="button" className="button button-primary create-button" onClick={onNewWorkspace}>
-        <span aria-hidden="true">＋</span>
-        New workspace
-      </button>
+      {/* Both of the things a new user has to make, stated as buttons.
+          Creating an Agent used to be a bare "+" glyph beside a section
+          label, which reads as a decoration rather than the second half of
+          setup — and a Workspace is not usable until an Agent exists. */}
+      <div className="create-actions">
+        <button type="button" className="button button-primary create-button" onClick={onNewWorkspace}>
+          <span aria-hidden="true">＋</span>
+          New workspace
+        </button>
+        <button
+          type="button"
+          className="button button-secondary create-button"
+          onClick={onNewAgent}
+        >
+          <span aria-hidden="true">＋</span>
+          New Agent
+        </button>
+      </div>
 
       <div className="sidebar-scroll">
         <nav className="shell-nav" aria-label="Overview">
@@ -546,11 +591,19 @@ export function AppSidebar({
           {agents.length === 0 && (
             <div className="empty-sidebar">
               <span aria-hidden="true">◇</span>
-              Create your first coding Agent.
+              <span>Agents do the work. Create one to put in a Workspace.</span>
+              <button type="button" className="button button-primary" onClick={onNewAgent}>
+                Create your first Agent
+              </button>
             </div>
           )}
         </nav>
       </div>
+
+      <button type="button" className="sidebar-tour" onClick={onReplayTutorial}>
+        <span aria-hidden="true">◆</span>
+        Replay the tour
+      </button>
 
       <div className="runtime-card">
         <span className="eyebrow">Runtime</span>

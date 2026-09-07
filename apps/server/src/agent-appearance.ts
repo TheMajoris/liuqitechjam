@@ -1,4 +1,4 @@
-import type { AgentAccessory, AgentAppearance } from "./types.js";
+import type { AgentAccessory, AgentAppearance, AgentFigure } from "./types.js";
 
 /** Mirrors the client's accessory sprite set. */
 export const AGENT_ACCESSORIES: readonly AgentAccessory[] = [
@@ -6,6 +6,13 @@ export const AGENT_ACCESSORIES: readonly AgentAccessory[] = [
   "glasses",
   "headset",
   "cap",
+];
+
+/** Mirrors the client's figure overlays. */
+export const AGENT_FIGURES: readonly AgentFigure[] = [
+  "neutral",
+  "feminine",
+  "masculine",
 ];
 
 /** Palette sizes the client renders. An out-of-range index is dropped. */
@@ -28,6 +35,13 @@ function hue(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   const rounded = Math.round(value);
   return rounded >= 0 && rounded <= APPEARANCE_LIMITS.maxHue ? rounded : undefined;
+}
+
+function figure(value: unknown): AgentFigure | undefined {
+  return typeof value === "string" &&
+    (AGENT_FIGURES as readonly string[]).includes(value)
+    ? (value as AgentFigure)
+    : undefined;
 }
 
 function accessory(value: unknown): AgentAccessory | undefined {
@@ -60,5 +74,7 @@ export function normalizeAppearance(
   if (nextSkin !== undefined) normalized.skin = nextSkin;
   const nextAccessory = accessory(value.accessory);
   if (nextAccessory !== undefined) normalized.accessory = nextAccessory;
+  const nextFigure = figure(value.figure);
+  if (nextFigure !== undefined) normalized.figure = nextFigure;
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }

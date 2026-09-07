@@ -307,6 +307,7 @@ async function invokeAgentNode(
     {
       originalPrompt: state.originalPrompt,
       participant,
+      clarifyFirst: options.clarifyFirst === true,
       contextTurns: state.contextTurns,
       recentTurns: state.turns,
       previous: previousHandoff(state),

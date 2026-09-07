@@ -192,6 +192,12 @@ export interface OrchestrationExecutionOptions {
   participantProfiles?: readonly OrchestrationParticipantProfile[];
   perAgentTimeoutMs?: number;
   handoffLimits?: HandoffLimits;
+  /**
+   * Ask before acting. A prompt-shaping policy only: it adds a rule to every
+   * participant prompt telling the Agent to resolve ambiguity with the person
+   * before doing the work. It changes no permission and no routing.
+   */
+  clarifyFirst?: boolean | undefined;
   signal?: AbortSignal;
   hooks?: OrchestrationExecutionHooks;
 }

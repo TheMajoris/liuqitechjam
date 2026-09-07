@@ -70,9 +70,14 @@ export interface AgentAppearance {
   /** Index into the client's skin palette. */
   skin?: number | undefined;
   accessory?: AgentAccessory | undefined;
+  /** Character silhouette; absent means the ID-derived default. */
+  figure?: AgentFigure | undefined;
 }
 
 export type AgentAccessory = "none" | "glasses" | "headset" | "cap";
+
+/** Character silhouette. Cosmetic; never an authorization or routing input. */
+export type AgentFigure = "neutral" | "feminine" | "masculine";
 
 export interface Agent {
   id: string;

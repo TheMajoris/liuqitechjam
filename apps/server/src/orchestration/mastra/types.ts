@@ -47,6 +47,8 @@ export interface MastraOrchestrationStepOptions {
   supervisorTimeoutMs?: number;
   participantProfiles?: readonly OrchestrationParticipantProfile[];
   handoffLimits?: HandoffLimits;
+  /** Ask before acting; prompt-shaping only, forwarded to the handoff builder. */
+  clarifyFirst?: boolean | undefined;
   signal?: AbortSignal;
   hooks?: OrchestrationExecutionHooks;
   /** Preserve the original child failure when Mastra wraps a step error. */

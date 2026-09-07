@@ -8,6 +8,7 @@ import type { AgentForm } from "../../playground/agent-form";
 import type { ModelCatalogController } from "../../playground/use-model-catalog";
 import { AgentSkillsPanel } from "../AgentSkillsPanel";
 import { WorkerModelFields } from "../WorkerModelFields";
+import { AgentDraftAssistant } from "./AgentDraftAssistant";
 
 type ModelFields = Pick<
   ModelCatalogController,
@@ -114,6 +115,15 @@ export function AgentFormFields({
           maxLength={10_000}
         />
       </label>
+      {/* Sits directly under the two fields it writes, so the suggestion and
+          the thing it replaces are read together. */}
+      <AgentDraftAssistant
+        name={form.name}
+        description={form.description}
+        instructions={form.instructions}
+        disabled={disabled}
+        onApply={onChange}
+      />
       <WorkerModelFields
         providers={modelCatalog.providers}
         models={modelCatalog.selectedFormModels}

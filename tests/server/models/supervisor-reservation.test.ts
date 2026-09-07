@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { releaseAgentsFromReservedModel } from "../../../apps/server/src/models/index.js";
+import {
+  findAgentsOnReservedModel,
+  releaseAgentsFromReservedModel,
+} from "../../../apps/server/src/models/index.js";
 import type {
   ModelDescriptor,
   ReservationAgentService,
@@ -217,5 +220,78 @@ describe("releaseAgentsFromReservedModel", () => {
       }),
     ).toEqual([]);
     expect(service.updateAgent).not.toHaveBeenCalled();
+  });
+});
+
+describe("findAgentsOnReservedModel", () => {
+  it("reports a primary assignment without changing it", () => {
+    const agents = [
+      agent({
+        id: "a1",
+        name: "Small counter",
+        modelRef: { providerId: PROVIDER, modelId: "ep-supervisor" },
+      }),
+    ];
+    const service = serviceFor(agents);
+
+    const conflicts = findAgentsOnReservedModel(service, "ep-supervisor");
+
+    expect(conflicts).toEqual([
+      { agentId: "a1", agentName: "Small counter", primary: true, fallbacks: 0 },
+    ]);
+    // The whole point: an observation must never rewrite the operator's choice.
+    expect(service.updateAgent).not.toHaveBeenCalled();
+    expect(agents[0]?.modelRef?.modelId).toBe("ep-supervisor");
+  });
+
+  it("counts fallbacks that point at the reserved endpoint", () => {
+    const conflicts = findAgentsOnReservedModel(
+      serviceFor([
+        agent({
+          id: "a2",
+          name: "Prime counter",
+          modelRef: { providerId: PROVIDER, modelId: "ep-worker" },
+          fallbackModelRefs: [
+            { providerId: PROVIDER, modelId: "ep-supervisor" },
+            { providerId: PROVIDER, modelId: "ep-other" },
+          ],
+        }),
+      ]),
+      "ep-supervisor",
+    );
+
+    expect(conflicts).toEqual([
+      { agentId: "a2", agentName: "Prime counter", primary: false, fallbacks: 1 },
+    ]);
+  });
+
+  it("says nothing about Agents that are not on the reserved endpoint", () => {
+    expect(
+      findAgentsOnReservedModel(
+        serviceFor([
+          agent({
+            id: "a3",
+            name: "Big counter",
+            modelRef: { providerId: PROVIDER, modelId: "ep-worker" },
+          }),
+        ]),
+        "ep-supervisor",
+      ),
+    ).toEqual([]);
+  });
+
+  it("treats an unset reserved endpoint as nothing to report", () => {
+    expect(
+      findAgentsOnReservedModel(
+        serviceFor([
+          agent({
+            id: "a4",
+            name: "Any",
+            modelRef: { providerId: PROVIDER, modelId: "ep-worker" },
+          }),
+        ]),
+        "   ",
+      ),
+    ).toEqual([]);
   });
 });

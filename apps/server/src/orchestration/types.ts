@@ -138,6 +138,13 @@ export interface OrchestrationSession {
   supervisorModelCatalogRevision?: string | number | undefined;
   /** Omitted on legacy records; only natural roster completion sets it. */
   completionReason?: OrchestrationCompletionReason | null | undefined;
+  /**
+   * Ask before acting. When set, every participant prompt carries a rule to
+   * resolve ambiguity with the person before doing the work. It is a prompt
+   * policy only: it grants nothing and changes no routing, so it may be
+   * toggled on a settled Conversation and takes effect on the next cycle.
+   */
+  clarifyFirst?: boolean | undefined;
   status: OrchestrationStatus;
   currentParticipantId: string | null;
   currentRunId: string | null;
@@ -279,6 +286,8 @@ export interface CreateOrchestrationInput {
   projectId?: string | undefined;
   /** Defaults to sequential when omitted for backward-compatible clients. */
   mode?: OrchestrationMode | undefined;
+  /** Ask before acting; see OrchestrationSession.clarifyFirst. */
+  clarifyFirst?: boolean | undefined;
   maxSteps: number;
   perAgentTimeoutMs: number;
 }

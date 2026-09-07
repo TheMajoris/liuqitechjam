@@ -41,6 +41,8 @@ export type ProjectEventSink = (event: {
   teamId?: string | undefined;
   runId?: string | undefined;
   status: string;
+  /** Optional operator-readable note; never a permission or routing input. */
+  detail?: string | undefined;
 }) => void;
 
 /** Narrow trusted seam for stopping a Project-owned Preview during archive. */
@@ -547,17 +549,37 @@ export class ProjectService {
       .projectAgents.find(
         (item) => item.projectId === projectId && item.agentId === agentId,
       );
+    // A draft Conversation is still being composed, so a roster entry for an
+    // Agent that has just left the room is stale rather than historical.
+    // Removing it here is what keeps the room, the roster, and the runnable
+    // participant list in agreement — otherwise the departed Agent keeps a
+    // desk in the workspace and blocks the start with AGENT_NOT_FOUND until
+    // the whole Conversation is deleted. Started and finished Conversations
+    // keep their roster verbatim: those records explain runs that happened.
+    const removedFromDrafts: string[] = [];
     try {
       await this.store.mutate((database) => {
         database.projectAgents = database.projectAgents.filter(
           (item) => !(item.projectId === projectId && item.agentId === agentId),
         );
+        for (const session of database.orchestrations) {
+          if (session.projectId !== projectId || session.status !== "draft") continue;
+          if (!session.participants.some((item) => item.agentId === agentId)) continue;
+          session.participants = session.participants
+            .filter((item) => item.agentId !== agentId)
+            .map((item, position) => ({ ...item, position }));
+          session.updatedAt = new Date().toISOString();
+          removedFromDrafts.push(session.id);
+        }
       });
       this.onEvent({
         type: "project_agent_detached",
         projectId,
         agentId,
         status: "detached",
+        ...(removedFromDrafts.length > 0
+          ? { detail: `Removed from ${removedFromDrafts.length} draft conversation(s)` }
+          : {}),
       });
       return publicProject(project, this.attachedMemberships(projectId));
     } catch (error) {

@@ -34,6 +34,8 @@ export interface UseOrchestrationResult {
   action: OrchestrationAction;
   error: string | null;
   clearError: () => void;
+  /** Report a failure the caller composed itself, in the same banner. */
+  noteError: (message: string) => void;
   refreshSessions: () => Promise<void>;
   selectWorkspace: (workspaceId: string | null) => void;
   selectSession: (sessionId: string) => void;
@@ -49,6 +51,8 @@ export interface UseOrchestrationResult {
   stopSession: (sessionId?: string) => Promise<void>;
   continueSession: (prompt: string, sessionId?: string) => Promise<void>;
   retryFromStep: (fromStepIndex: number, sessionId?: string) => Promise<void>;
+  /** Prompt-policy edit for the open Conversation. Grants nothing. */
+  setClarifyFirst: (clarifyFirst: boolean, sessionId?: string) => Promise<void>;
   deleteSession: (sessionId?: string) => Promise<void>;
 }
 
@@ -210,7 +214,53 @@ export function useOrchestration(): UseOrchestrationResult {
     };
   }, [detail?.session.id, detail?.session.status]);
 
+  /**
+   * Turn "ask before acting" on or off for one Conversation.
+   *
+   * Applied optimistically because the server is the only writer and the call
+   * is a single field: the toggle flips at once and reverts if the write is
+   * refused, rather than sitting unresponsive for a round trip.
+   */
+  const setClarifyFirst = useCallback(async (
+    clarifyFirst: boolean,
+    sessionId?: string,
+  ) => {
+    const target = sessionId ?? selectedSessionId;
+    if (!target) return;
+    const patch = (session: OrchestrationSession): OrchestrationSession =>
+      session.id === target ? { ...session, clarifyFirst } : session;
+    setSessions((current) => current.map(patch));
+    setDetail((current) =>
+      current?.session.id === target
+        ? { ...current, session: patch(current.session) }
+        : current,
+    );
+    try {
+      const result = await api.updateOrchestration(target, { clarifyFirst });
+      if (!mountedRef.current) return;
+      setSessions((current) => replaceSession(current, result.session));
+      setDetail((current) =>
+        current?.session.id === result.session.id
+          ? { ...current, session: result.session }
+          : current,
+      );
+      setError(null);
+    } catch (reason) {
+      if (!mountedRef.current) return;
+      const revert = (session: OrchestrationSession): OrchestrationSession =>
+        session.id === target ? { ...session, clarifyFirst: !clarifyFirst } : session;
+      setSessions((current) => current.map(revert));
+      setDetail((current) =>
+        current?.session.id === target
+          ? { ...current, session: revert(current.session) }
+          : current,
+      );
+      setError(errorMessage(reason));
+    }
+  }, [selectedSessionId]);
+
   const clearError = useCallback(() => setError(null), []);
+  const noteError = useCallback((message: string) => setError(message), []);
 
   const selectWorkspace = useCallback((workspaceId: string | null) => {
     publishWorkspaceSelection(workspaceId);
@@ -313,6 +363,7 @@ export function useOrchestration(): UseOrchestrationResult {
           originalPrompt: input.initialTask.trim(),
           participants,
           mode: input.mode,
+          ...(input.clarifyFirst ? { clarifyFirst: true } : {}),
           projectId: project.id,
           maxSteps: input.maxSteps,
           perAgentTimeoutMs: input.perAgentTimeoutMs,
@@ -513,6 +564,7 @@ export function useOrchestration(): UseOrchestrationResult {
     action,
     error,
     clearError,
+    noteError,
     refreshSessions,
     selectWorkspace,
     selectSession,
@@ -523,6 +575,7 @@ export function useOrchestration(): UseOrchestrationResult {
     stopSession,
     continueSession,
     retryFromStep,
+    setClarifyFirst,
     deleteSession,
   };
 }

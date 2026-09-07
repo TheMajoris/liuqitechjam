@@ -82,6 +82,15 @@ export interface WorkspaceAgentViewModel {
   available: boolean;
   /** Backend lifecycle status, kept verbatim for the inspector. */
   lifecycle: "ready" | "busy" | "stopped" | "error" | "unknown";
+  /**
+   * The platform's own record of what last went wrong for this Agent.
+   *
+   * Kept separate from `activity` because the two answer different questions:
+   * an Agent that errored and was then stopped is *stopped* now, and used to
+   * report only that — which read as a clean shutdown even though a run had
+   * failed. This is what lets the inspector say "stopped after an error".
+   */
+  lastError: string | null;
   /** Deterministic seat, so an Agent keeps its desk across refreshes. */
   seatIndex: number;
   station: WorkspaceStation;
@@ -154,7 +163,10 @@ export const WORKSPACE_ACTIVITY: Record<WorkspaceAgentActivity, ActivityDescript
   reviewing: { label: "Reviewing", detail: "Running a review turn.", tone: "active", glyph: "◑" },
   testing: { label: "Testing", detail: "Running a test turn.", tone: "active", glyph: "◒" },
   success: { label: "Completed", detail: "Its last turn finished successfully.", tone: "positive", glyph: "✓" },
-  failed: { label: "Failed", detail: "Its last turn did not finish.", tone: "danger", glyph: "✕" },
+  // A "✕" here read as a close button people kept trying to press: it sits in
+  // the corner of a card, in the position a dismiss control occupies. The
+  // status is a statement, not a control, so it takes a warning mark.
+  failed: { label: "Failed", detail: "Its last turn did not finish.", tone: "danger", glyph: "⚠" },
   stopped: { label: "Stopped", detail: "Not running.", tone: "muted", glyph: "◼" },
 };
 

@@ -1,3 +1,4 @@
+import { useConfirm } from "../ConfirmDialog";
 import type {
   Agent,
   ModelProviderDescriptor,
@@ -5,6 +6,7 @@ import type {
   OrchestrationSessionDetail,
   Project,
 } from "../../types";
+import { diagnoseFailure } from "./failure-diagnosis";
 import { ParticipantBar } from "./ParticipantBar";
 import type { OrchestrationAction } from "./use-orchestration";
 import {
@@ -26,6 +28,10 @@ interface OrchestrationRunViewProps {
   onStop: (sessionId: string) => void;
   onDelete: (sessionId: string) => void;
   modelProviders?: ModelProviderDescriptor[];
+  /** Opens the room on the Agent whose turn failed; omitted hides the button. */
+  onInspectFailure?: ((agentId: string | null) => void) | undefined;
+  /** Prompt-policy edit; omitted hides the switch. */
+  onClarifyFirstChange?: ((clarifyFirst: boolean) => void) | undefined;
 }
 
 function StatusMark({ status }: { status: OrchestrationSession["status"] }) {
@@ -74,7 +80,11 @@ export function OrchestrationRunView({
   onStop,
   onDelete,
   modelProviders = [],
+  onInspectFailure,
+  onClarifyFirstChange,
 }: OrchestrationRunViewProps) {
+  const confirm = useConfirm();
+  const failure = diagnoseFailure(detail, agents);
   if (!detail) return null;
 
   const { session } = detail;
@@ -141,11 +151,16 @@ export function OrchestrationRunView({
             className="orch-button orch-button-quiet"
             disabled={action !== null || active}
             title={active ? "Stop this conversation before deleting it" : "Delete conversation"}
-            onClick={() => {
-              if (window.confirm("Delete this conversation and its Team chat history?")) {
-                onDelete(session.id);
-              }
-            }}
+            onClick={() =>
+              confirm({
+                title: `Delete "${session.name}"?`,
+                body:
+                  "Its replies, activity log, and retry history go with it. " +
+                  "The Workspace, its shared files, and the Agents stay.",
+                confirmLabel: "Delete conversation",
+                onConfirm: () => onDelete(session.id),
+              })
+            }
           >
             {action === "delete" ? "Deleting…" : "Delete"}
           </button>
@@ -160,6 +175,33 @@ export function OrchestrationRunView({
         modelProviders={modelProviders}
       />
 
+      {onClarifyFirstChange && (
+        <label
+          className={"orch-switch is-inline" + (session.clarifyFirst ? " is-on" : "")}
+          title={
+            active
+              ? "Stop the conversation to change how its Agents work"
+              : "Applies from the next turn onward"
+          }
+        >
+          <input
+            type="checkbox"
+            checked={session.clarifyFirst === true}
+            // Editing mid-cycle would change the rules inside a run the
+            // transcript already records, so it waits for the run to settle.
+            disabled={active || action !== null}
+            onChange={(event) => onClarifyFirstChange(event.target.checked)}
+          />
+          <span className="orch-switch-copy">
+            <strong>Always clarify first</strong>
+            <span>
+              Agents ask you questions until the task is unambiguous before they
+              change anything. Applies from the next turn.
+            </span>
+          </span>
+        </label>
+      )}
+
       <p className="orch-run-summary" aria-live="polite">
         <span className="orch-run-replies">
           {replyCount} {replyCount === 1 ? "reply" : "replies"}
@@ -169,13 +211,37 @@ export function OrchestrationRunView({
       </p>
 
       {failed && (
-        <div className="orch-alert orch-alert-danger" role="alert">
-          <span>{humanizeFailure(session.errorCode, session.errorMessage)}</span>
-          {showTechnicalErrorCode && session.errorCode && (
-            <code className="orch-error-code" title="Shown for technical review">
-              {session.errorCode}
-            </code>
-          )}
+        <div className="orch-alert orch-alert-danger orch-failure-alert" role="alert">
+          <div className="orch-failure-copy">
+            {/* Who failed, not just that something did. The code alone made
+                finding the Agent a manual read of the Activity log. */}
+            {failure?.agentName && (
+              <strong className="orch-failure-agent">
+                {failure.agentName} could not finish
+                {failure.stepIndex === null ? "" : ` (step ${failure.stepIndex + 1})`}
+              </strong>
+            )}
+            <span>{failure?.summary ?? humanizeFailure(session.errorCode, session.errorMessage)}</span>
+            {failure?.agentError && (
+              <span className="orch-failure-detail">{failure.agentError}</span>
+            )}
+          </div>
+          <div className="orch-failure-actions">
+            {onInspectFailure && (
+              <button
+                type="button"
+                className="orch-button orch-button-quiet"
+                onClick={() => onInspectFailure(failure?.agentId ?? null)}
+              >
+                {failure?.agentName ? `Show ${failure.agentName}` : "Show the room"}
+              </button>
+            )}
+            {showTechnicalErrorCode && session.errorCode && (
+              <code className="orch-error-code" title="Shown for technical review">
+                {session.errorCode}
+              </code>
+            )}
+          </div>
         </div>
       )}
     </header>

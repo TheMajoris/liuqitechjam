@@ -7,12 +7,28 @@ import {
   AVATAR_ACCESSORIES,
   AVATAR_BODIES,
   AVATAR_FACES,
+  AVATAR_FIGURE_HAIR,
+  AVATAR_FIGURE_OUTFIT,
+  AVATAR_FIGURES,
   AVATAR_HANDS,
+  ROBOT_BODIES,
+  ROBOT_FACES,
+  ROBOT_HANDS,
   type AvatarAccessory,
   type AvatarBody,
   type AvatarFace,
+  type AvatarFigure,
   type AvatarHands,
 } from "./sprites";
+
+/**
+ * Which crew the whole room is drawn as.
+ *
+ * A room-wide choice rather than a per-Agent one: a floor of half people and
+ * half machines reads as a rendering bug. It is cosmetic in the strictest
+ * sense — same seats, same stations, same state vocabulary.
+ */
+export type WorkspaceCrew = "people" | "robots";
 
 /**
  * An Agent's appearance is derived from its ID unless it has been customized.
@@ -25,6 +41,7 @@ import {
 export interface AvatarLook {
   hue: number;
   accessory: AvatarAccessory;
+  figure: AvatarFigure;
   /** Shirt colour as a Pixi-friendly number, reused for rings and badges. */
   accent: number;
   palette: PixelPalette;
@@ -89,6 +106,9 @@ export function defaultAppearance(agentId: string): Required<AgentAppearance> {
     hair: hash(agentId, 7) % HAIR.length,
     skin: hash(agentId, 31) % SKIN.length,
     accessory: ACCESSORY_ORDER[hash(agentId, 97) % ACCESSORY_ORDER.length]!,
+    // Derived like every other default so an Agent nobody has styled still has
+    // a stable character. Nothing reads meaning into which one it lands on.
+    figure: AVATAR_FIGURES[hash(agentId, 53) % AVATAR_FIGURES.length]!,
   };
 }
 
@@ -104,6 +124,7 @@ export function resolveAppearance(
     hair: appearance.hair ?? base.hair,
     skin: appearance.skin ?? base.skin,
     accessory: appearance.accessory ?? base.accessory,
+    figure: appearance.figure ?? base.figure,
   };
 }
 
@@ -111,7 +132,7 @@ const lookCache = new Map<string, AvatarLook>();
 
 /** Cache key covers every visible choice, so an edit repaints immediately. */
 function lookKey(agentId: string, resolved: Required<AgentAppearance>): string {
-  return `${agentId}:${resolved.hue}:${resolved.hair}:${resolved.skin}:${resolved.accessory}`;
+  return `${agentId}:${resolved.hue}:${resolved.hair}:${resolved.skin}:${resolved.accessory}:${resolved.figure}`;
 }
 
 export function avatarLook(
@@ -129,6 +150,7 @@ export function avatarLook(
   const look: AvatarLook = {
     hue,
     accessory,
+    figure: resolved.figure,
     accent: hueToNumber(hue, 52, 56),
     palette: {
       k: hsl(hue, 24, 16),
@@ -159,17 +181,18 @@ function textureKey(
   appearance: AgentAppearance | null | undefined,
 ): string {
   const resolved = resolveAppearance(agentId, appearance);
-  return `${kind}:${agentId}:${variant}:${resolved.hue}:${resolved.hair}:${resolved.skin}`;
+  return `${kind}:${agentId}:${variant}:${resolved.hue}:${resolved.hair}:${resolved.skin}:${resolved.figure}`;
 }
 
 export function bodyTexture(
   agentId: string,
   body: AvatarBody,
   appearance?: AgentAppearance | null,
+  crew: WorkspaceCrew = "people",
 ): Texture {
   return pixelTexture(
-    textureKey("body", agentId, body, appearance),
-    AVATAR_BODIES[body],
+    textureKey("body:" + crew, agentId, body, appearance),
+    crew === "robots" ? ROBOT_BODIES[body] : AVATAR_BODIES[body],
     avatarLook(agentId, appearance).palette,
   );
 }
@@ -178,10 +201,11 @@ export function faceTexture(
   agentId: string,
   face: AvatarFace,
   appearance?: AgentAppearance | null,
+  crew: WorkspaceCrew = "people",
 ): Texture {
   return pixelTexture(
-    textureKey("face", agentId, face, appearance),
-    AVATAR_FACES[face],
+    textureKey("face:" + crew, agentId, face, appearance),
+    crew === "robots" ? ROBOT_FACES[face] : AVATAR_FACES[face],
     avatarLook(agentId, appearance).palette,
   );
 }
@@ -190,11 +214,44 @@ export function handsTexture(
   agentId: string,
   hands: AvatarHands,
   appearance?: AgentAppearance | null,
+  crew: WorkspaceCrew = "people",
 ): Texture {
   return pixelTexture(
-    textureKey("hands", agentId, hands, appearance),
-    AVATAR_HANDS[hands],
+    textureKey("hands:" + crew, agentId, hands, appearance),
+    crew === "robots" ? ROBOT_HANDS[hands] : AVATAR_HANDS[hands],
     avatarLook(agentId, appearance).palette,
+  );
+}
+
+/**
+ * The figure overlays: long hair and a hem.
+ *
+ * Both return `null` when the chosen figure adds nothing, so the sprite can
+ * skip the draw entirely rather than uploading an empty texture.
+ */
+export function figureHairTexture(
+  agentId: string,
+  appearance?: AgentAppearance | null,
+): Texture | null {
+  const look = avatarLook(agentId, appearance);
+  if (look.figure === "neutral") return null;
+  return pixelTexture(
+    textureKey("figure-hair", agentId, look.figure, appearance),
+    AVATAR_FIGURE_HAIR[look.figure],
+    look.palette,
+  );
+}
+
+export function figureOutfitTexture(
+  agentId: string,
+  appearance?: AgentAppearance | null,
+): Texture | null {
+  const look = avatarLook(agentId, appearance);
+  if (look.figure !== "feminine") return null;
+  return pixelTexture(
+    textureKey("figure-outfit", agentId, look.figure, appearance),
+    AVATAR_FIGURE_OUTFIT[look.figure],
+    look.palette,
   );
 }
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
+import { useConfirm } from "./components/ConfirmDialog";
 import { OrchestrationWorkspace } from "./components/orchestration/OrchestrationWorkspace";
 import { AuthScreen } from "./components/playground/AuthScreen";
 import { AppSidebar, type ShellView } from "./components/shell/AppSidebar";
@@ -9,6 +10,8 @@ import { TraceDetailView } from "./components/trace/TraceDetailView";
 import { RolesAndSkillsView } from "./components/access/RolesAndSkillsView";
 import { AgentWorkspaceView } from "./components/playground/AgentWorkspaceView";
 import { CreateAgentModal } from "./components/playground/CreateAgentModal";
+import { TutorialOverlay } from "./components/tutorial/TutorialOverlay";
+import { useTutorial } from "./components/tutorial/use-tutorial";
 import { useOrchestration } from "./components/orchestration/use-orchestration";
 import { emptyAgentForm, formFromAgent, formPayload, type AgentForm } from "./playground/agent-form";
 import { useModelCatalog } from "./playground/use-model-catalog";
@@ -70,6 +73,10 @@ export default function App() {
   const [composerOpen, setComposerOpen] = useState(false);
   const [composerMode, setComposerMode] = useState<"workspace" | "conversation">("workspace");
   const orchestration = useOrchestration();
+  const confirm = useConfirm();
+  // Only offered once the shell is past auth and actually rendered, so the
+  // tour never points at a control that has not mounted.
+  const tutorial = useTutorial(authRequired === false);
 
   const selected = useMemo(
     () => agents.find((agent) => agent.id === selectedId) ?? null,
@@ -132,12 +139,24 @@ export default function App() {
     setRoles(next);
   }, []);
 
+  /**
+   * Set when the Agent form was opened from the Conversation composer, so the
+   * composer can be brought back once there is an Agent to put in it.
+   */
+  const [resumeComposer, setResumeComposer] = useState<
+    "workspace" | "conversation" | null
+  >(null);
+
   const openCreate = useCallback(() => {
     setForm(emptyAgentForm);
     modelCatalog.clearError();
     void refreshRoles().catch((reason) => setError(errorMessage(reason)));
+    // Endpoints are created and retired outside this app, so the catalog the
+    // form last saw is routinely stale by the time someone opens it. Re-read
+    // it here rather than making Refresh a step the person has to know about.
+    void modelCatalog.refresh().catch(() => undefined);
     setShowCreate(true);
-  }, [modelCatalog.clearError, refreshRoles]);
+  }, [modelCatalog.clearError, modelCatalog.refresh, refreshRoles]);
 
   const newWorkspace = useCallback(() => {
     setView("workspace");
@@ -158,17 +177,10 @@ export default function App() {
     await fetchProjects();
   }, [fetchProjects]);
 
-  const changeWorkspace = useCallback(async (
+  const applyWorkspaceChange = useCallback(async (
     workspaceId: string,
     operation: "archive" | "delete",
   ) => {
-    const workspace = projects.find((project) => project.id === workspaceId);
-    if (!workspace) return;
-    const confirmation = operation === "archive"
-      ? `Archive Workspace "${workspace.name}"? Its conversations will leave active lists and its shared files will remain recoverable.`
-      : `Permanently delete Workspace "${workspace.name}" from the database? Its conversations, memberships, and history will be removed. The shared files will be moved to the recoverable archive. This cannot be undone.`;
-    if (!window.confirm(confirmation)) return;
-
     const wasSelected = orchestration.selectedWorkspaceId === workspaceId;
     setBusy(true);
     setError(null);
@@ -193,7 +205,37 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [fetchProjects, orchestration, projects]);
+  }, [fetchProjects, orchestration]);
+
+  /** Ask first, then act. The wording says exactly what survives each choice. */
+  const changeWorkspace = useCallback((
+    workspaceId: string,
+    operation: "archive" | "delete",
+  ) => {
+    const workspace = projects.find((project) => project.id === workspaceId);
+    if (!workspace) return;
+    confirm(
+      operation === "archive"
+        ? {
+            title: `Archive "${workspace.name}"?`,
+            body:
+              "It leaves your active Workspaces. Its conversations and shared " +
+              "files are kept and stay recoverable.",
+            confirmLabel: "Archive Workspace",
+            tone: "primary",
+            onConfirm: () => void applyWorkspaceChange(workspaceId, "archive"),
+          }
+        : {
+            title: `Permanently delete "${workspace.name}"?`,
+            body:
+              "Its conversations, memberships, and history are removed from the " +
+              "database. The shared files are moved to the recoverable archive. " +
+              "This cannot be undone.",
+            confirmLabel: "Delete Workspace",
+            onConfirm: () => void applyWorkspaceChange(workspaceId, "delete"),
+          },
+    );
+  }, [applyWorkspaceChange, confirm, projects]);
 
   useEffect(() => {
     if (projects.length === 0) return;
@@ -265,10 +307,20 @@ export default function App() {
     try {
       const { agent } = await api.createAgent(formPayload(form));
       await refreshAgents();
-      setSelectedId(agent.id);
-      setView("agent");
       setShowCreate(false);
       setForm(emptyAgentForm);
+      if (resumeComposer) {
+        // Came from the composer's empty roster: go back to what they were
+        // doing, with the new Agent now available to add.
+        setSelectedId(agent.id);
+        setComposerMode(resumeComposer);
+        setComposerOpen(true);
+        setResumeComposer(null);
+        setView("workspace");
+        return;
+      }
+      setSelectedId(agent.id);
+      setView("agent");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -316,21 +368,25 @@ export default function App() {
     }
   };
 
-  const deleteAgent = async () => {
+  const deleteAgent = () => {
     if (!selected) return;
-    if (!window.confirm("Delete " + selected.name + "? Its workspace will be archived.")) {
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await api.deleteAgent(selected.id);
-      await refreshAgents();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy(false);
-    }
+    const agent = selected;
+    confirm({
+      title: `Delete ${agent.name}?`,
+      body:
+        "Its private workspace is archived and it leaves every Workspace it " +
+        "was in. Past runs are kept so their traces stay readable.",
+      confirmLabel: "Delete Agent",
+      onConfirm: () => {
+        setBusy(true);
+        setError(null);
+        void api
+          .deleteAgent(agent.id)
+          .then(refreshAgents)
+          .catch((reason) => setError(errorMessage(reason)))
+          .finally(() => setBusy(false));
+      },
+    });
   };
 
   const unlock = async (event: React.FormEvent) => {
@@ -449,12 +505,8 @@ export default function App() {
           setComposerMode("conversation");
           setComposerOpen(true);
         }}
-        onArchiveWorkspace={(workspaceId) => {
-          void changeWorkspace(workspaceId, "archive");
-        }}
-        onDeleteWorkspace={(workspaceId) => {
-          void changeWorkspace(workspaceId, "delete");
-        }}
+        onArchiveWorkspace={(workspaceId) => changeWorkspace(workspaceId, "archive")}
+        onDeleteWorkspace={(workspaceId) => changeWorkspace(workspaceId, "delete")}
         onDeleteSession={(sessionId) => {
           void orchestration.deleteSession(sessionId).catch(() => undefined);
         }}
@@ -462,6 +514,7 @@ export default function App() {
           setSelectedId(agentId);
           setView("agent");
         }}
+        onReplayTutorial={tutorial.start}
       />
 
       <main
@@ -555,6 +608,10 @@ export default function App() {
               setSelectedId(agentId);
               setView("agent");
             }}
+            onCreateAgent={() => {
+              setResumeComposer(composerMode);
+              openCreate();
+            }}
           />
         ) : selected ? (
           <AgentWorkspaceView
@@ -597,6 +654,8 @@ export default function App() {
         )}
       </main>
 
+      <TutorialOverlay tutorial={tutorial} />
+
       {showCreate && (
         <CreateAgentModal
           form={form}
@@ -610,7 +669,10 @@ export default function App() {
           invalidModel={modelCatalog.modelSelectionInvalid}
           onChange={(changes) => setForm((current) => ({ ...current, ...changes }))}
           onSubmit={createAgent}
-          onClose={() => setShowCreate(false)}
+          onClose={() => {
+            setShowCreate(false);
+            setResumeComposer(null);
+          }}
         />
       )}
     </div>

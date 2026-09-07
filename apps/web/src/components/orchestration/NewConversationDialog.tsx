@@ -19,6 +19,8 @@ interface NewConversationDialogProps {
   onCreateWorkspace?: (input: WorkspaceDraft) => Promise<unknown>;
   onClose: () => void;
   modelProviders?: ModelProviderDescriptor[];
+  /** Opens the Agent create form when the roster is empty. */
+  onCreateAgent?: (() => void) | undefined;
 }
 
 /**
@@ -37,6 +39,7 @@ export function NewConversationDialog({
   mode = "conversation",
   workspace = null,
   initialParticipants = [],
+  onCreateAgent,
 }: NewConversationDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
 
@@ -95,6 +98,7 @@ export function NewConversationDialog({
             mode={mode}
             workspace={workspace}
             initialParticipants={initialParticipants}
+            onCreateAgent={onCreateAgent}
           />
         )}
       </div>

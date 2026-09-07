@@ -14,6 +14,7 @@ import { NewConversationDialog } from "./NewConversationDialog";
 import { OrchestrationRunView } from "./OrchestrationRunView";
 import { OrchestrationRunTabs, type RunTab } from "./OrchestrationRunTabs";
 import { ProjectPreviewPanel } from "./ProjectPreviewPanel";
+import { diagnoseFailure } from "./failure-diagnosis";
 import {
   isOrchestrationActive,
   normalizeParticipants,
@@ -56,6 +57,8 @@ interface OrchestrationWorkspaceProps {
   onAgentsChanged: () => Promise<void>;
   /** Jump to an Agent's own workspace from the room. */
   onOpenAgent: (agentId: string) => void;
+  /** Opens the shell's Agent create form from an empty roster. */
+  onCreateAgent: () => void;
 }
 
 export function OrchestrationWorkspace({
@@ -71,6 +74,7 @@ export function OrchestrationWorkspace({
   modelResources,
   onAgentsChanged,
   onOpenAgent,
+  onCreateAgent,
 }: OrchestrationWorkspaceProps) {
   const {
     detail,
@@ -266,7 +270,11 @@ export function OrchestrationWorkspace({
     const assigned = new Set(rosterMembers.map((member) => member.agentId));
     return agents
       .filter((agent) => !assigned.has(agent.id))
-      .map((agent) => ({ id: agent.id, name: agent.name }));
+      .map((agent) => ({
+        id: agent.id,
+        name: agent.name,
+        ...(agent.description ? { description: agent.description } : {}),
+      }));
   }, [agents, rosterMembers]);
 
   /** Agent lifecycle from the room reuses the platform's own endpoints. */
@@ -286,6 +294,20 @@ export function OrchestrationWorkspace({
     },
     [onAgentsChanged],
   );
+
+  /**
+   * Take the person to the Agent that failed.
+   *
+   * The room is where an Agent is legible — its state, its model, its last
+   * error and its controls are all on one panel — so the failure banner opens
+   * that panel rather than repeating the diagnosis inline.
+   */
+  const failure = useMemo(() => diagnoseFailure(detail, agents), [agents, detail]);
+
+  const inspectFailure = useCallback((agentId: string | null) => {
+    setActiveTab("workspace");
+    if (agentId) setSelectedAgentId(agentId);
+  }, []);
 
   const openPreview = useCallback(() => {
     if (previewController.preview?.url) {
@@ -309,12 +331,33 @@ export function OrchestrationWorkspace({
       }
       const session = await orchestration.createConversation(selectedWorkspaceId, input);
       onComposerOpenChange(false);
-      if (input.originalPrompt.trim() && input.participants.length > 0) {
-        await orchestration.startSession(session.id).catch(() => undefined);
+      if (!input.originalPrompt.trim() || input.participants.length === 0) return session;
+
+      // Creation and start are two calls, and the second one can be rejected
+      // on its own — an Agent stopped, busy, or without a usable model. That
+      // rejection used to be swallowed, leaving a Conversation sitting at
+      // "Not started" with a task in it and no stated reason. Say which of the
+      // two happened, in the words of the one that failed.
+      try {
+        await orchestration.startSession(session.id);
+      } catch (reason) {
+        const blocked = input.participants
+          .map((participant) =>
+            agents.find((agent) => agent.id === participant.agentId))
+          .filter((agent): agent is Agent =>
+            agent !== undefined && (agent.status === "stopped" || agent.status === "error"));
+        orchestration.noteError(
+          `The Conversation was created but could not start: ${errorMessage(reason)}` +
+            (blocked.length > 0
+              ? ` ${blocked.map((agent) => agent.name).join(", ")} ` +
+                `${blocked.length === 1 ? "is" : "are"} not ready — start ` +
+                `${blocked.length === 1 ? "it" : "them"} from the room, then press Start.`
+              : " Press Start when you have resolved it."),
+        );
       }
       return session;
     },
-    [onComposerOpenChange, orchestration, selectedWorkspaceId],
+    [agents, onComposerOpenChange, orchestration, selectedWorkspaceId],
   );
 
   const handleCreateWorkspace = useCallback(async (input: WorkspaceDraft) => {
@@ -357,7 +400,15 @@ export function OrchestrationWorkspace({
       busy={rosterBusy}
       error={rosterError}
       onRemove={(agentId) => void runRosterTask(() => api.detachProjectAgent(workspaceProject.id, agentId))}
-      onAdd={(agentId) => void runRosterTask(() => api.attachProjectAgent(workspaceProject.id, agentId))}
+      // One task for the whole batch: the Project is refetched and the shell
+      // reloaded once, rather than once per Agent.
+      onAdd={(agentIds) =>
+        void runRosterTask(async () => {
+          for (const agentId of agentIds) {
+            await api.attachProjectAgent(workspaceProject.id, agentId);
+          }
+        })
+      }
       onSelectAgent={setSelectedAgentId}
     />
   ) : null;
@@ -379,6 +430,8 @@ export function OrchestrationWorkspace({
       onPreviewAction={(action) => void previewController.act(action)}
       onAppearanceChange={handleAppearanceChange}
       roster={roster}
+      failure={failure}
+      onOpenActivity={detail ? () => setActiveTab("activity") : undefined}
     />
   );
 
@@ -412,6 +465,12 @@ export function OrchestrationWorkspace({
               onDelete={handleDelete}
               modelProviders={modelProviders}
               project={workspaceProject}
+              onInspectFailure={inspectFailure}
+              onClarifyFirstChange={(clarifyFirst) => {
+                void orchestration
+                  .setClarifyFirst(clarifyFirst, detail.session.id)
+                  .catch(() => undefined);
+              }}
             />
             <OrchestrationRunTabs
               detail={detail}
@@ -484,6 +543,13 @@ export function OrchestrationWorkspace({
         onCreateWorkspace={composerMode === "workspace" ? handleCreateWorkspace : undefined}
         onClose={() => onComposerOpenChange(false)}
         modelProviders={modelProviders}
+        // The composer is a native modal dialog, so it sits in the browser's
+        // top layer and would cover the Agent form. Step out of it first; the
+        // shell reopens this composer once the Agent exists.
+        onCreateAgent={() => {
+          onComposerOpenChange(false);
+          onCreateAgent();
+        }}
       />
     </section>
   );

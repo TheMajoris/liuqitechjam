@@ -50,6 +50,8 @@ export type WorkspaceDraft = {
   participants: OrchestrationParticipant[];
   initialTask: string;
   mode: OrchestrationMode;
+  /** Ask before acting; carried onto the Workspace's first Conversation. */
+  clarifyFirst?: boolean;
   maxSteps: number;
   perAgentTimeoutMs: number;
 };
@@ -385,7 +387,7 @@ export function turnStepNumber(
     : arrayIndex + 1;
 }
 
-export function agentName(agents: Agent[], agentId: string): string {
+export function agentName(agents: readonly Agent[], agentId: string): string {
   return agents.find((agent) => agent.id === agentId)?.name ?? "Unavailable Agent";
 }
 

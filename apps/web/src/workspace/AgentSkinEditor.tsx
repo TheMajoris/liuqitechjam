@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { AgentAccessory, AgentAppearance } from "../types";
+import type { AgentAccessory, AgentAppearance, AgentFigure } from "../types";
 import {
   HAIR_COUNT,
   SKIN_COUNT,
@@ -11,6 +11,20 @@ const ACCESSORIES: ReadonlyArray<{ id: AgentAccessory; label: string }> = [
   { id: "glasses", label: "Glasses" },
   { id: "headset", label: "Headset" },
   { id: "cap", label: "Cap" },
+];
+
+/**
+ * Character silhouettes.
+ *
+ * Presentation only, and the labels say what changes rather than asserting
+ * anything about the Agent: an Agent has no gender, and nothing it is allowed
+ * to do depends on which of these is picked. "Neutral" is offered first and is
+ * what an Agent nobody has styled may already be.
+ */
+const FIGURES: ReadonlyArray<{ id: AgentFigure; label: string; hint: string }> = [
+  { id: "neutral", label: "Neutral", hint: "Mid-length hair" },
+  { id: "feminine", label: "Feminine", hint: "Long hair, skirt" },
+  { id: "masculine", label: "Masculine", hint: "Cropped hair" },
 ];
 
 /** Hues offered as swatches. The wheel is continuous; these are the presets. */
@@ -73,6 +87,25 @@ export function AgentSkinEditor({
               disabled={locked}
               onClick={() => apply({ hue })}
             />
+          ))}
+        </div>
+      </div>
+
+      <div className="ws-skin-row">
+        <span className="ws-skin-label" id={`skin-figure-${agentId}`}>Figure</span>
+        <div className="ws-skin-swatches" role="group" aria-labelledby={`skin-figure-${agentId}`}>
+          {FIGURES.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={"ws-skin-chip is-wide" + (current.figure === item.id ? " is-active" : "")}
+              title={item.hint}
+              aria-pressed={current.figure === item.id}
+              disabled={locked}
+              onClick={() => apply({ figure: item.id })}
+            >
+              {item.label}
+            </button>
           ))}
         </div>
       </div>
