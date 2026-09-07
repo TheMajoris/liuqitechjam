@@ -14,6 +14,7 @@ services:
     restart: unless-stopped
     env_file:
       - ${LAUNCHPAD_ENV_FILE:-.env}
+    command: ["sh", "-c", "npm run db:provision && npm run db:migrate && npm start"]
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
@@ -33,11 +34,10 @@ services:
       SEARCH_PROVIDER: ${SEARCH_PROVIDER:-searxng}
       SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080/search}
       PERSISTENCE_BACKEND: ${PERSISTENCE_BACKEND:-postgres}
-      DATABASE_URL: ${DATABASE_URL:-}
-      # env_file also serves tooling; keep owner/bootstrap secrets out of runtime.
-      DATABASE_ADMIN_URL: ""
+      DATABASE_URL: ${DATABASE_URL:-postgresql://launchpad_owner:${POSTGRES_PASSWORD}@postgres:5432/launchpad}
+      DATABASE_ADMIN_URL: ${DATABASE_ADMIN_URL:-postgresql://launchpad_owner:${POSTGRES_PASSWORD}@postgres:5432/launchpad}
       DATABASE_RUNTIME_PASSWORD: ""
-      POSTGRES_PASSWORD: ""
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
     ports:
       - "${PUBLIC_PORT:-3000}:3000"
     volumes:
@@ -47,6 +47,8 @@ services:
     depends_on:
       searxng:
         condition: service_started
+      postgres:
+        condition: service_healthy
     init: true
     security_opt:
       - no-new-privileges:true
@@ -56,9 +58,6 @@ services:
     mem_limit: 4g
     cpus: 2
 
-  # Local-first web research. The service is intentionally optional at the
-  # application layer: set SEARCH_PROVIDER=brave or disabled to use another
-  # mode, but the default compose path has a self-hosted search endpoint.
   searxng:
     image: ${SEARXNG_IMAGE:-searxng/searxng:latest}
     restart: unless-stopped
@@ -75,8 +74,6 @@ services:
     mem_limit: 1g
     cpus: 1
 
-  # Opt in with --profile postgres. Provision/migrate before starting the API;
-  # the normal application role never creates tables or manages roles.
   postgres:
     profiles: [postgres]
     image: postgres:17-alpine
