@@ -51,6 +51,19 @@ describe("buildHandoffPrompt", () => {
     );
   });
 
+  it("tells the worker to scale its turn to the task instead of performing its role unconditionally", () => {
+    const result = buildHandoffPrompt({
+      originalPrompt: "hi",
+      participant,
+      recentTurns: [],
+    });
+
+    expect(result.prompt).toContain("Scale your turn to the original task");
+    expect(result.prompt).toContain(
+      "Never start building, scaffolding, or editing files that the original task did not ask for.",
+    );
+  });
+
   it("keeps the richer same-run handoff and removes only its history duplicate", () => {
     const result = buildHandoffPrompt({
       originalPrompt: "Continue the requested work.",

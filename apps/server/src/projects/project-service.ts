@@ -897,7 +897,15 @@ export class ProjectService {
     });
   }
 
-  /** Rewrites AGENTS.md so the acting Agent's identity applies to this turn. */
+  /**
+   * Brings the shared workspace contract current before a turn runs.
+   *
+   * The acting Agent's identity is no longer written here: a shared directory
+   * cannot represent one of several Team Agents, and the per-run runtime
+   * context delivers identity and standing guidance instead. The lease still
+   * wraps this call because the turn that follows edits shared files, and
+   * because a migrating write must not race another turn.
+   */
   async prepareTurn(project: Project, agent: Agent): Promise<void> {
     await this.authorization.require({
       principal: { kind: "agent", id: agent.id },
@@ -906,11 +914,10 @@ export class ProjectService {
       agentId: agent.id,
       resource: { kind: "project", id: project.id },
     });
-    // Mutable skill guidance is composed once by AgentRuntimePromptComposer
-    // immediately before execution. The Project writer owns only the stable
-    // identity/scope contract, so resolving skills here would duplicate the
-    // capability lookup and audit event without changing AGENTS.md.
-    await this.workspaces.writeTurnInstructions(project, agent);
+    // Identity, skills, and capability state are all composed by
+    // AgentRuntimePromptComposer immediately before execution, so this file
+    // depends on nothing about the acting Agent and is usually left untouched.
+    await this.workspaces.ensureWorkspaceContract(project);
   }
 
   // ------------------------------------------------------------ write leases

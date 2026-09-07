@@ -7,6 +7,45 @@ import {
 import type { Agent } from "./types.js";
 import type { SkillRuntimeContext } from "./skills/skill-types.js";
 
+/**
+ * Bounds the configured instruction text delivered per turn. Long instructions
+ * stay useful without letting one Agent's configuration crowd out the task.
+ */
+export const RUNTIME_INSTRUCTIONS_MAX_CHARS = 4_000;
+
+/** Kept short deliberately: this text is re-sent on every single turn. */
+const RUNTIME_INSTRUCTIONS_SCOPE_NOTE =
+  "Standing guidance describing this Agent, not an assigned task. Act only on the user request below.";
+
+const DEFAULT_AGENT_INSTRUCTIONS =
+  "Help the user complete coding tasks in this workspace. Explain material results concisely.";
+
+/**
+ * Projects the acting Agent's identity for one turn.
+ *
+ * This is the canonical delivery path for identity and standing guidance in
+ * both workspace kinds. A shared Project workspace cannot carry per-Agent
+ * identity on disk at all, and a private workspace's AGENTS.md only reaches
+ * the model when Codex opens the session — so a resumed thread would other-
+ * wise keep obeying whatever was configured when it started.
+ */
+export function agentIdentityLines(agent: Agent): readonly string[] {
+  const configured = agent.instructions?.trim() || DEFAULT_AGENT_INSTRUCTIONS;
+  const instructions =
+    configured.length > RUNTIME_INSTRUCTIONS_MAX_CHARS
+      ? configured.slice(0, RUNTIME_INSTRUCTIONS_MAX_CHARS).trimEnd() +
+        "\n[INSTRUCTIONS TRUNCATED]"
+      : configured;
+  return [
+    `agent.name = ${JSON.stringify(agent.name)}`,
+    ...(agent.description ? [`agent.description = ${JSON.stringify(agent.description)}`] : []),
+    "<agent_instructions>",
+    RUNTIME_INSTRUCTIONS_SCOPE_NOTE,
+    instructions,
+    "</agent_instructions>",
+  ];
+}
+
 type PreviewProviderReader = () => PreviewContextProvider | undefined;
 type SkillContextReader = (
   agent: Agent,
@@ -38,7 +77,13 @@ export class AgentRuntimePromptComposer {
   ): Promise<string> {
     const projectLines = binding ? projectRuntimeContextLines(binding) : [];
     const skillContext = await this.skillContext(agent, projectId, runId, orchestrationId);
-    const extraLines = [...projectLines, ...(skillContext?.lines ?? [])];
+    // Identity first, then scope, then capabilities: who is acting, where the
+    // turn runs, and what it may use.
+    const extraLines = [
+      ...agentIdentityLines(agent),
+      ...projectLines,
+      ...(skillContext?.lines ?? []),
+    ];
 
     // A Project turn is already bound to the Project-owned preview status.
     // Never ask the private Agent provider here: doing so could leak private

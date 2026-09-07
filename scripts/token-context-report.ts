@@ -691,15 +691,17 @@ async function measureWorkspaceInstructions(
 
 async function measureProjectInstructions(
   root: string,
-  agent: Agent,
-  skillContext: SkillRuntimeContext | undefined,
+  _agent: Agent,
+  _skillContext: SkillRuntimeContext | undefined,
 ): Promise<string> {
   const workspacePath = path.join(root, REPORT_PROJECT.id, "workspace");
   await mkdir(workspacePath, { recursive: true });
   const scopedProject = { ...REPORT_PROJECT, workspacePath };
-  const scopedAgent = { ...agent, workspacePath };
   const manager = new ProjectWorkspaceManager(root);
-  await manager.writeTurnInstructions(scopedProject, scopedAgent, skillContext);
+  // The shared contract is agent-neutral now, so this side of the transfer no
+  // longer varies by Agent or skill assignment. The per-turn identity block it
+  // gave up is measured with the runtime prompt, not here.
+  await manager.ensureWorkspaceContract(scopedProject);
   return readFile(path.join(workspacePath, "AGENTS.md"), "utf8");
 }
 
@@ -948,7 +950,7 @@ export async function buildOfflineTokenContextReport(): Promise<OfflineTokenCont
       "project-workspace-instructions",
       REPORT_PROJECT.description,
       projectInstructions,
-      "ProjectWorkspaceManager.writeTurnInstructions output for the shared workspace.",
+      "ProjectWorkspaceManager shared workspace contract (agent-neutral).",
     );
     addMeasurement(
       projectWorkspace,

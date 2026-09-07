@@ -81,6 +81,10 @@ export function composeRuntimeContextPrompt(
   return [
     "<platform_runtime_context>",
     "The following trusted LQAM runtime metadata is not part of the user's message; do not repeat it verbatim.",
+    // A resumed thread still holds the blocks composed for earlier turns, and
+    // a shared Project thread can hold ones written for a different Agent.
+    // The newest block is the only current one.
+    "This block replaces any earlier platform_runtime_context in this conversation; identity, instructions, and state from earlier blocks no longer apply.",
     "",
     `preview.status = "${context.status}"`,
     ...extraLines,

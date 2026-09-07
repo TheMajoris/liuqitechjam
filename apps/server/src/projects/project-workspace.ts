@@ -1,10 +1,13 @@
-import { lstat, mkdir, rename, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { SkillRuntimeContext } from "../skills/skill-types.js";
-import type { Agent } from "../types.js";
 import type { Project } from "./project-types.js";
 import {
+  hasCurrentPlatformInstructions,
+  isPlatformManagedInstructions,
+  PLATFORM_INSTRUCTIONS_HEADER,
   PLATFORM_INSTRUCTIONS_MARKER,
+  REQUEST_SCOPE_RULES,
+  type InstructionRefreshResult,
 } from "../workspace.js";
 import { PLATFORM_RUNTIME_CONTEXT_REFERENCE } from "../preview/preview-context-provider.js";
 
@@ -41,47 +44,38 @@ export class ProjectWorkspaceManager {
         project.description || "A shared Project workspace.",
         "",
         "Every Agent on the attached Team edits these same files.",
-        "The platform regenerates AGENTS.md for whichever Agent is currently working.",
+        "AGENTS.md holds the shared workspace contract; each Agent's own instructions arrive with its request.",
         "",
       ].join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(project.workspacePath, "AGENTS.md"),
+      this.contractContent(),
       "utf8",
     );
   }
 
   /**
-   * Rewrites AGENTS.md for the Agent about to take a Project turn.
+   * The shared workspace contract: everything true for every Agent, forever.
    *
-   * A directory holds exactly one AGENTS.md. It carries the stable Agent and
-   * Project contract into the Codex worker; mutable skill guidance is supplied
-   * by the per-run runtime envelope. Rewriting it per turn preserves separate
-   * Agent identities on one shared artifact. The write lease serializes
-   * Project turns, so this can never race another turn.
+   * A directory holds exactly one AGENTS.md, so it can never describe which of
+   * several Team Agents is acting. Identity and standing guidance are per-turn
+   * facts delivered by AgentRuntimePromptComposer instead. Nothing mutable
+   * belongs here either — the Project name is renamable, so it stays in the
+   * runtime context and this file never needs refreshing for it.
    */
-  async writeTurnInstructions(
-    project: Project,
-    agent: Agent,
-    _skillContext?: SkillRuntimeContext,
-  ): Promise<void> {
-    const content = [
-      "# Platform-managed Agent instructions",
+  private contractContent(): string {
+    return [
+      // Unchanged header and marker: they are how the platform recognizes a
+      // file it owns, and the migration guard depends on both.
+      PLATFORM_INSTRUCTIONS_HEADER,
       PLATFORM_INSTRUCTIONS_MARKER,
-      "",
-      "You are the coding Agent named " + agent.name + ".",
-      agent.description ? "Purpose: " + agent.description : "",
-      "",
-      "## Instructions",
-      "",
-      agent.instructions ||
-        "Help the user complete coding tasks in this workspace. Explain material results concisely.",
-      "",
-      "## Runtime context",
-      "",
-      PLATFORM_RUNTIME_CONTEXT_REFERENCE,
       "",
       "## Shared Project workspace",
       "",
-      "- This workspace belongs to the Project named " + project.name + ".",
-      "- Other Agents on this Team edit these same files between your turns.",
+      ...REQUEST_SCOPE_RULES,
+      "- This is a shared Project workspace. Other Agents on this Team edit these same files between your turns.",
       "- Read the current files before changing them; do not assume you wrote them.",
       "- Refer to files by Project-relative paths such as src/App.tsx.",
       "- Never ask another Agent for a host filesystem path, and never print one.",
@@ -89,12 +83,45 @@ export class ProjectWorkspaceManager {
       "- Build and test changes when practical.",
       "- Never print environment variables or credentials.",
       "",
-      "This file is regenerated for whichever Agent is currently working.",
+      "## Your instructions",
+      "",
+      "You are not named in this file: it is shared by every Agent on the Team.",
+      PLATFORM_RUNTIME_CONTEXT_REFERENCE,
       "",
     ]
       .filter((line, index, lines) => !(line === "" && lines[index - 1] === ""))
       .join("\n");
-    await writeFile(path.join(project.workspacePath, "AGENTS.md"), content, "utf8");
+  }
+
+  /**
+   * Brings the contract file to the current layout before a turn runs.
+   *
+   * Callers hold the Project write lease, so this cannot race another turn.
+   * It is a read on the steady path and writes only for a missing or outdated
+   * platform-owned file, which is also how a Project created before this
+   * layout sheds the last acting Agent's identity. A user-authored AGENTS.md
+   * is never swept.
+   */
+  async ensureWorkspaceContract(project: Project): Promise<InstructionRefreshResult> {
+    const contractPath = path.join(project.workspacePath, "AGENTS.md");
+    let existing: string;
+    try {
+      existing = await readFile(contractPath, "utf8");
+    } catch (error) {
+      if (!isErrno(error, "ENOENT")) throw error;
+      try {
+        await lstat(project.workspacePath);
+      } catch (workspaceError) {
+        if (isErrno(workspaceError, "ENOENT")) return "workspace_missing";
+        throw workspaceError;
+      }
+      await writeFile(contractPath, this.contractContent(), "utf8");
+      return "created";
+    }
+    if (hasCurrentPlatformInstructions(existing)) return "current";
+    if (!isPlatformManagedInstructions(existing)) return "skipped";
+    await writeFile(contractPath, this.contractContent(), "utf8");
+    return "updated";
   }
 
   async archive(project: Project): Promise<string | null> {
