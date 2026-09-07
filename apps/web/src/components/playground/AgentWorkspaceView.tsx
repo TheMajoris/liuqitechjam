@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import type { Agent, AgentRole, SkillMetadata, SystemInfo } from "../../types";
+import type {
+  Agent,
+  AgentRole,
+  ModelResourceSnapshot,
+  SkillMetadata,
+  SystemInfo,
+} from "../../types";
 import { MarkdownMessage } from "../MarkdownMessage";
 import { RunListView } from "../trace/RunListView";
 import { TraceDetailView } from "../trace/TraceDetailView";
@@ -39,6 +45,8 @@ interface AgentWorkspaceViewProps {
   system: SystemInfo | null;
   controller: AgentWorkspaceController;
   modelCatalog: ModelCatalogController;
+  /** Live endpoint telemetry keyed `providerId:modelId`; annotates options. */
+  modelResources?: Map<string, ModelResourceSnapshot>;
   skillCatalog: SkillMetadata[];
   skillLoading: boolean;
   skillError: string | null;
@@ -62,6 +70,7 @@ export function AgentWorkspaceView({
   system,
   controller,
   modelCatalog,
+  modelResources,
   skillCatalog,
   skillLoading,
   skillError,
@@ -159,6 +168,7 @@ export function AgentWorkspaceView({
             agent={agent}
             form={form}
             modelCatalog={modelCatalog}
+            {...(modelResources === undefined ? {} : { modelResources })}
             skillCatalog={skillCatalog}
             skillLoading={skillLoading}
             skillError={skillError}

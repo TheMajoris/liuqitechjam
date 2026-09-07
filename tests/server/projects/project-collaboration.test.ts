@@ -132,7 +132,7 @@ describe("Shared Project collaboration", () => {
       "utf8",
     );
     expect(instructions).toContain(
-      "Respond in English by default. Use another language only when the user explicitly requests it.",
+      "current response-language policy, assigned platform skills, and capability availability",
     );
     const shared = await readFile(path.join(scope.workspacePath, "app.txt"), "utf8");
     expect(shared).toBe("written-by-fe\nwritten-by-builder\n");

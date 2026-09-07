@@ -218,6 +218,33 @@ export interface ProviderModelsResponse {
 }
 
 /**
+ * Where the server-wide supervisor endpoint currently comes from. `override`
+ * is an operator selection; `environment` is the SUPERVISOR_MODEL fallback.
+ */
+export type SupervisorModelSource = "override" | "environment" | "none";
+
+export interface SupervisorModelResponse {
+  /** The endpoint routing actually uses, from whichever source won. */
+  modelRef: ModelRef | null;
+  source: SupervisorModelSource;
+  environmentModelId: string | null;
+  revision: number;
+}
+
+/** Agents moved off the endpoint as a result of reserving it for routing. */
+export interface SupervisorModelReassignment {
+  agentId: string;
+  agentName: string;
+  movedPrimaryTo?: string;
+  droppedFallbacks: number;
+  skippedReason?: string;
+}
+
+export interface SupervisorModelUpdateResponse extends SupervisorModelResponse {
+  reassignments: SupervisorModelReassignment[];
+}
+
+/**
  * Operator-facing projection of the Ark model catalog. The provider/model
  * listing endpoints remain the source of truth for individual descriptors;
  * the optional aggregate fields let an operator settings surface render a
@@ -394,6 +421,20 @@ export interface AgentRun {
  * It carries its own Agent identity, so a Run remains fully readable after
  * its Agent has been deleted.
  */
+/**
+ * Provider-reported token counters. `availability` stays explicit so a Run
+ * that reported nothing is never displayed as zero tokens.
+ */
+export interface RunTokenTotals {
+  availability: "available" | "partial" | "unavailable";
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  runsReporting: number;
+  runsMissing: number;
+}
+
 export interface RunHistoryEntry {
   runId: string;
   agentId: string;
@@ -409,6 +450,7 @@ export interface RunHistoryEntry {
   durationMs: number | null;
   eventCount: number;
   errorCount: number;
+  tokens: RunTokenTotals;
   failed: boolean;
   error: string | null;
 }
@@ -499,8 +541,13 @@ export interface OrchestrationSession {
   participants: OrchestrationParticipant[];
   /** Omitted only by legacy persisted sessions; those run sequentially. */
   mode?: OrchestrationMode;
-  /** Agent used for supervisor routing; participants remain a separate roster. */
+  /**
+   * Legacy only: supervisor routing used to designate an Agent. It is now a
+   * server-wide model, and only records written before that change carry this.
+   */
   supervisorAgentId?: string | null;
+  /** Supervisor model captured when the current cycle was accepted. */
+  supervisorModelRef?: ModelRef | null;
   completionReason?: OrchestrationCompletionReason | null;
   status: OrchestrationStatus;
   currentParticipantId: string | null;
@@ -570,8 +617,6 @@ export interface CreateOrchestrationInput {
   originalPrompt: string;
   participants: OrchestrationParticipant[];
   mode: OrchestrationMode;
-  /** Required by supervisor mode; omitted for deterministic routing modes. */
-  supervisorAgentId?: string;
   projectId?: string;
   maxSteps: number;
   perAgentTimeoutMs: number;
@@ -799,6 +844,8 @@ export interface AuditTrace {
   durationMs: number;
   eventCount: number;
   countsByCategory: Record<AuditCategory, number>;
+  /** Tokens summed across every Run this trace covers. */
+  tokens: RunTokenTotals;
   failingStep: { spanId: string; eventId: string; type: string } | null;
   agentIds: string[];
   runIds: string[];

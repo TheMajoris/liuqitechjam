@@ -2,16 +2,18 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
-import { isSupervisorConfigured, loadConfig, writeCodexConfig } from "./config.js";
+import { isArkConfigured, loadConfig, writeCodexConfig } from "./config.js";
 import { createRunner } from "./runner-factory.js";
 import {
   ArkModelCatalogService,
   ArkLiveModelState,
   ArkManagementClient,
+  ARK_WORKER_PROVIDER_ID,
   ModelCatalogError,
   createModelRegistry,
   createWorkerModelResolver,
   normalizeModelRef,
+  releaseAgentsFromReservedModel,
 } from "./models/index.js";
 import {
   JsonStore,
@@ -90,9 +92,25 @@ const modelArkClient = new ArkManagementClient({
   timeoutMs: config.byteplusManagementTimeoutMs,
   maxResponseBytes: config.byteplusManagementMaxResponseBytes,
 });
+/**
+ * The server-wide supervisor endpoint: the persisted operator override when
+ * one is set, otherwise SUPERVISOR_MODEL. Resolved lazily because the catalog
+ * is only initialized once the persistence checks below have passed.
+ */
+const resolvedSupervisorModelId = (): string => {
+  let override: string | undefined;
+  try {
+    override = modelCatalog.get().supervisorModelRef?.modelId;
+  } catch {
+    override = undefined;
+  }
+  const resolved = (override ?? config.supervisorModel).trim();
+  return resolved.includes("replace-") ? "" : resolved;
+};
 const modelArkState = new ArkLiveModelState({
   client: modelArkClient,
   ttlMs: config.workerModelCacheTtlMs,
+  reservedSupervisorModelId: resolvedSupervisorModelId,
 });
 // The live catalog must exist before AgentService.initialize() materializes
 // defaults for legacy Agent records.
@@ -276,8 +294,49 @@ await roleService.initialize();
 await projectService.initialize();
 await previewService.initialize();
 
-const supervisorCredentialsConfigured = isSupervisorConfigured(config);
-const supervisorSelector = supervisorCredentialsConfigured
+/**
+ * Worker resolution rejects the endpoint reserved for supervisor routing, so
+ * an Agent persisted against it before that rule existed can no longer run.
+ * Repair those assignments once at startup. A provider outage here must never
+ * block boot, and the same reconciliation runs again whenever an operator
+ * changes the supervisor endpoint.
+ */
+const reconcileReservedSupervisorEndpoint = async (
+  log: { warn(details: unknown, message: string): void },
+): Promise<void> => {
+  try {
+    const reservedModelId = resolvedSupervisorModelId();
+    if (reservedModelId.length === 0) return;
+    const availableModels = await modelRegistry.listModels(
+      ARK_WORKER_PROVIDER_ID,
+      "worker",
+    );
+    const reassignments = await releaseAgentsFromReservedModel({
+      agentService: service,
+      reservedModelId,
+      availableModels,
+      preferredModelRef: modelCatalog.get().defaultModelRef ?? null,
+    });
+    for (const outcome of reassignments) {
+      log.warn(
+        { reservedModelId, ...outcome },
+        outcome.skippedReason === undefined
+          ? "Moved Agent off the endpoint reserved for supervisor routing"
+          : "Could not move Agent off the endpoint reserved for supervisor routing",
+      );
+    }
+  } catch (error) {
+    log.warn(
+      { error },
+      "Could not reconcile Agent assignments against the reserved supervisor endpoint",
+    );
+  }
+};
+
+// Credentials decide whether the selector exists at all. The model itself is
+// resolved per selection, so an operator can point the supervisor at a
+// different endpoint without restarting the server.
+const supervisorSelector = isArkConfigured(config)
   ? createOrchestrationParticipantSelector(
       new ArkResponsesSupervisorProvider({
         apiKey: config.arkApiKey,
@@ -308,16 +367,17 @@ const orchestrationService = new OrchestrationService({
     ? {}
     : { selectNextParticipant: supervisorSelector }),
   resolveSupervisorModel: async () => {
-    if (!isSupervisorConfigured(config)) {
+    const supervisorModelId = resolvedSupervisorModelId();
+    if (!isArkConfigured(config) || supervisorModelId.length === 0) {
       throw new ModelCatalogError(
         "MODEL_RUNTIME_CONFIGURATION_INVALID",
         503,
-        "SUPERVISOR_MODEL and the Ark inference key must be configured for supervisor routing",
+        "A supervisor model and the Ark inference key must be configured for supervisor routing",
       );
     }
     const modelRef = normalizeModelRef({
       providerId: "volcengine_ark",
-      modelId: config.supervisorModel,
+      modelId: supervisorModelId,
     });
     return {
       modelRef,
@@ -358,6 +418,8 @@ const app = await createApp(
   modelCatalog,
   agentMetrics,
 );
+
+await reconcileReservedSupervisorEndpoint(app.log);
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");

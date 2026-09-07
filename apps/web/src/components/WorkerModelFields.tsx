@@ -3,8 +3,10 @@ import type {
   ModelDescriptor,
   ModelProviderDescriptor,
   ModelRef,
+  ModelResourceSnapshot,
   ReasoningEffort,
 } from "../types";
+import { modelOptionLabel } from "../model-resource-format";
 
 export interface WorkerModelFieldsProps {
   providers: ModelProviderDescriptor[];
@@ -12,6 +14,11 @@ export interface WorkerModelFieldsProps {
   /** Lazily loaded worker models keyed by provider, used by fallback rows. */
   modelsByProvider?: Record<string, ModelDescriptor[]>;
   loadingByProvider?: Record<string, boolean>;
+  /**
+   * Live endpoint telemetry keyed `providerId:modelId`. Optional so a form
+   * without a resource poll still renders plain model names.
+   */
+  modelResources?: Map<string, ModelResourceSnapshot>;
   value?: ModelRef | null;
   fallbackValues?: ModelRef[];
   loadingProviders?: boolean;
@@ -100,6 +107,7 @@ export function WorkerModelFields({
   models,
   modelsByProvider = {},
   loadingByProvider = {},
+  modelResources,
   value,
   fallbackValues = [],
   loadingProviders = false,
@@ -120,6 +128,11 @@ export function WorkerModelFields({
   onRefresh,
   onRetry,
 }: WorkerModelFieldsProps) {
+  const optionLabel = (model: ModelDescriptor): string =>
+    modelOptionLabel(
+      model,
+      modelResources?.get(`${model.providerId}:${model.id}`) ?? null,
+    );
   const supportedProviders = workerProviders(providers);
   const selectedProviderId = value?.providerId ?? "";
   const selectedModel = models.find(
@@ -247,7 +260,7 @@ export function WorkerModelFields({
             )}
             {models.map((model) => (
               <option value={model.id} key={`${model.providerId}:${model.id}`}>
-                {model.label || model.id}
+                {optionLabel(model)}
               </option>
             ))}
           </select>
@@ -422,7 +435,7 @@ export function WorkerModelFields({
                         )}
                         {fallbackModels.map((model) => (
                           <option value={model.id} key={`${model.providerId}:${model.id}`}>
-                            {model.label || model.id}
+                            {optionLabel(model)}
                           </option>
                         ))}
                       </select>

@@ -123,7 +123,10 @@ export interface OrchestrationSession {
   participants: OrchestrationParticipant[];
   /** Omitted only on legacy persisted sessions; those run sequentially. */
   mode?: OrchestrationMode | undefined;
-  /** Required for newly created supervisor-mode sessions. */
+  /**
+   * Legacy only. Supervisor routing uses the server-wide supervisor model, not
+   * an Agent; this survives on records written before that change.
+   */
   supervisorAgentId?: string | undefined;
   /** Primary model assignment captured when the current cycle was accepted. */
   supervisorModelRef?: ModelRef | undefined;
@@ -261,8 +264,6 @@ export interface CreateOrchestrationInput {
   projectId?: string | undefined;
   /** Defaults to sequential when omitted for backward-compatible clients. */
   mode?: OrchestrationMode | undefined;
-  /** Optional at create time; supervisor mode resolves it from the roster or Workspace. */
-  supervisorAgentId?: string | undefined;
   maxSteps: number;
   perAgentTimeoutMs: number;
 }

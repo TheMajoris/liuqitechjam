@@ -30,9 +30,12 @@ export interface SupervisorModelAssignment {
   catalogRevision?: string | number | undefined;
 }
 
-export type OrchestrationSupervisorModelResolver = (
-  agent: Agent,
-) => SupervisorModelAssignment | Promise<SupervisorModelAssignment>;
+/**
+ * Resolves the server-wide supervisor model. It takes no Agent: supervisor
+ * routing is a model, and no Agent is designated to perform it.
+ */
+export type OrchestrationSupervisorModelResolver =
+  () => SupervisorModelAssignment | Promise<SupervisorModelAssignment>;
 
 export type OrchestrationInvokerFactory =
   | PlatformAgentInvokerContract
@@ -95,7 +98,7 @@ export interface ActiveOrchestrationSession {
   stepOffset: number;
   /** One-based continuation number; zero identifies the initial cycle. */
   cycleIndex: number;
-  /** Runtime-only model selected from the session's supervisor Agent. */
+  /** Runtime-only supervisor model captured when the cycle was accepted. */
   supervisorModel?: string | undefined;
   controller: AbortController;
   invoker: PlatformAgentInvokerContract;

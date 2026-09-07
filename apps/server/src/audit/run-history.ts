@@ -1,4 +1,8 @@
 import type { RunStatus } from "../types.js";
+import {
+  summarizeRunTokens,
+  type RunTokenTotals,
+} from "../telemetry/telemetry-usage.js";
 import type { AuditEvent } from "./audit-types.js";
 import type { AuditRunSnapshot } from "./audit-timeline.js";
 
@@ -31,6 +35,11 @@ export interface RunHistoryEntry {
   durationMs: number | null;
   eventCount: number;
   errorCount: number;
+  /**
+   * Provider-reported token counters for this Run. `availability` stays
+   * explicit so a Run that reported nothing is never shown as zero tokens.
+   */
+  tokens: RunTokenTotals;
   failed: boolean;
   error: string | null;
 }
@@ -102,6 +111,7 @@ function toEntry(run: AuditRunSnapshot, evidence: RunEvidence | undefined): RunH
     durationMs: elapsed(startedAt, completedAt),
     eventCount: evidence?.eventCount ?? 0,
     errorCount: evidence?.errorCount ?? 0,
+    tokens: summarizeRunTokens([run.usage]),
     failed: status === "failed",
     error: run.error ?? null,
   };

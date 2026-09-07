@@ -93,8 +93,14 @@ export default function App() {
 
   const skillCatalog = useSkillCatalog();
   const modelCatalog = useModelCatalog(form, selected, setForm);
+  // Every surface that offers a model choice needs the live snapshot: the
+  // pickers annotate each option with its consumption, not just the tables.
   const modelResources = useModelResources(
-    authRequired === false && (view === "workspace" || view === "insights"),
+    authRequired === false &&
+      (view === "workspace" ||
+        view === "insights" ||
+        view === "agent" ||
+        showCreate),
   );
   const workspaceController = useAgentWorkspace({
     selectedId,
@@ -450,6 +456,7 @@ export default function App() {
           <InsightsView
             agents={agents}
             modelResources={modelResources}
+            onAgentsChanged={refreshAgents}
             onSelectAgent={(agentId) => {
               setSelectedId(agentId);
               setView("agent");
@@ -500,6 +507,7 @@ export default function App() {
             system={system}
             controller={workspaceController}
             modelCatalog={modelCatalog}
+            modelResources={modelResources.byKey}
             skillCatalog={skillCatalog.catalog}
             skillLoading={skillCatalog.loading}
             skillError={skillCatalog.error ?? workspaceController.agentSkillsError}
@@ -538,6 +546,7 @@ export default function App() {
         <CreateAgentModal
           form={form}
           modelCatalog={modelCatalog}
+          modelResources={modelResources.byKey}
           skillCatalog={skillCatalog.catalog}
           skillLoading={skillCatalog.loading}
           skillError={skillCatalog.error}

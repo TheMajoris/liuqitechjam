@@ -144,9 +144,14 @@ function supervisorContext(
       ...(input.recentTurns ?? input.turns),
     ].map((turn) => {
       const stepIndex = (turn as { stepIndex?: number }).stepIndex;
+      const runId =
+        typeof turn.runId === "string" && turn.runId.trim().length > 0
+          ? turn.runId
+          : undefined;
       return {
         participantId: turn.participantId,
         agentId: turn.agentId,
+        ...(runId === undefined ? {} : { runId }),
         position: turn.position,
         ...(stepIndex === undefined ? {} : { stepIndex }),
         output: turn.output,

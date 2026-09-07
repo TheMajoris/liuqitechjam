@@ -141,6 +141,33 @@ export function modelResourceQuotaLabel(resource: ModelResourceSnapshot | null |
   return `${formatCount(quota.remainingTokens)} remaining of ${formatCount(quota.totalTokens)}`;
 }
 
+/**
+ * Compact capacity text for a native `<select>` option, where only plain text
+ * fits. Remaining quota is preferred when ModelArk reports one; otherwise this
+ * falls back to consumption, which is what the provider actually sends, rather
+ * than implying a remaining figure nobody reported. `null` means "say nothing"
+ * so an option never carries a misleading zero.
+ */
+export function modelResourceOptionSuffix(
+  resource: ModelResourceSnapshot | null | undefined,
+): string | null {
+  if (!resource) return null;
+  const percent = modelResourceQuotaPercent(resource);
+  if (percent !== null) return `${percent}% tokens left`;
+  const total = resource.usage?.totalTokens;
+  return typeof total === "number" ? `${formatCount(total)} used` : null;
+}
+
+/** Option text for a model, annotated with its live capacity when known. */
+export function modelOptionLabel(
+  model: { id: string; label?: string },
+  resource: ModelResourceSnapshot | null | undefined,
+): string {
+  const base = model.label || model.id;
+  const suffix = modelResourceOptionSuffix(resource);
+  return suffix === null ? base : `${base} — ${suffix}`;
+}
+
 export function modelResourceFreshnessLabel(freshness: ModelResourceFreshness): string {
   switch (freshness) {
     case "fresh":

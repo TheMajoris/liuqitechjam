@@ -15,6 +15,8 @@ import type {
   Project,
   ProjectRole,
   ProviderModelsResponse,
+  SupervisorModelResponse,
+  SupervisorModelUpdateResponse,
   SystemInfo,
   AgentCapabilities,
   AgentSkills,
@@ -131,6 +133,14 @@ export const api = {
   modelResources: (refresh = false) => request<ModelResourcesResponse>(
     "/api/model-resources" + (refresh ? "?refresh=true" : ""),
   ),
+  /** Server-wide supervisor endpoint, and which source it came from. */
+  supervisorModel: () => request<SupervisorModelResponse>("/api/supervisor-model"),
+  /** `null` clears the override and hands routing back to SUPERVISOR_MODEL. */
+  setSupervisorModel: (modelRef: ModelRef | null) =>
+    request<SupervisorModelUpdateResponse>("/api/supervisor-model", {
+      method: "PUT",
+      body: JSON.stringify({ modelRef }),
+    }),
   listAgents: () => request<{ agents: Agent[] }>("/api/agents"),
   projectActivity: (projectId: string, limit = 200) =>
     request<{ events: import("./types").AuditEventRecord[] }>(

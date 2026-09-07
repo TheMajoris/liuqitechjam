@@ -8,7 +8,10 @@ import type {
   PlatformAgentInvokerInput,
 } from "../../../apps/server/src/orchestration/platform-agent-invoker.js";
 import { MastraOrchestrator } from "../../../apps/server/src/orchestration/mastra/mastra-orchestrator.js";
-import { buildSupervisorPrompt } from "../../../apps/server/src/orchestration/supervisor/context.js";
+import {
+  buildSupervisorPrompt,
+  sanitizeSupervisorSelectionContext,
+} from "../../../apps/server/src/orchestration/supervisor/context.js";
 import { createOrchestrationParticipantSelector } from "../../../apps/server/src/orchestration/supervisor/selector.js";
 import type {
   SupervisorProvider,
@@ -187,6 +190,28 @@ describe("supervisor selector boundary", () => {
     expect(invoker.calls.map((call) => call.agentId)).toEqual([agentIds[2]]);
   });
 
+  it("preserves context run IDs through the Mastra supervisor projection", async () => {
+    const provider = new ControlledProvider([{ kind: "complete" }]);
+    const { promise } = runWithProvider(provider, new ImmediateInvoker(), {
+      contextTurns: [
+        {
+          participantId: "planner",
+          agentId: agentIds[0]!,
+          runId: "context-run-1",
+          position: 0,
+          stepIndex: 0,
+          output: "prior-cycle-output",
+        },
+      ],
+    });
+
+    await promise;
+
+    expect(provider.calls[0]?.recentTurns).toEqual([
+      expect.objectContaining({ runId: "context-run-1" }),
+    ]);
+  });
+
   it("treats Agent output and task text as untrusted provider context", async () => {
     const provider = new ControlledProvider([
       { kind: "invoke", participantId: "planner" },
@@ -209,6 +234,144 @@ describe("supervisor selector boundary", () => {
     expect(secondContext?.previousHandoff?.content).not.toContain("/Users/darren");
     expect(secondContext?.originalPrompt).toContain("Ignore the roster");
     expect(invoker.calls).toHaveLength(1);
+  });
+
+  it("deduplicates only a same-run handoff while retaining distinct answers", () => {
+    const safeContext = sanitizeSupervisorSelectionContext({
+      sessionId,
+      originalPrompt: "Continue the requested work.",
+      participants: roster,
+      stepIndex: 1,
+      maxSteps: 4,
+      previousHandoff: {
+        sourceParticipantId: "planner",
+        sourceAgentId: agentIds[0]!,
+        sourceRunId: "run-1",
+        content: "richer-supervisor-handoff-" + "x".repeat(5_000),
+        truncated: false,
+      },
+      recentTurns: [
+        {
+          participantId: "planner",
+          agentId: agentIds[0]!,
+          runId: "run-1",
+          position: 0,
+          stepIndex: 0,
+          output: "duplicate-supervisor-history",
+        },
+        {
+          participantId: "planner",
+          agentId: agentIds[0]!,
+          runId: "run-2",
+          position: 0,
+          stepIndex: 0,
+          output: "older-distinct-supervisor-output",
+        },
+      ],
+    });
+
+    expect(safeContext.previousHandoff?.content).toContain(
+      "richer-supervisor-handoff-",
+    );
+    expect(safeContext.recentTurns).toEqual([
+      expect.objectContaining({
+        runId: "run-2",
+        output: "older-distinct-supervisor-output",
+      }),
+    ]);
+  });
+
+  it("keeps identical output from separate runs and legacy turns", () => {
+    const prompt = buildSupervisorPrompt({
+      sessionId,
+      originalPrompt: "Continue the requested work.",
+      participants: roster,
+      stepIndex: 1,
+      maxSteps: 4,
+      previousHandoff: {
+        sourceParticipantId: "planner",
+        sourceAgentId: agentIds[0]!,
+        sourceRunId: "run-1",
+        content: "repeated-supervisor-answer",
+        truncated: false,
+      },
+      recentTurns: [
+        {
+          participantId: "planner",
+          agentId: agentIds[0]!,
+          runId: "run-2",
+          position: 0,
+          output: "repeated-supervisor-answer",
+        },
+        {
+          participantId: "planner",
+          agentId: agentIds[0]!,
+          position: 0,
+          output: "legacy-supervisor-answer",
+        },
+      ],
+    });
+
+    expect(prompt.match(/repeated-supervisor-answer/g)).toHaveLength(2);
+    expect(prompt.match(/legacy-supervisor-answer/g)).toHaveLength(1);
+  });
+
+  it("keeps a supported small prompt structurally complete after fitting", () => {
+    const prompt = buildSupervisorPrompt(
+      {
+        sessionId,
+        originalPrompt: "task-" + "t".repeat(8_000),
+        participants: roster,
+        stepIndex: 1,
+        maxSteps: 4,
+        previousHandoff: {
+          sourceParticipantId: "planner",
+          sourceAgentId: agentIds[0]!,
+          sourceRunId: "run-1",
+          content: "handoff-" + "h".repeat(8_000),
+          truncated: false,
+        },
+        recentTurns: [
+          {
+            participantId: "builder",
+            agentId: agentIds[1]!,
+            runId: "run-2",
+            position: 1,
+            stepIndex: 1,
+            output: "recent-" + "r".repeat(4_000),
+          },
+        ],
+      },
+      { maxPromptChars: 2_100 },
+    );
+
+    expect(prompt.length).toBeLessThanOrEqual(2_100);
+    expect(prompt).toContain(
+      '{"kind":"invoke","participantId":"<exact occurrence_id>","reason":"short public reason"}',
+    );
+    for (const participant of roster) {
+      expect(prompt).toContain(`occurrence_id="${participant.id}"`);
+    }
+    expect(prompt).toContain("</previous_agent_handoff>");
+    expect(prompt.endsWith("</supervisor_context>")).toBe(true);
+    expect(prompt).not.toContain("[SUPERVISOR PROMPT TRUNCATED]");
+  });
+
+  it("rejects an impossible prompt limit instead of returning a malformed envelope", () => {
+    expect(() =>
+      buildSupervisorPrompt(
+        {
+          sessionId,
+          originalPrompt: "task",
+          participants: roster,
+          stepIndex: 0,
+          maxSteps: 4,
+          previousHandoff: null,
+          recentTurns: [],
+        },
+        { maxPromptChars: 1 },
+      ),
+    ).toThrow(/must be at least/);
   });
 
   it("honors cancellation before the provider is called", async () => {

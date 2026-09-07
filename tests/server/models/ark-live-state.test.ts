@@ -223,4 +223,57 @@ describe("ArkLiveModelState", () => {
       { usedTokens: 10, totalTokens: 10, remainingTokens: 0 },
     ]);
   });
+
+  it("withholds the reserved supervisor endpoint from worker selection only", async () => {
+    const client = {
+      listEndpoints: vi.fn().mockResolvedValue([
+        endpoint("ep-worker"),
+        endpoint("ep-supervisor"),
+      ]),
+      getInferenceUsage: vi.fn(),
+    } as unknown as ArkManagementClientContract;
+    const state = new ArkLiveModelState({
+      client,
+      ttlMs: 60_000,
+      reservedSupervisorModelId: () => "ep-supervisor",
+      now: () => new Date("2026-09-06T04:05:06.000Z").getTime(),
+    });
+
+    await state.refresh();
+
+    expect(state.listRunningDescriptors("worker").map((model) => model.id)).toEqual([
+      "ep-worker",
+    ]);
+    // The supervisor picker still needs to see (and re-select) the endpoint
+    // that is currently reserved.
+    expect(state.listRunningDescriptors("supervisor").map((model) => model.id)).toEqual([
+      "ep-worker",
+      "ep-supervisor",
+    ]);
+    // Worker resolution validates through getModel, so a persisted assignment
+    // to the reserved endpoint must fail there too.
+    expect(state.getModel("volcengine_ark", "ep-supervisor")).toBeUndefined();
+    expect(state.getModel("volcengine_ark", "ep-worker")?.id).toBe("ep-worker");
+  });
+
+  it("stops reserving an endpoint once the supervisor moves elsewhere", async () => {
+    let reserved = "ep-a";
+    const client = {
+      listEndpoints: vi.fn().mockResolvedValue([endpoint("ep-a"), endpoint("ep-b")]),
+      getInferenceUsage: vi.fn(),
+    } as unknown as ArkManagementClientContract;
+    const state = new ArkLiveModelState({
+      client,
+      ttlMs: 60_000,
+      reservedSupervisorModelId: () => reserved,
+      now: () => new Date("2026-09-06T04:05:06.000Z").getTime(),
+    });
+
+    await state.refresh();
+    expect(state.listRunningDescriptors("worker").map((model) => model.id)).toEqual(["ep-b"]);
+
+    reserved = "ep-b";
+    expect(state.listRunningDescriptors("worker").map((model) => model.id)).toEqual(["ep-a"]);
+    expect(state.getModel("volcengine_ark", "ep-a")?.id).toBe("ep-a");
+  });
 });

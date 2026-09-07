@@ -117,7 +117,7 @@ export class OrchestrationService {
   private readonly invokerFactory: () => PlatformAgentInvokerContract;
   private readonly selectorFactory: () => OrchestrationParticipantSelector | undefined;
   private readonly resolveSupervisorModel:
-    | ((agent: Agent) => SupervisorModelAssignment | Promise<SupervisorModelAssignment>)
+    | (() => SupervisorModelAssignment | Promise<SupervisorModelAssignment>)
     | undefined;
   private readonly supervisorTimeoutMs: number | undefined;
   private readonly orchestratorFactory: () => Orchestrator;
@@ -246,15 +246,6 @@ export class OrchestrationService {
       .sort((left, right) => left.position - right.position)
       .map(safeParticipant);
     const mode = normalized.mode ?? "sequential";
-    const supervisorAgentId =
-      mode === "supervisor"
-        ? await this.chooseSupervisorAgentId(
-            participants,
-            normalized.projectId,
-            normalized.supervisorAgentId,
-            true,
-          )
-        : undefined;
     const timestamp = now();
     const session: OrchestrationSession = {
       id: randomUUID(),
@@ -270,9 +261,6 @@ export class OrchestrationService {
       ),
       participants,
       mode,
-      ...(supervisorAgentId === undefined
-        ? {}
-        : { supervisorAgentId }),
       ...(normalized.projectId ? { projectId: normalized.projectId } : {}),
       completionReason: null,
       status: "draft",
@@ -384,18 +372,12 @@ export class OrchestrationService {
       }
       if (
         session.originalPrompt !== current.originalPrompt ||
-        !participantsMatch(session.participants, current.participants) ||
-        session.supervisorAgentId !== current.supervisorAgentId
+        !participantsMatch(session.participants, current.participants)
       ) {
         throw lifecycleConflict("Orchestration draft changed; retry the start request");
       }
       session.originalPrompt = prepared.originalPrompt;
       session.participants = structuredClone(prepared.participants);
-      if (prepared.supervisorAgentId === undefined) {
-        delete session.supervisorAgentId;
-      } else {
-        session.supervisorAgentId = prepared.supervisorAgentId;
-      }
       if (supervisorModel !== undefined) {
         session.supervisorModelRef = structuredClone(supervisorModel.modelRef);
         if (supervisorModel.catalogRevision === undefined) {
@@ -753,43 +735,6 @@ export class OrchestrationService {
    * ready Agent wins over a stopped/busy Agent, but the latter is retained so
    * startSession can return the precise lifecycle error for an explicit choice.
    */
-  private async chooseSupervisorAgentId(
-    participants: readonly OrchestrationParticipant[],
-    projectId: string | null | undefined,
-    explicitSupervisorAgentId?: string,
-    required = false,
-  ): Promise<string | undefined> {
-    if (explicitSupervisorAgentId !== undefined) return explicitSupervisorAgentId;
-
-    const database = this.store.snapshot();
-    const rosterIds = [...participants]
-      .sort((left, right) => left.position - right.position)
-      .map((participant) => participant.agentId);
-    const projectIds = projectId
-      ? database.projectAgents
-          .filter((attachment) => attachment.projectId === projectId)
-          .sort((left, right) =>
-            left.attachedAt.localeCompare(right.attachedAt) ||
-            left.agentId.localeCompare(right.agentId),
-          )
-          .map((attachment) => attachment.agentId)
-      : [];
-    const candidates = [...new Set([...rosterIds, ...projectIds])];
-    const agents = await this.listCurrentAgents();
-    const byId = new Map(agents.map((agent) => [agent.id, agent]));
-    const known = candidates.filter((agentId) => byId.has(agentId));
-    const selected =
-      known.find((agentId) => byId.get(agentId)?.status === "ready") ?? known[0];
-    if (selected !== undefined) return selected;
-    if (required) {
-      throw new HttpError(
-        422,
-        "A supervisor Agent is required for supervisor mode; add an Agent to the roster or Workspace",
-      );
-    }
-    return undefined;
-  }
-
   /** Materialize a Project roster before the first prompt starts a draft. */
   private async projectParticipants(
     projectId: string,
@@ -847,15 +792,6 @@ export class OrchestrationService {
     }
     if (prepared.participants.length === 0 && prepared.projectId) {
       prepared.participants = await this.projectParticipants(prepared.projectId);
-    }
-    if (
-      (prepared.mode ?? "sequential") === "supervisor" &&
-      prepared.supervisorAgentId === undefined
-    ) {
-      prepared.supervisorAgentId = await this.chooseSupervisorAgentId(
-        prepared.participants,
-        prepared.projectId,
-      );
     }
     return prepared;
   }
@@ -917,38 +853,24 @@ export class OrchestrationService {
   }
 
   /**
-   * Resolve the dedicated supervisor Agent once per accepted cycle. The
-   * resolver is the model-catalog authority and must prove supervisor scope;
-   * this service only carries its credential-free model snapshot forward.
+   * Resolve the supervisor model once per accepted cycle.
+   *
+   * Routing is a server-wide model, never an Agent: nothing in the roster
+   * supervises, and no Agent is consumed by supervising. The resolver is the
+   * model-catalog authority and must prove supervisor scope; this service only
+   * carries its credential-free model snapshot forward.
    */
   private async preflightSupervisor(
     session: OrchestrationSession,
   ): Promise<SupervisorModelAssignment | undefined> {
     if ((session.mode ?? "sequential") !== "supervisor") return undefined;
-    const supervisorAgentId = session.supervisorAgentId;
-    if (supervisorAgentId === undefined) {
-      throw new HttpError(
-        422,
-        "A supervisor Agent is required for supervisor mode",
-      );
-    }
-    const agent = (await this.listCurrentAgents()).find(
-      (candidate) => candidate.id === supervisorAgentId,
-    );
-    if (!agent) {
-      throw new HttpError(
-        422,
-        "Supervisor Agent " + supervisorAgentId + " was not found",
-      );
-    }
-    this.assertAgentAvailable(agent, true);
     if (!this.resolveSupervisorModel) {
       throw new HttpError(
         503,
         "Supervisor model resolution is not configured",
       );
     }
-    const assignment = await this.resolveSupervisorModel(agent);
+    const assignment = await this.resolveSupervisorModel();
     if (
       !assignment ||
       typeof assignment.modelId !== "string" ||

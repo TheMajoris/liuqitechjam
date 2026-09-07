@@ -7,10 +7,16 @@ export {
   ArkModelCatalogService,
   cloneArkModelCatalog,
   parseArkModelCatalog,
+  parseSupervisorModelRef,
   type ArkModelCatalogInput,
   type ArkModelCatalogRecord,
   type ModelCatalogReader,
 } from "./catalog.js";
+export {
+  releaseAgentsFromReservedModel,
+  type ReservationAgentService,
+  type ReservationOutcome,
+} from "./supervisor-reservation.js";
 export {
   ArkModelProvider,
   ARK_WORKER_PROVIDER_ID,

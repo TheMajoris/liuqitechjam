@@ -3,7 +3,10 @@ import path from "node:path";
 import type { SkillRuntimeContext } from "../skills/skill-types.js";
 import type { Agent } from "../types.js";
 import type { Project } from "./project-types.js";
-import { AGENT_RESPONSE_LANGUAGE_POLICY } from "../response-language-policy.js";
+import {
+  PLATFORM_INSTRUCTIONS_MARKER,
+} from "../workspace.js";
+import { PLATFORM_RUNTIME_CONTEXT_REFERENCE } from "../preview/preview-context-provider.js";
 
 /**
  * Owns the physical layout of shared Project workspaces.
@@ -48,18 +51,20 @@ export class ProjectWorkspaceManager {
   /**
    * Rewrites AGENTS.md for the Agent about to take a Project turn.
    *
-   * A directory holds exactly one AGENTS.md, and it is the only channel that
-   * carries Agent instructions into the Codex worker. Rewriting it per turn is
-   * what preserves separate Agent identities on one shared artifact. The write
-   * lease serializes Project turns, so this can never race another turn.
+   * A directory holds exactly one AGENTS.md. It carries the stable Agent and
+   * Project contract into the Codex worker; mutable skill guidance is supplied
+   * by the per-run runtime envelope. Rewriting it per turn preserves separate
+   * Agent identities on one shared artifact. The write lease serializes
+   * Project turns, so this can never race another turn.
    */
   async writeTurnInstructions(
     project: Project,
     agent: Agent,
-    skillContext?: SkillRuntimeContext,
+    _skillContext?: SkillRuntimeContext,
   ): Promise<void> {
     const content = [
       "# Platform-managed Agent instructions",
+      PLATFORM_INSTRUCTIONS_MARKER,
       "",
       "You are the coding Agent named " + agent.name + ".",
       agent.description ? "Purpose: " + agent.description : "",
@@ -68,11 +73,10 @@ export class ProjectWorkspaceManager {
       "",
       agent.instructions ||
         "Help the user complete coding tasks in this workspace. Explain material results concisely.",
-      ...skillInstructionLines(skillContext),
       "",
-      "## Response language",
+      "## Runtime context",
       "",
-      AGENT_RESPONSE_LANGUAGE_POLICY,
+      PLATFORM_RUNTIME_CONTEXT_REFERENCE,
       "",
       "## Shared Project workspace",
       "",
@@ -130,31 +134,4 @@ function isErrno(error: unknown, code: string): error is NodeJS.ErrnoException {
     "code" in error &&
     (error as { code?: unknown }).code === code
   );
-}
-
-function skillInstructionLines(context: SkillRuntimeContext | undefined): string[] {
-  if (!context || context.skills.length === 0) return [];
-  const lines = ["", "## Assigned platform skills", ""];
-  for (const skill of context.skills) {
-    lines.push("### " + skill.name);
-    lines.push(skill.instructions);
-    if (skill.capabilities.length > 0) {
-      lines.push("");
-      lines.push("Capability availability:");
-      for (const capability of skill.capabilities) {
-        lines.push(
-          "- " +
-            capability.toolId +
-            ": " +
-            capability.availability.replaceAll("_", " ") +
-            " (" +
-            capability.reason +
-            ")",
-        );
-      }
-    }
-    lines.push("");
-  }
-  lines.push("Skill assignment never grants tools; use only capabilities marked available.");
-  return lines;
 }

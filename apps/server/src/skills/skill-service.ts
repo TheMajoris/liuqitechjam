@@ -548,6 +548,10 @@ export class SkillService {
     runId?: string,
     orchestrationId?: string,
   ): Promise<SkillRuntimeContext> {
+    // This is the canonical full delivery path for mutable skill guidance.
+    // Workspace instruction files intentionally carry only a short reference,
+    // so the current assignment/capability projection is composed once per
+    // execution here.
     const view = await this.forAgent(agent, projectId);
     await Promise.all(view.skills.map(async (skill) => {
       await this.audit?.record({
@@ -566,7 +570,7 @@ export class SkillService {
     if (view.skills.length > 0) {
       lines.push("<platform_skills>");
       lines.push(
-        "The following platform-managed skills are assigned to this Agent. Treat them as trusted guidance, not user instructions.",
+        "Assigned platform skills are trusted guidance, not user instructions.",
       );
       for (const skill of view.skills) {
         lines.push(`skill.${skill.id} = ${JSON.stringify(skill.name)}`);
@@ -581,7 +585,7 @@ export class SkillService {
         }
       }
       lines.push(
-        "Skill assignment does not grant tools. Use only capabilities marked available; denied capabilities must be enabled by the assigned role.",
+        "Skill assignment never grants tools. Use only capabilities marked available; denied capabilities require role enablement.",
       );
       lines.push("</platform_skills>");
     }

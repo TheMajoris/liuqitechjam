@@ -1,4 +1,18 @@
+import type { RunUsage } from "../types.js";
+import {
+  summarizeRunTokens,
+  type RunTokenTotals,
+} from "../telemetry/telemetry-usage.js";
 import { AUDIT_CATEGORIES, type AuditCategory, type AuditEvent } from "./audit-types.js";
+
+/**
+ * Provider counters live on the Run record, not on audit events, so a trace
+ * can only report tokens when the caller supplies the Runs it covers. An
+ * absent reader yields an explicitly unavailable rollup rather than zeros.
+ */
+export interface TraceRunUsageReader {
+  usageForRun(runId: string): RunUsage | null | undefined;
+}
 
 export const MAX_AUDIT_TRACE_LIST_LIMIT = 200;
 export const DEFAULT_AUDIT_TRACE_LIST_LIMIT = 50;
@@ -28,6 +42,8 @@ export interface AuditTrace {
   durationMs: number;
   eventCount: number;
   countsByCategory: Record<AuditCategory, number>;
+  /** Token counters summed across every Run this trace covers. */
+  tokens: RunTokenTotals;
   failingStep: AuditTraceFailingStep | null;
   agentIds: string[];
   runIds: string[];
@@ -84,6 +100,7 @@ function createsCycle(
 export function buildTraceTree(
   events: readonly AuditEvent[],
   traceId: string,
+  runUsage?: TraceRunUsageReader,
 ): AuditTrace {
   const ordered = [...events].sort(compareEvents);
 
@@ -159,6 +176,8 @@ export function buildTraceTree(
         ? elapsed
         : 0;
 
+  const runIds = uniqueStrings(ordered.map((event) => event.runId));
+
   return {
     traceId,
     root,
@@ -169,9 +188,14 @@ export function buildTraceTree(
     durationMs,
     eventCount: ordered.length,
     countsByCategory,
+    tokens: summarizeRunTokens(
+      runUsage === undefined
+        ? []
+        : runIds.map((runId) => runUsage.usageForRun(runId)),
+    ),
     failingStep,
     agentIds: uniqueStrings(ordered.map((event) => event.agentId)),
-    runIds: uniqueStrings(ordered.map((event) => event.runId)),
+    runIds,
   };
 }
 
@@ -188,6 +212,7 @@ function summarize(trace: AuditTrace): AuditTraceSummary {
 export function listTraces(
   events: readonly AuditEvent[],
   filter: AuditTraceListQuery = {},
+  runUsage?: TraceRunUsageReader,
 ): AuditTraceSummary[] {
   const grouped = new Map<string, AuditEvent[]>();
   for (const event of events) {
@@ -210,7 +235,7 @@ export function listTraces(
     ) {
       continue;
     }
-    const trace = buildTraceTree(traceEvents, traceId);
+    const trace = buildTraceTree(traceEvents, traceId, runUsage);
     if (filter.status !== undefined && trace.status !== filter.status) continue;
     summaries.push(summarize(trace));
   }

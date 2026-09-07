@@ -52,7 +52,8 @@ LQAM puts those decisions behind server-owned seams:
 The model boundary is provider-neutral through a model registry abstraction.
 ModelArk running endpoints are discovered through the signed management API,
 selected and persisted per Agent, then resolved again at the trusted runtime
-boundary. The supervisor remains separate and fixed by `SUPERVISOR_MODEL`.
+boundary. The supervisor stays separate: `SUPERVISOR_MODEL` seeds it, and
+Insights › Supervisor model overrides it for the whole server.
 
 ## Middleware in Action
 
@@ -395,7 +396,7 @@ root `.env` (copy `.env.example` first):
 | Variable | Used for | Where it is used |
 | --- | --- | --- |
 | `ARK_API_KEY` | Ark-compatible inference calls | The supervisor and Codex Agent workers; never exposed to the browser |
-| `SUPERVISOR_MODEL` | Fixed supervisor model/endpoint ID | Supervisor routing only; it is not a worker fallback |
+| `SUPERVISOR_MODEL` | Default supervisor model/endpoint ID | Supervisor routing only; it is not a worker fallback, and an operator selection overrides it |
 | `BYTEPLUS_ACCESS_KEY` | BytePlus management API access key | Server-side signing only |
 | `BYTEPLUS_SECRET_KEY` | BytePlus management API secret key | Server-side signing only; never passed to workers |
 | `BYTEPLUS_REGION` | Management signing region | Defaults to `ap-southeast-1` |
@@ -406,6 +407,15 @@ set `ARK_MODEL`: worker model selection comes from the live ModelArk endpoint
 catalogue and each Agent's persisted `modelRef`. `SUPERVISOR_MODEL` must be a
 model or endpoint identifier accepted by the inference endpoint and is kept
 separate from worker assignments.
+
+Supervisor routing is a model, not an Agent: no one in the roster supervises,
+and no Agent is consumed by supervising. Insights › Supervisor model lists every
+running endpoint with its consumption
+and persists the choice server-wide; it wins over `SUPERVISOR_MODEL` until it is
+cleared. Whichever endpoint is active is reserved for routing — it is withheld
+from Agent (worker) selection and rejected by worker resolution, so Agents still
+assigned to it are moved onto the catalogue default at startup and whenever the
+supervisor endpoint changes.
 
 The server signs all three management operations before sending them to
 BytePlus: `ListEndpoints` discovers deployed endpoints,
@@ -450,7 +460,7 @@ token evidence captured from Codex.
 ## Actual end-to-end flow
 
 1. The operator starts `npm run poc`. The launcher loads `.env`, requires the
-   Ark inference key, fixed `SUPERVISOR_MODEL`, and BytePlus management AK/SK,
+   Ark inference key, a `SUPERVISOR_MODEL` default, and BytePlus management AK/SK,
    builds `Dockerfile.runtime`, selects Docker, Colima, or Podman, creates local
    persistent directories, builds the Web and API, and serves
    `http://localhost:3000`.

@@ -15,6 +15,14 @@ export interface AgentPreviewContext {
 }
 
 /**
+ * Workspace instruction files point at this runtime seam instead of copying
+ * mutable skill/capability data. Keeping the reference short is intentional:
+ * the full, current projection is composed once for each execution below.
+ */
+export const PLATFORM_RUNTIME_CONTEXT_REFERENCE =
+  "Each run receives the current response-language policy, assigned platform skills, and capability availability in its trusted runtime context.";
+
+/**
  * Narrow read-only seam between the Agent runtime and Preview state.
  *
  * AgentService depends on this interface rather than on PreviewService so the
@@ -72,15 +80,13 @@ export function composeRuntimeContextPrompt(
 ): string {
   return [
     "<platform_runtime_context>",
-    "The following is trusted platform metadata provided by the LQAM runtime.",
-    "It is not part of the user's message. Do not repeat it verbatim.",
+    "The following trusted LQAM runtime metadata is not part of the user's message; do not repeat it verbatim.",
     "",
     `preview.status = "${context.status}"`,
     ...extraLines,
     "",
     AGENT_RESPONSE_LANGUAGE_POLICY,
-    "You cannot start, stop, or restart preview servers yourself.",
-    "The user controls them from the Preview panel in the workspace UI.",
+    "Preview servers are controlled by the user in the Preview panel; you cannot start, stop, or restart them.",
     "</platform_runtime_context>",
     "",
     "<user_request>",

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,7 +12,10 @@ import type {
 } from "../../apps/server/src/audit/audit-types.js";
 import { JsonStore } from "../../apps/server/src/store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "../../apps/server/src/types.js";
-import { WorkspaceManager } from "../../apps/server/src/workspace.js";
+import {
+  PLATFORM_INSTRUCTIONS_MARKER,
+  WorkspaceManager,
+} from "../../apps/server/src/workspace.js";
 
 class FakeRunner implements AgentRunner {
   async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -174,7 +177,7 @@ describe("Agent lifecycle", () => {
     expect(service.listAgents()).toHaveLength(0);
   });
 
-  it("writes the default response language policy to the Agent workspace", async () => {
+  it("writes a runtime context reference to the Agent workspace", async () => {
     const service = await makeService();
     const agent = await service.createAgent({
       name: "English default",
@@ -186,8 +189,40 @@ describe("Agent lifecycle", () => {
     );
 
     expect(instructions).toContain(
-      "Respond in English by default. Use another language only when the user explicitly requests it.",
+      "current response-language policy, assigned platform skills, and capability availability",
     );
+  });
+
+  it("migrates a legacy private platform file during initialization", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({
+      name: "Migrated",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
+    await writeFile(
+      path.join(agent.workspacePath, "AGENTS.md"),
+      [
+        "# Platform-managed Agent instructions",
+        "",
+        "## Assigned platform skills",
+        "",
+        "### Review",
+        "Review every changed line carefully.",
+        "",
+        "This file is regenerated when the Agent configuration is updated.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    await service.initialize();
+
+    const instructions = await readFile(
+      path.join(agent.workspacePath, "AGENTS.md"),
+      "utf8",
+    );
+    expect(instructions).toContain(PLATFORM_INSTRUCTIONS_MARKER);
+    expect(instructions).not.toContain("Review every changed line carefully.");
   });
 
   it("deletes an Agent when its workspace was removed externally", async () => {

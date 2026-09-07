@@ -229,8 +229,6 @@ export const CreateOrchestrationSchema: z.ZodType<CreateOrchestrationInput> =
     originalPrompt: orchestrationPromptSchema,
     participants: OrchestrationDraftParticipantsSchema,
     mode: OrchestrationModeSchema.optional(),
-    /** Supervisor routing is performed by this existing Agent's model. */
-    supervisorAgentId: idSchema.optional(),
     /** Opt-in shared Project scope; omitted Teams remain text-only. */
     projectId: idSchema.optional(),
     maxSteps: z.number().int().positive().max(ORCHESTRATION_LIMITS.maxSteps),
@@ -240,14 +238,6 @@ export const CreateOrchestrationSchema: z.ZodType<CreateOrchestrationInput> =
       .min(ORCHESTRATION_LIMITS.minPerAgentTimeoutMs)
       .max(ORCHESTRATION_LIMITS.maxPerAgentTimeoutMs),
   }).superRefine((value, context) => {
-    const mode = value.mode ?? "sequential";
-    if (mode !== "supervisor" && value.supervisorAgentId !== undefined) {
-      context.addIssue({
-        code: "custom",
-        path: ["supervisorAgentId"],
-        message: "supervisorAgentId is only valid for supervisor mode",
-      });
-    }
     // Workspace conversations can be saved as an empty draft. Text-only
     // orchestration remains runnable-at-creation and therefore keeps its
     // original task/roster invariants.
@@ -308,6 +298,11 @@ export const OrchestrationSessionSchema: z.ZodType<OrchestrationSession> =
     originalPrompt: orchestrationPromptSchema,
     participants: OrchestrationDraftParticipantsSchema,
     mode: OrchestrationModeSchema.optional(),
+    /**
+     * Legacy only. Supervisor routing is a server-wide model, never an Agent;
+     * this field is still read back so records written before that change
+     * remain loadable, and nothing consults it.
+     */
     supervisorAgentId: idSchema.optional(),
     supervisorModelRef: ModelRefSchema.optional(),
     supervisorModelCatalogRevision: z.union([z.string().min(1), z.number().finite()]).optional(),
@@ -334,17 +329,6 @@ export const OrchestrationSessionSchema: z.ZodType<OrchestrationSession> =
     startedAt: timestampSchema.nullable(),
     completedAt: timestampSchema.nullable(),
   }).superRefine((value, context) => {
-    const mode = value.mode ?? "sequential";
-    // Existing persisted records may predate supervisor Agents. Keep those
-    // readable for recovery; startSession performs the required explicit
-    // supervisor-Agent check before a new cycle is accepted.
-    if (mode !== "supervisor" && value.supervisorAgentId !== undefined) {
-      context.addIssue({
-        code: "custom",
-        path: ["supervisorAgentId"],
-        message: "supervisorAgentId is only valid for supervisor mode",
-      });
-    }
     const incomplete = !value.originalPrompt || value.participants.length === 0;
     const workspaceDraft = value.status === "draft" && Boolean(value.projectId);
     if (!incomplete || workspaceDraft) return;

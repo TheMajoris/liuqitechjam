@@ -3,7 +3,7 @@ import { api, ApiError } from "../../api";
 import type { RunHistoryEntry, RunStatus } from "../../types";
 import { Spinner } from "../playground/Spinner";
 import { formatDuration } from "../insights/usage-format";
-import { formatStarted, shortId } from "./run-format";
+import { describeTokens, formatStarted, formatTokenCell, shortId } from "./run-format";
 
 interface RunListViewProps {
   /** Scopes the list to one Agent; omitted for the global explorer. */
@@ -91,6 +91,7 @@ export function RunListView({
                 <th>Status</th>
                 <th>Started</th>
                 <th className="numeric">Duration</th>
+                <th className="numeric">Tokens</th>
                 <th className="numeric">Events</th>
                 <th className="numeric">Errors</th>
               </tr>
@@ -132,6 +133,9 @@ export function RunListView({
                   <td>{formatStarted(run.startedAt ?? run.createdAt)}</td>
                   <td className="numeric">
                     {run.durationMs === null ? "—" : formatDuration(run.durationMs)}
+                  </td>
+                  <td className="numeric" title={describeTokens(run.tokens)}>
+                    {formatTokenCell(run.tokens)}
                   </td>
                   <td className="numeric">{run.eventCount}</td>
                   <td className="numeric">{run.errorCount > 0 ? run.errorCount : ""}</td>
