@@ -490,6 +490,7 @@ export type OrchestrationEventType =
   | "orchestration_created"
   | "orchestration_started"
   | "orchestration_continued"
+  | "orchestration_retried"
   | "supervisor_decision"
   | "participant_dispatched"
   | "run_completed"

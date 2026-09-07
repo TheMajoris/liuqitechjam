@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import type { Agent, OrchestrationSessionDetail } from "../../types";
 import { OrchestrationConversation } from "./OrchestrationConversation";
+import { OrchestrationGraph } from "./OrchestrationGraph";
 import { OrchestrationTimeline } from "./OrchestrationTimeline";
+import { isOrchestrationActive } from "./orchestration-utils";
+import type { OrchestrationAction } from "./use-orchestration";
 
 export type RunTab = "workspace" | "conversation" | "activity" | "preview";
 
@@ -22,8 +25,10 @@ const TAB_NOTES: Record<RunTab, string> = {
 interface OrchestrationRunTabsProps {
   detail: OrchestrationSessionDetail | null;
   agents: Agent[];
-  action?: "create" | "start" | "stop" | "continue" | "delete" | null;
+  action?: OrchestrationAction;
   onContinue?: (prompt: string, sessionId: string) => void;
+  /** Resumes the run from one recorded step; omitted when unavailable. */
+  onRetry?: (fromStepIndex: number) => void;
   activeTab: RunTab;
   onTabChange: (tab: RunTab) => void;
   /** Rendered for the Workspace tab; supplied by the owner so this component
@@ -44,6 +49,7 @@ export function OrchestrationRunTabs({
   agents,
   action,
   onContinue,
+  onRetry,
   activeTab,
   onTabChange,
   workspace,
@@ -121,7 +127,20 @@ export function OrchestrationRunTabs({
             onContinue={onContinue}
           />
         ) : activeTab === "activity" ? (
-          <OrchestrationTimeline detail={detail} agents={agents} embedded />
+          // Shape first, then the ordered record. Both read the same journal.
+          <>
+            <OrchestrationGraph
+              detail={detail}
+              agents={agents}
+              onRetry={onRetry}
+              retryPending={action === "retry"}
+              // A resume starts a fresh cycle, so the run must be settled.
+              retryBlocked={
+                detail ? isOrchestrationActive(detail.session.status) : false
+              }
+            />
+            <OrchestrationTimeline detail={detail} agents={agents} embedded />
+          </>
         ) : (
           preview
         )}

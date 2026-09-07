@@ -9,6 +9,7 @@ import {
   formatDateTime,
   formatDuration,
   humanizeFailure,
+  isInternalWording,
   participantNumber,
 } from "./orchestration-utils";
 
@@ -44,18 +45,14 @@ function productEventSummary(
 ): string {
   if (event.type === "supervisor_decision") {
     const summary = event.safeSummary?.trim();
-    return summary &&
-      !/\b(supervisor|mastra|langgraph|graph|workflow)\b/i.test(summary)
+    return summary && !isInternalWording(summary)
       ? summary
       : productEventLabel(event, participant, agents);
   }
   if (event.errorCode?.startsWith("SUPERVISOR_")) {
     return humanizeFailure(event.errorCode, event.safeSummary);
   }
-  if (
-    event.safeSummary &&
-    /\b(supervisor|mastra|langgraph|graph|workflow)\b/i.test(event.safeSummary)
-  ) {
+  if (event.safeSummary && isInternalWording(event.safeSummary)) {
     return "The control plane recorded this transition.";
   }
   return event.safeSummary || "The control plane recorded this transition.";

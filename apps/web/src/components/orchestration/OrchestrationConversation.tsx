@@ -6,6 +6,7 @@ import type {
   OrchestrationTurn,
 } from "../../types";
 import { MarkdownMessage } from "../MarkdownMessage";
+import type { OrchestrationAction } from "./use-orchestration";
 import { StickyComposer } from "../StickyComposer";
 import { AgentAvatar } from "./AgentAvatar";
 import {
@@ -20,7 +21,7 @@ import {
 interface OrchestrationConversationProps {
   detail: OrchestrationSessionDetail | null;
   agents: Agent[];
-  action?: "create" | "start" | "stop" | "continue" | "delete" | null;
+  action?: OrchestrationAction;
   onContinue?: (prompt: string, sessionId: string) => void;
 }
 

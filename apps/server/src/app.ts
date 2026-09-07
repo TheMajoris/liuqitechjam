@@ -41,6 +41,7 @@ import {
 } from "./models/index.js";
 import {
   ContinueOrchestrationSchema,
+  RetryOrchestrationSchema,
   CreateOrchestrationSchema,
   OrchestrationRouteParamsSchema,
   StartOrchestrationSchema,
@@ -72,6 +73,7 @@ export interface OrchestrationServiceContract {
   startSession(id: string, prompt?: string): Promise<OrchestrationSession>;
   stopSession(id: string): Promise<OrchestrationSession>;
   continueSession(id: string, prompt: string): Promise<OrchestrationSession>;
+  retryFromStep(id: string, fromStepIndex: number): Promise<OrchestrationSession>;
   deleteSession(id: string): Promise<{ deleted: boolean }>;
   /** Root trace span for this orchestration; optional so route tests can omit it. */
   orchestrationSpan?(id: string): AuditSpan;
@@ -249,6 +251,17 @@ function parseContinuationInput(value: unknown): { prompt: string } {
   if (!parsed.success) {
     throw new OrchestrationValidationError(
       "Invalid continuation request",
+      parsed.error.issues,
+    );
+  }
+  return parsed.data;
+}
+
+function parseRetryInput(value: unknown): { fromStepIndex: number } {
+  const parsed = RetryOrchestrationSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new OrchestrationValidationError(
+      "Invalid retry request",
       parsed.error.issues,
     );
   }
@@ -597,6 +610,25 @@ export async function createApp(
     await recordHumanAction(
       mcp?.auditService,
       orchestrationHumanEvent("orchestration_continued", "Orchestration continued", id, session, orchestration),
+      request.log,
+    );
+    return reply.code(202).send({ session });
+  });
+
+  app.post("/api/orchestrations/:id/retry", async (request, reply) => {
+    const { id } = parseOrchestrationParams(request.params);
+    const { fromStepIndex } = parseRetryInput(request.body);
+    const orchestration = requireOrchestrationService(orchestrationService);
+    const session = await orchestration.retryFromStep(id, fromStepIndex);
+    await recordHumanAction(
+      mcp?.auditService,
+      orchestrationHumanEvent(
+        "orchestration_continued",
+        "Orchestration retried from step " + String(fromStepIndex + 1),
+        id,
+        session,
+        orchestration,
+      ),
       request.log,
     );
     return reply.code(202).send({ session });

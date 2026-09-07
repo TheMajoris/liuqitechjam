@@ -53,6 +53,7 @@ export type OrchestrationEventType =
   | "orchestration_created"
   | "orchestration_started"
   | "orchestration_continued"
+  | "orchestration_retried"
   | "participant_dispatched"
   | "supervisor_decision"
   | "run_completed"
@@ -206,6 +207,17 @@ export interface ContinueOrchestrationInput {
 /** Optional first prompt accepted when starting an idle Conversation draft. */
 export interface StartOrchestrationInput {
   prompt?: string | undefined;
+}
+
+/**
+ * Body accepted by the retry route.
+ *
+ * `fromStepIndex` is a persisted global execution step, so it identifies one
+ * recorded turn rather than a roster position: the same participant may hold
+ * several steps in round-robin and supervisor runs.
+ */
+export interface RetryOrchestrationInput {
+  fromStepIndex: number;
 }
 
 export interface OrchestrationSessionDetail {

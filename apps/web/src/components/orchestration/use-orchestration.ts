@@ -13,7 +13,15 @@ import { errorMessage, isOrchestrationActive } from "./orchestration-utils";
 
 const POLL_INTERVAL_MS = 900;
 
-type OrchestrationAction = "create" | "start" | "stop" | "continue" | "delete" | null;
+/** The single in-flight lifecycle request, shared by every view that shows it. */
+export type OrchestrationAction =
+  | "create"
+  | "start"
+  | "stop"
+  | "continue"
+  | "retry"
+  | "delete"
+  | null;
 
 export interface UseOrchestrationResult {
   sessions: OrchestrationSession[];
@@ -40,6 +48,7 @@ export interface UseOrchestrationResult {
   startSession: (sessionId?: string, prompt?: string) => Promise<void>;
   stopSession: (sessionId?: string) => Promise<void>;
   continueSession: (prompt: string, sessionId?: string) => Promise<void>;
+  retryFromStep: (fromStepIndex: number, sessionId?: string) => Promise<void>;
   deleteSession: (sessionId?: string) => Promise<void>;
 }
 
@@ -410,6 +419,37 @@ export function useOrchestration(): UseOrchestrationResult {
     }
   }, [detail, selectedSessionId, sessions, startSession]);
 
+  /**
+   * Re-run one recorded step. The detail is cleared so the next poll refetches
+   * the journal, which now holds both the abandoned turns and the new ones.
+   */
+  const retryFromStep = useCallback(
+    async (fromStepIndex: number, sessionId?: string) => {
+      const target = sessionId ?? selectedSessionId;
+      if (!target) return;
+      setAction("retry");
+      try {
+        const result = await api.retryOrchestration(target, fromStepIndex);
+        if (mountedRef.current) {
+          setSessions((current) => replaceSession(current, result.session));
+          setSelectedSessionId(result.session.id);
+          setDetail((current) =>
+            current?.session.id === result.session.id
+              ? { ...current, session: result.session }
+              : null,
+          );
+          setError(null);
+        }
+      } catch (reason) {
+        if (mountedRef.current) setError(errorMessage(reason));
+        throw reason;
+      } finally {
+        if (mountedRef.current) setAction(null);
+      }
+    },
+    [selectedSessionId],
+  );
+
   const deleteSession = useCallback(async (sessionId?: string) => {
     const target = sessionId ?? selectedSessionId;
     if (!target) return;
@@ -469,6 +509,7 @@ export function useOrchestration(): UseOrchestrationResult {
     startSession,
     stopSession,
     continueSession,
+    retryFromStep,
     deleteSession,
   };
 }
