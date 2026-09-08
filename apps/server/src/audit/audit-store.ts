@@ -2,7 +2,11 @@ import type { Storage } from "../store.js";
 import { GENESIS_HASH, hashAuditEvent, type AuditChainAnchor } from "./audit-hash.js";
 import { normalizeAuditEvent } from "./audit-normalize.js";
 import type { AuditEvent, HashedAuditEvent } from "./audit-types.js";
-import type { AuditRunReader, AuditRunSnapshot } from "./audit-timeline.js";
+import type {
+  AuditConversationSnapshot,
+  AuditRunReader,
+  AuditRunSnapshot,
+} from "./audit-timeline.js";
 
 export const MAX_PERSISTED_AUDIT_EVENTS = 10_000;
 
@@ -76,6 +80,29 @@ export class StorageAuditStoreAdapter implements AuditStoreAdapter, AuditRunRead
 
   readRuns(): readonly AuditRunSnapshot[] {
     return this.store.snapshot().runs;
+  }
+
+  /**
+   * Both conversation collections, flattened to id/kind/title.
+   *
+   * Only the naming fields cross this seam. Observability labels a Run's
+   * thread; it has no business reading a Team's roster or a thread's prompt
+   * history, so neither is offered here.
+   */
+  readConversations(): readonly AuditConversationSnapshot[] {
+    const database = this.store.snapshot();
+    return [
+      ...database.agentConversations.map((conversation) => ({
+        id: conversation.id,
+        kind: "direct" as const,
+        title: conversation.title,
+      })),
+      ...database.orchestrations.map((session) => ({
+        id: session.id,
+        kind: "team" as const,
+        title: session.name,
+      })),
+    ];
   }
 }
 

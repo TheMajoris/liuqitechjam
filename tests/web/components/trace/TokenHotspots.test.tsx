@@ -199,3 +199,52 @@ describe("TokenHotspots", () => {
     expect(html).toContain("No models reported token counters in this view.");
   });
 });
+
+describe("the folded tail", () => {
+  function row(id: string, netNewTokens: number) {
+    const hotspot = emptyHotspot(id, id);
+    hotspot.netNewTokens = netNewTokens;
+    hotspot.netNewInputTokens = netNewTokens;
+    hotspot.inputTokens = netNewTokens;
+    hotspot.totalTokens = netNewTokens;
+    hotspot.runs = 1;
+    return hotspot;
+  }
+
+  // The tail sums every folded row, so it is regularly larger than the leader.
+  // Scaled against the leader it drew past the panel edge.
+  it("keeps every bar inside the panel when the tail outweighs the leader", () => {
+    const markup = renderToStaticMarkup(
+      <TokenHotspots
+        title="Where the tokens went"
+        subject="conversation"
+        limit={2}
+        rows={[row("a", 70), row("b", 60), row("c", 100), row("d", 100), row("e", 85)]}
+      />,
+    );
+
+    const widths = [...markup.matchAll(/token-hotspot-bar" style="width:([\d.]+)%/g)].map(
+      (match) => Number(match[1]),
+    );
+    expect(widths.length).toBe(3);
+    expect(Math.max(...widths)).toBeLessThanOrEqual(100);
+    // The tail is the largest quantity here, so it is the bar that fills the row.
+    expect(widths[widths.length - 1]).toBe(100);
+  });
+
+  it("keeps the named rows in proportion to each other", () => {
+    const markup = renderToStaticMarkup(
+      <TokenHotspots
+        title="Where the tokens went"
+        subject="conversation"
+        limit={2}
+        rows={[row("a", 100), row("b", 50), row("c", 20)]}
+      />,
+    );
+
+    const widths = [...markup.matchAll(/token-hotspot-bar" style="width:([\d.]+)%/g)].map(
+      (match) => Number(match[1]),
+    );
+    expect(widths).toEqual([100, 50, 20]);
+  });
+});

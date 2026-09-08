@@ -26,10 +26,36 @@ export interface AuditRunSnapshot {
   traceId?: string;
   /** The model this Run actually ran on; needed to look up its context window. */
   modelUsed?: ModelRef;
+  /** Private conversation this Run belongs to; set on direct Runs only. */
+  conversationId?: string | undefined;
 }
+
+/**
+ * The conversation a Run belongs to, named.
+ *
+ * Both kinds are conversations to a reader: a private thread with one Agent
+ * and a Team session with several. They are separate collections and their IDs
+ * are only unique within their own kind, so `kind` stays on the record rather
+ * than being inferred from the ID.
+ */
+export interface AuditConversationSnapshot {
+  id: string;
+  kind: AuditConversationKind;
+  /** Human label; empty when the conversation was never named. */
+  title: string;
+}
+
+export type AuditConversationKind = "direct" | "team";
 
 export interface AuditRunReader {
   readRuns(): readonly AuditRunSnapshot[];
+  /**
+   * Conversation titles, for naming a Run's thread.
+   *
+   * Optional: a reader that supplies only Runs stays valid, and its Runs are
+   * then labelled by their own prompt rather than by an invented thread name.
+   */
+  readConversations?(): readonly AuditConversationSnapshot[];
 }
 
 export type AuditTimelineQuery = AuditQuery;

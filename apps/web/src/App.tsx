@@ -88,6 +88,9 @@ export default function App() {
   const [view, setView] = useState<ShellView>("workspace");
   const [traceId, setTraceId] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
+  // The Runs the list had in view when one was opened, so the detail page can
+  // step to the next in that same order.
+  const [runSiblings, setRunSiblings] = useState<readonly string[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [roles, setRoles] = useState<AgentRole[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(readSidebarPreference);
@@ -508,6 +511,7 @@ export default function App() {
         onSelectTraces={() => {
           setTraceId(null);
           setRunId(null);
+          setRunSiblings([]);
           setView("traces");
         }}
         onSelectAccess={() => setView("access")}
@@ -600,12 +604,20 @@ export default function App() {
             <TraceDetailView
               runId={runId}
               backLabel="Back to runs"
+              siblingRunIds={runSiblings}
+              onOpenRun={setRunId}
               onBack={() => setRunId(null)}
             />
           ) : traceId ? (
             <TraceDetailView traceId={traceId} onBack={() => setTraceId(null)} />
           ) : (
-            <TraceRunsView onOpenTrace={setTraceId} onOpenRun={setRunId} />
+            <TraceRunsView
+              onOpenTrace={setTraceId}
+              onOpenRun={(id, siblings) => {
+                setRunSiblings(siblings);
+                setRunId(id);
+              }}
+            />
           )
         ) : view === "workspace" ? (
           <OrchestrationWorkspace
