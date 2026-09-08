@@ -224,6 +224,18 @@ function needsDatabaseMigration(value: UnknownRecord): boolean {
 export type AuditRetentionPolicy = "bounded" | "append-only";
 
 /**
+ * Sanitized notification emitted when a storage adapter can no longer safely
+ * serve application state. The original driver error must stay inside the
+ * adapter and is never part of this application-facing contract.
+ */
+export interface StorageFatalFailure {
+  readonly code: "STORAGE_UNAVAILABLE";
+  readonly message: string;
+}
+
+export type StorageFatalHandler = (failure: StorageFatalFailure) => void;
+
+/**
  * Durable application state contract shared by the legacy JSON adapter and
  * production database adapters.
  *
@@ -237,6 +249,8 @@ export interface Storage {
   snapshot(): Database;
   mutate<T>(mutation: (database: Database) => T | Promise<T>): Promise<T>;
   close(): Promise<void>;
+  /** Optional application-owned lifecycle notification for fatal adapters. */
+  setFatalHandler?(handler: StorageFatalHandler | undefined): void;
 }
 
 export class JsonStore implements Storage {

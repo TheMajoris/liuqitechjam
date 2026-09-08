@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { HttpError } from "../errors.js";
 import type { Storage } from "../store.js";
-import type { Database } from "../types.js";
-import { redactSensitiveText } from "./handoff.js";
+import type { AgentRun, Database } from "../types.js";
+import { createHandoffEnvelope, redactSensitiveText } from "./handoff.js";
 import { ORCHESTRATION_LIMITS } from "./schemas.js";
 import type { OrchestrationExecutionTurn } from "./orchestrator.js";
 import type {
@@ -225,6 +225,116 @@ export function cloneEvent(event: OrchestrationEvent): OrchestrationEvent {
   return copy;
 }
 
+interface ReconciledTurn {
+  status: "completed" | "failed" | "cancelled";
+  safeOutput: string | null;
+  outputTruncated: boolean;
+  errorCode: OrchestrationErrorCode | null;
+  safeSummary: string;
+}
+
+function runErrorCode(
+  run: AgentRun | undefined,
+  fallback: OrchestrationErrorCode,
+): OrchestrationErrorCode {
+  if (
+    run?.errorCode === "WEB_TOOL_PERMISSION_DENIED" ||
+    run?.errorCode === "MODEL_INFERENCE_LIMIT_EXCEEDED"
+  ) {
+    return run.errorCode;
+  }
+  return fallback;
+}
+
+function recoveryFailureSummary(prefix: string, run?: AgentRun): string {
+  const detail = run?.error ? safeErrorMessage(run.error) : "";
+  return detail.length > 0 ? `${prefix}: ${detail}` : prefix;
+}
+
+function reconcileTurn(turn: OrchestrationTurn, run?: AgentRun): ReconciledTurn {
+  if (run?.status === "completed") {
+    if (typeof run.output === "string" && run.output.trim().length > 0) {
+      // Reuse the same application-owned handoff seam used before a result
+      // crosses to another participant. This keeps recovered output bounded
+      // and redacted without trusting the framework or invoking an Agent.
+      const envelope = createHandoffEnvelope({
+        sourceParticipantId: turn.participantId,
+        sourceAgentId: turn.agentId,
+        sourceRunId: turn.runId,
+        content: run.output,
+      });
+      return {
+        status: "completed",
+        safeOutput: boundedSafeText(
+          envelope.content,
+          ORCHESTRATION_LIMITS.maxSafeOutputLength,
+          "[OUTPUT TRUNCATED]",
+        ),
+        outputTruncated: envelope.truncated,
+        errorCode: null,
+        safeSummary: "Recovered completed participant Run after server restart",
+      };
+    }
+
+    return {
+      status: "failed",
+      safeOutput: null,
+      outputTruncated: false,
+      errorCode: "INVALID_OUTPUT",
+      safeSummary: recoveryFailureSummary(
+        "Completed participant Run had no usable output during recovery",
+        run,
+      ),
+    };
+  }
+
+  if (run?.status === "failed") {
+    return {
+      status: "failed",
+      safeOutput: null,
+      outputTruncated: false,
+      errorCode: runErrorCode(run, "RUN_FAILED"),
+      safeSummary: recoveryFailureSummary(
+        "Recovered failed participant Run after server restart",
+        run,
+      ),
+    };
+  }
+
+  if (run?.status === "cancelled") {
+    return {
+      status: "cancelled",
+      safeOutput: null,
+      outputTruncated: false,
+      errorCode: runErrorCode(run, "RUN_CANCELLED"),
+      safeSummary: recoveryFailureSummary(
+        "Recovered cancelled participant Run after server restart",
+        run,
+      ),
+    };
+  }
+
+  if (run) {
+    return {
+      status: "cancelled",
+      safeOutput: null,
+      outputTruncated: false,
+      errorCode: "ORCHESTRATION_INTERRUPTED",
+      safeSummary:
+        "Participant Run was still nonterminal after startup reconciliation; turn was interrupted",
+    };
+  }
+
+  return {
+    status: "failed",
+    safeOutput: null,
+    outputTruncated: false,
+    errorCode: "RUN_NOT_FOUND",
+    safeSummary:
+      "No committed participant Run was found during startup reconciliation; turn was interrupted",
+  };
+}
+
 /**
  * Repository-owned orchestration journal. It centralizes safe projections,
  * event invariants, recovery, and bounded historical context while lifecycle
@@ -238,20 +348,56 @@ export class OrchestrationJournal {
     await this.store.mutate((database) => {
       const interruptedAt = now();
       for (const session of database.orchestrations) {
-        if (!statusIsActive(session.status)) continue;
-        session.status = "interrupted";
-        session.currentParticipantId = null;
-        session.currentRunId = null;
-        session.completionReason = null;
-        session.errorCode = "ORCHESTRATION_INTERRUPTED";
-        session.errorMessage =
-          "Orchestration was interrupted because the server restarted";
-        session.completedAt = interruptedAt;
-        session.updatedAt = interruptedAt;
-        appendEvent(database, session, "orchestration_interrupted", {
-          errorCode: "ORCHESTRATION_INTERRUPTED",
-          safeSummary: session.errorMessage,
-        });
+        if (statusIsActive(session.status)) {
+          session.status = "interrupted";
+          session.currentParticipantId = null;
+          session.currentRunId = null;
+          session.completionReason = null;
+          session.errorCode = "ORCHESTRATION_INTERRUPTED";
+          session.errorMessage =
+            "Orchestration was interrupted because the server restarted";
+          session.completedAt = interruptedAt;
+          session.updatedAt = interruptedAt;
+          appendEvent(database, session, "orchestration_interrupted", {
+            errorCode: "ORCHESTRATION_INTERRUPTED",
+            safeSummary: session.errorMessage,
+          });
+        }
+
+        // Only dispatched turns are nonterminal. All facts used here are
+        // already committed in the store; recovery never routes or invokes a
+        // participant and never guesses a participant from the roster.
+        const runsById = new Map(database.runs.map((run) => [run.id, run]));
+        for (const turn of database.orchestrationTurns) {
+          if (turn.sessionId !== session.id || turn.status !== "dispatched") {
+            continue;
+          }
+          const reconciled = reconcileTurn(turn, runsById.get(turn.runId));
+          turn.status = reconciled.status;
+          turn.safeOutput = reconciled.safeOutput;
+          turn.outputTruncated = reconciled.outputTruncated;
+          turn.errorCode = reconciled.errorCode;
+          turn.completedAt = interruptedAt;
+          session.updatedAt = interruptedAt;
+          appendEvent(
+            database,
+            session,
+            reconciled.status === "completed"
+              ? "run_completed"
+              : reconciled.status === "cancelled"
+                ? "child_run_cancelled"
+                : "participant_failed",
+            {
+              participantId: turn.participantId,
+              agentId: turn.agentId,
+              runId: turn.runId,
+              safeSummary: reconciled.safeSummary,
+              ...(reconciled.errorCode === null
+                ? {}
+                : { errorCode: reconciled.errorCode }),
+            },
+          );
+        }
       }
     });
   }

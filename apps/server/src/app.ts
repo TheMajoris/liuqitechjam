@@ -4,6 +4,11 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import {
+  STORAGE_UNAVAILABLE_CODE,
+  STORAGE_UNAVAILABLE_MESSAGE,
+  type ApplicationHealthContract,
+} from "./application-health.js";
 import type { AuditEventInput, AuditReader, AuditSpan } from "./audit/audit-types.js";
 import { newSpanId } from "./audit/audit-span.js";
 import type { AppConfig } from "./config.js";
@@ -235,6 +240,14 @@ function requireAuditService(
   return auditService;
 }
 
+function requireApplicationAvailability(
+  applicationHealth: ApplicationHealthContract | undefined,
+): void {
+  if (applicationHealth?.isHealthy() === false) {
+    throw new HttpError(503, STORAGE_UNAVAILABLE_MESSAGE);
+  }
+}
+
 function parseOrchestrationInput(value: unknown): CreateOrchestrationInput {
   const parsed = CreateOrchestrationSchema.safeParse(value);
   if (!parsed.success) {
@@ -329,6 +342,7 @@ export async function createApp(
   modelCatalog?: ModelCatalogServiceContract,
   agentMetrics?: AgentMetricsService,
   agentAuthoring?: AgentAuthoringService,
+  applicationHealth?: ApplicationHealthContract,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -345,11 +359,12 @@ export async function createApp(
         : false,
   });
 
+  const publicHealthRoutes = new Set(["/api/health", "/api/readiness", "/api/ready"]);
   app.addHook("onRequest", async (request, reply) => {
     if (
       !config.authToken ||
       !request.url.startsWith("/api/") ||
-      request.url === "/api/health" ||
+      publicHealthRoutes.has(request.url.split("?", 1)[0] ?? "") ||
       request.url === "/api/auth"
     ) {
       return;
@@ -366,10 +381,23 @@ export async function createApp(
     }
   });
 
-  app.get("/api/health", async () => ({
-    ok: true,
-    service: "lqam-server",
-  }));
+  const healthResponse = () => {
+    if (applicationHealth?.isHealthy() === false) {
+      return {
+        ok: false as const,
+        service: "lqam-server",
+        storage: "unavailable" as const,
+        errorCode: "STORAGE_UNAVAILABLE" as const,
+      };
+    }
+    return { ok: true as const, service: "lqam-server" };
+  };
+  for (const route of ["/api/health", "/api/readiness", "/api/ready"] as const) {
+    app.get(route, async (_request, reply) => {
+      const response = healthResponse();
+      return response.ok ? response : reply.code(503).send(response);
+    });
+  }
 
   app.get("/api/auth", async () => ({ required: config.authToken.length > 0 }));
 
@@ -587,6 +615,7 @@ export async function createApp(
   });
 
   app.post("/api/orchestrations/:id/start", async (request, reply) => {
+    requireApplicationAvailability(applicationHealth);
     const { id } = parseOrchestrationParams(request.params);
     const { prompt } = parseStartInput(request.body === undefined ? {} : request.body);
     const orchestration = requireOrchestrationService(orchestrationService);
@@ -615,6 +644,7 @@ export async function createApp(
   });
 
   app.post("/api/orchestrations/:id/continue", async (request, reply) => {
+    requireApplicationAvailability(applicationHealth);
     const { id } = parseOrchestrationParams(request.params);
     const { prompt } = parseContinuationInput(request.body);
     const orchestration = requireOrchestrationService(orchestrationService);
@@ -628,6 +658,7 @@ export async function createApp(
   });
 
   app.post("/api/orchestrations/:id/retry", async (request, reply) => {
+    requireApplicationAvailability(applicationHealth);
     const { id } = parseOrchestrationParams(request.params);
     const { fromStepIndex } = parseRetryInput(request.body);
     const orchestration = requireOrchestrationService(orchestrationService);
@@ -779,6 +810,7 @@ export async function createApp(
   });
 
   app.post("/api/agents/:id/preview/start", async (request, reply) => {
+    requireApplicationAvailability(applicationHealth);
     const { id } = agentIdParams.parse(request.params);
     const preview = await requirePreviewService(previewService).start({ kind: "agent", agentId: id });
     return reply.code(202).send({ preview });
@@ -795,6 +827,7 @@ export async function createApp(
   });
 
   app.post("/api/agents/:id/preview/restart", async (request, reply) => {
+    requireApplicationAvailability(applicationHealth);
     const { id } = agentIdParams.parse(request.params);
     const preview = await requirePreviewService(previewService).restart({ kind: "agent", agentId: id });
     return reply.code(202).send({ preview });
@@ -946,6 +979,7 @@ export async function createApp(
   });
 
   app.post("/api/projects/:id/preview/start", async (request, reply) => {
+    requireApplicationAvailability(applicationHealth);
     const { id } = projectIdParams.parse(request.params);
     const preview = await requirePreviewService(previewService).start({
       kind: "project",
@@ -965,6 +999,7 @@ export async function createApp(
   });
 
   app.post("/api/projects/:id/preview/restart", async (request, reply) => {
+    requireApplicationAvailability(applicationHealth);
     const { id } = projectIdParams.parse(request.params);
     const preview = await requirePreviewService(previewService).restart({
       kind: "project",
@@ -1051,6 +1086,7 @@ export async function createApp(
   });
 
   app.post("/api/agents/:id/messages", async (request, reply) => {
+    requireApplicationAvailability(applicationHealth);
     const { id } = agentIdParams.parse(request.params);
     const body = messageBody.parse(request.body);
     const result = await service.sendMessage(id, body.content, {
@@ -1100,6 +1136,7 @@ export async function createApp(
     const projectError = isProjectError(error) ? error : null;
     const skillError = isSkillError(error) ? error : null;
     const roleError = isRoleError(error) ? error : null;
+    const storageUnavailable = appError.name === "StorageUnavailableError";
     const validationError = error instanceof z.ZodError;
     const details = validationError
       ? error.issues
@@ -1113,11 +1150,13 @@ export async function createApp(
     const statusCode =
       error instanceof HttpError
         ? error.statusCode
-        : validationError
-          ? 400
-          : frameworkStatus && frameworkStatus >= 400 && frameworkStatus <= 599
-            ? frameworkStatus
-            : 500;
+        : storageUnavailable
+          ? 503
+          : validationError
+            ? 400
+            : frameworkStatus && frameworkStatus >= 400 && frameworkStatus <= 599
+              ? frameworkStatus
+              : 500;
     if (statusCode >= 500) {
       if (previewError) {
         // Runtime errors can carry container CLI stdout/stderr in their cause.
@@ -1137,7 +1176,8 @@ export async function createApp(
       previewError?.code ??
       projectError?.code ??
       skillError?.code ??
-      roleError?.code;
+      roleError?.code ??
+      (storageUnavailable ? STORAGE_UNAVAILABLE_CODE : undefined);
     return reply.code(statusCode).send({
       error: responseMessage,
       ...(errorCode === undefined ? {} : { errorCode }),

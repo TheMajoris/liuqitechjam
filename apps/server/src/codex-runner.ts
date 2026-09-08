@@ -14,9 +14,12 @@ import { MCP_BEARER_TOKEN_ENV } from "./tools/mcp-session-service.js";
 import type {
   AgentRunner,
   RunUsage,
+  RuntimeReconciliationInput,
+  RuntimeReconciliationResult,
   RunnerRequest,
   RunnerResult,
 } from "./types.js";
+import { reconcileLocalProcessStartup } from "./runtime-reconciliation.js";
 import type { RuntimeActionObserver } from "./audit/runtime-action-audit.js";
 
 const execFileAsync = promisify(execFile);
@@ -33,12 +36,23 @@ export interface ParsedEvents {
   modelInferenceLimitExceeded?: boolean;
   /** A completed turn suppresses a transient diagnostic error event. */
   turnCompleted?: boolean;
+  /** Set when Codex reports an explicit terminal `turn.failed` event. */
+  terminalFailure?: boolean;
+  /** Ordered terminal evidence; later valid completion can supersede failure. */
+  lastTerminalEvent?: "failed" | "completed";
 }
 
 type JsonRecord = Record<string, unknown>;
 
 function isJsonRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isControlError(error: unknown): error is Error {
+  return (
+    error instanceof Error &&
+    (error.name === "AbortError" || error.name === "TimeoutError")
+  );
 }
 
 /**
@@ -105,8 +119,10 @@ export interface CodexTerminalMessages {
 /**
  * Apply the same terminal-outcome precedence to local and container runners.
  * Cancellation and timeout are control-plane outcomes, so they win over any
- * diagnostic event. A successful terminal turn wins over an earlier error
- * event; provider-limit evidence is considered only for a failed turn.
+ * diagnostic event. A successful terminal turn wins over earlier diagnostic
+ * or failed-turn evidence when it is the later terminal event. A stream
+ * without an explicit terminal event retains legacy message-plus-exit-0
+ * compatibility.
  */
 export function finalizeCodexRun(
   parsed: ParsedEvents,
@@ -126,6 +142,16 @@ export function finalizeCodexRun(
       throw new ModelInferenceLimitExceededError();
     }
     throw new Error(messages.exit);
+  }
+
+  if (
+    parsed.lastTerminalEvent === "failed" ||
+    (parsed.terminalFailure === true && parsed.turnCompleted !== true)
+  ) {
+    if (parsed.modelInferenceLimitExceeded) {
+      throw new ModelInferenceLimitExceededError();
+    }
+    throw new Error("Codex reported a failed turn");
   }
 
   // A successful terminal response is authoritative. Codex can emit a
@@ -232,6 +258,12 @@ export function parseCodexEventLine(
 
   if (event.type === "turn.completed") {
     parsed.turnCompleted = true;
+    parsed.lastTerminalEvent = "completed";
+  }
+
+  if (event.type === "turn.failed") {
+    parsed.terminalFailure = true;
+    parsed.lastTerminalEvent = "failed";
   }
 
   if (event.type === "error") {
@@ -266,6 +298,17 @@ export class CodexRunner implements AgentRunner {
     }
   }
 
+  /**
+   * Local processes do not expose a durable identity that can be adopted on
+   * restart. Persisted active work therefore stays behind the startup safety
+   * gate until an operator verifies it explicitly.
+   */
+  async reconcileStartup(
+    input: RuntimeReconciliationInput,
+  ): Promise<RuntimeReconciliationResult> {
+    return reconcileLocalProcessStartup(input);
+  }
+
   async cancel(agentId: string): Promise<boolean> {
     const active = this.active.get(agentId);
     if (!active) {
@@ -296,6 +339,8 @@ export class CodexRunner implements AgentRunner {
         cwd: request.workspacePath,
         env: this.childEnvironment(request),
         timeoutMs: this.config.codexTimeoutMs,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+        ...(request.deadlineAt === undefined ? {} : { deadlineAt: request.deadlineAt }),
         maxOutputBytes: this.config.codexMaxOutputBytes,
         startErrorMessage: "Codex could not start",
         onLine: (line) => parseCodexEventLine(line, parsed, request.observer),
@@ -311,6 +356,7 @@ export class CodexRunner implements AgentRunner {
     } catch (error) {
       // spawn() can fail before a child exists. This is the only runner-level
       // startup condition classified as safe for a model fallback.
+      if (isControlError(error)) throw error;
       throw new RetryableModelError("Codex could not start", { cause: error });
     }
     this.active.set(request.agentId, execution);
@@ -323,6 +369,7 @@ export class CodexRunner implements AgentRunner {
         // non-zero exits below remain non-retryable.
         result = await execution.completed;
       } catch (error) {
+        if (isControlError(error)) throw error;
         throw new RetryableModelError("Codex could not start", { cause: error });
       }
       return finalizeCodexRun(parsed, result, {

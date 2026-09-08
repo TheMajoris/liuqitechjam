@@ -9,7 +9,7 @@ import {
 import type { Principal } from "../access/access-types.js";
 import type { PermissionId } from "../access/permission-types.js";
 import type { AppConfig } from "../config.js";
-import type { Agent } from "../types.js";
+import type { Agent, RuntimeReconciliationResult } from "../types.js";
 import { HttpError } from "../errors.js";
 import { isDirectory } from "./local-container-preview-runtime.js";
 import { PreviewError, previewErrorStatus } from "./preview-errors.js";
@@ -234,11 +234,22 @@ export class PreviewService implements PreviewLifecycleCleanup {
   }
 
   /** Mark in-flight records interrupted after a control-plane restart. */
-  async initialize(): Promise<void> {
+  async initialize(reconciliation?: RuntimeReconciliationResult): Promise<void> {
     const stale = this.store
       .snapshot()
-      .previews.filter((preview) => isActiveStatus(preview.status));
+      .previews.filter(
+        (preview) =>
+          isActiveStatus(preview.status) ||
+          (preview.status === "interrupted" && preview.runtimeId !== null),
+      );
     if (stale.length === 0) return;
+
+    const confirmedPreviewIds = new Set(
+      reconciliation?.confirmedPreviewIds ?? [],
+    );
+    const unresolvedPreviewIds = new Set(
+      reconciliation?.unresolvedPreviewIds ?? [],
+    );
 
     const interruptedAt = now();
     await this.store.mutate((database) => {
@@ -257,9 +268,24 @@ export class PreviewService implements PreviewLifecycleCleanup {
       stale.map(async (preview) => {
         const handle = handleFor(preview);
         if (!handle) return;
-        this.portAllocator.release(preview.hostPort ?? 0);
+        if (confirmedPreviewIds.has(preview.id)) {
+          this.portAllocator.release(preview.hostPort ?? 0);
+          await this.store.mutate((database) => {
+            const stored = database.previews.find((item) => item.id === preview.id);
+            if (stored) stored.runtimeId = null;
+          });
+          return;
+        }
+        // A container reconciliation failure is uncertainty, not permission
+        // to issue a second unverified stop. Retain both the runtime handle
+        // and its port so the affected Preview remains gated until the next
+        // positively confirmed cleanup.
+        if (unresolvedPreviewIds.has(preview.id)) {
+          return;
+        }
         try {
           await this.runtime.stop(handle);
+          this.portAllocator.release(preview.hostPort ?? 0);
           await this.store.mutate((database) => {
             const stored = database.previews.find((item) => item.id === preview.id);
             if (stored) stored.runtimeId = null;

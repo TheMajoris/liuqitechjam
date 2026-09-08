@@ -147,6 +147,10 @@ export interface PreviewRuntime {
   stop(handle: PreviewRuntimeHandle): Promise<void>;
   status(handle: PreviewRuntimeHandle): Promise<PreviewRuntimeStatus>;
   logs(handle: PreviewRuntimeHandle, options?: { tail?: number }): Promise<PreviewLogResult>;
+  /** Optional startup inventory for runtimes with durable ownership labels. */
+  reconcileStartup?(
+    input: import("../types.js").RuntimeReconciliationInput,
+  ): Promise<import("../types.js").RuntimeReconciliationResult>;
 }
 
 /** Safe HTTP projection. Internal paths, commands, and runtime identifiers stay private. */

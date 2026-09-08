@@ -3,7 +3,6 @@ import {
   type AuthorizationService,
 } from "../access/authorization-service.js";
 import type { AuditRecorder } from "../audit/audit-types.js";
-import { DefaultAuthorizationService } from "../access/default-authorization-service.js";
 import { redactSensitiveText } from "../orchestration/handoff.js";
 import { HttpError } from "../errors.js";
 import type { Storage } from "../store.js";
@@ -150,7 +149,7 @@ export class SkillService {
   constructor(
     private readonly registry: SkillRegistry,
     private readonly capabilities: SkillCapabilityResolver,
-    private readonly authorization: AuthorizationService = new DefaultAuthorizationService(),
+    private readonly authorization: AuthorizationService,
     private readonly audit?: AuditRecorder,
     options: SkillServiceOptions = {},
   ) {

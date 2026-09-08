@@ -8,8 +8,6 @@ import type {
   OrchestrationContinuationPrompt,
   OrchestrationError,
   OrchestrationEvent,
-  OrchestrationGraphState,
-  OrchestrationGraphTurn,
   OrchestrationMode,
   OrchestrationParticipant,
   OrchestrationSession,
@@ -24,7 +22,7 @@ export const SUPERVISOR_REASON_MAX_CHARS = 240;
 
 /**
  * Resource limits are deliberately independent of the Agent runtime. They
- * keep prompts, handoffs, event records, and graph state bounded while still
+ * keep prompts, handoffs, event records, and execution state bounded while still
  * allowing a genuinely large roster (the UI is not limited to a demo pair).
  */
 export const ORCHESTRATION_LIMITS = {
@@ -111,7 +109,7 @@ const orchestrationErrorCodeValues = [
   "INTERNAL_ERROR",
 ] as const;
 
-const orchestrationGraphStatusValues = [
+const orchestrationExecutionStatusValues = [
   "running",
   "completed",
   "failed",
@@ -138,8 +136,8 @@ export const OrchestrationEventTypeSchema = z.enum(
 export const OrchestrationErrorCodeSchema = z.enum(
   orchestrationErrorCodeValues,
 );
-export const OrchestrationGraphStatusSchema = z.enum(
-  orchestrationGraphStatusValues,
+export const OrchestrationExecutionStatusSchema = z.enum(
+  orchestrationExecutionStatusValues,
 );
 export const OrchestrationModeSchema = z.enum(orchestrationModeValues);
 export const OrchestrationCompletionReasonSchema: z.ZodType<
@@ -217,7 +215,7 @@ const orchestrationPromptSchema = z
   .trim()
   .max(ORCHESTRATION_LIMITS.maxPromptLength);
 
-/** Ordered roster contract shared by requests, persisted sessions, and graph state. */
+/** Ordered roster contract shared by requests, persisted sessions, and execution state. */
 export const OrchestrationParticipantsSchema = z
   .array(OrchestrationParticipantSchema)
   .min(1, "At least one participant is required")
@@ -453,38 +451,6 @@ export const HandoffEnvelopeSchema: z.ZodType<HandoffEnvelope> = z.object({
   content: safeOutputSchema,
   truncated: z.boolean(),
 });
-
-export const OrchestrationGraphTurnSchema: z.ZodType<OrchestrationGraphTurn> =
-  z.object({
-    participantId: participantIdSchema,
-    agentId: idSchema,
-    runId: idSchema,
-    position: z.number().int().nonnegative(),
-    output: safeOutputSchema,
-    outputTruncated: z.boolean(),
-  });
-
-export const OrchestrationGraphStateSchema: z.ZodType<OrchestrationGraphState> =
-  z.object({
-    sessionId: idSchema,
-    originalPrompt: z
-      .string()
-      .trim()
-      .min(1)
-      .max(ORCHESTRATION_LIMITS.maxPromptLength),
-    participants: OrchestrationParticipantsSchema,
-    mode: OrchestrationModeSchema.optional(),
-    completionReason: OrchestrationCompletionReasonSchema.nullable().optional(),
-    stepIndex: z.number().int().nonnegative(),
-    maxSteps: z.number().int().positive().max(ORCHESTRATION_LIMITS.maxSteps),
-    lastRunId: idSchema.nullable(),
-    lastOutput: safeOutputSchema.nullable(),
-    turns: z
-      .array(OrchestrationGraphTurnSchema)
-      .max(ORCHESTRATION_LIMITS.maxSteps),
-    status: OrchestrationGraphStatusSchema,
-    errorCode: OrchestrationErrorCodeSchema.nullable(),
-  });
 
 export const OrchestrationErrorSchema: z.ZodType<OrchestrationError> = z.object(
   {

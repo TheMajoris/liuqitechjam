@@ -49,6 +49,30 @@ function errorMessage(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
 }
 
+/**
+ * Refresh the active Workspace list without treating an unavailable API as an
+ * empty successful response. State is committed only after the request
+ * resolves, so a failed refresh leaves the last known list visible while the
+ * existing shell error banner explains what happened.
+ */
+export async function loadActiveProjects(
+  listProjects: () => Promise<{ projects: Project[] }>,
+  setProjects: (projects: Project[]) => void,
+  setError: (message: string) => void,
+): Promise<Project[]> {
+  try {
+    const { projects: next } = await listProjects();
+    // The API is the source of truth and should already omit archived rows;
+    // keep this guard so a stale response can never resurrect a deleted one.
+    const active = next.filter((project) => project.status === "active");
+    setProjects(active);
+    return active;
+  } catch (reason) {
+    setError(errorMessage(reason));
+    throw reason;
+  }
+}
+
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -165,12 +189,7 @@ export default function App() {
   }, []);
 
   const fetchProjects = useCallback(async (): Promise<Project[]> => {
-    const { projects: next } = await api.listProjects().catch(() => ({ projects: [] }));
-    // The API is the source of truth and should already omit archived rows;
-    // keep this guard so a stale response can never resurrect a deleted one.
-    const active = next.filter((project) => project.status === "active");
-    setProjects(active);
-    return active;
+    return loadActiveProjects(api.listProjects, setProjects, setError);
   }, []);
 
   const refreshProjects = useCallback(async () => {

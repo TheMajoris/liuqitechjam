@@ -14,6 +14,7 @@ import type { AuditEvent, AuditEventInput } from "../../apps/server/src/audit/au
 import type { McpRouteDependencies } from "../../apps/server/src/mcp-server.js";
 import { AgentMetricsService } from "../../apps/server/src/usage/agent-metrics.js";
 import { HttpError } from "../../apps/server/src/errors.js";
+import { ApplicationHealth } from "../../apps/server/src/application-health.js";
 
 const service = {
   listAgents: () => [],
@@ -35,6 +36,101 @@ describe("HTTP boundary", () => {
       headers: { authorization: "Bearer a-strong-test-token" },
     });
     expect(allowed.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("returns unhealthy and rejects new execution after a fatal storage transition", async () => {
+    const agentId = "12121212-1212-4121-8121-121212121212";
+    const health = new ApplicationHealth();
+    const sendMessage = async () => {
+      throw new Error("must not be reached while storage is unavailable");
+    };
+    const unavailableService = {
+      listAgents: () => [],
+      systemInfo: async () => ({}),
+      sendMessage,
+    } as unknown as AgentService;
+    let previewCalls = 0;
+    const unavailablePreview: PreviewServiceContract = {
+      start: async () => {
+        previewCalls += 1;
+        throw new Error("preview start must not be reached while storage is unavailable");
+      },
+      get: async () => {
+        previewCalls += 1;
+        throw new Error("preview get must not be reached while storage is unavailable");
+      },
+      restart: async () => {
+        previewCalls += 1;
+        throw new Error("preview restart must not be reached while storage is unavailable");
+      },
+      stop: async () => {
+        previewCalls += 1;
+        throw new Error("preview stop must not be reached while storage is unavailable");
+      },
+      logs: async () => {
+        previewCalls += 1;
+        throw new Error("preview logs must not be reached while storage is unavailable");
+      },
+    };
+    health.handleStorageFailure({
+      code: "STORAGE_UNAVAILABLE",
+      message: "postgres://runtime:secret@example/launchpad",
+    });
+    const app = await createApp(
+      loadConfig({ NODE_ENV: "test", APP_AUTH_TOKEN: "route-token" }),
+      unavailableService,
+      undefined,
+      undefined,
+      unavailablePreview,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      health,
+    );
+
+    const healthResponse = await app.inject({ method: "GET", url: "/api/health" });
+    expect(healthResponse.statusCode).toBe(503);
+    expect(healthResponse.json()).toEqual({
+      ok: false,
+      service: "lqam-server",
+      storage: "unavailable",
+      errorCode: "STORAGE_UNAVAILABLE",
+    });
+    expect(healthResponse.body).not.toContain("secret");
+
+    const readiness = await app.inject({ method: "GET", url: "/api/readiness" });
+    expect(readiness.statusCode).toBe(503);
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agentId}/messages`,
+      headers: { authorization: "Bearer route-token" },
+      payload: { content: "should be rejected" },
+    });
+    expect(accepted.statusCode).toBe(503);
+    expect(accepted.json()).toEqual({
+      error: "Persistent storage is unavailable",
+    });
+    expect(accepted.body).not.toContain("secret");
+
+    for (const url of [
+      `/api/agents/${agentId}/preview/start`,
+      `/api/agents/${agentId}/preview/restart`,
+      `/api/projects/${agentId}/preview/start`,
+      `/api/projects/${agentId}/preview/restart`,
+    ]) {
+      const previewResponse = await app.inject({
+        method: "POST",
+        url,
+        headers: { authorization: "Bearer route-token" },
+      });
+      expect(previewResponse.statusCode).toBe(503);
+      expect(previewResponse.body).not.toContain("secret");
+    }
+    expect(previewCalls).toBe(0);
     await app.close();
   });
 

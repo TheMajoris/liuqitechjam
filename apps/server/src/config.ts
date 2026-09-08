@@ -51,6 +51,8 @@ const envSchema = z.object({
     .default("2g"),
   CONTAINER_PIDS_LIMIT: z.coerce.number().int().positive().default(256),
   CONTAINER_USER: z.string().optional(),
+  // Stable, unique owner namespace for one concurrently running deployment.
+  // Never reuse an ID across installations that share a container engine.
   RUNTIME_INSTANCE_ID: z
     .string()
     .trim()

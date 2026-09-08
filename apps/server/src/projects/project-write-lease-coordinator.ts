@@ -1,6 +1,11 @@
 import type { Principal } from "../access/access-types.js";
+import type { ApplicationLifecycleFailure } from "../application-health.js";
 import type { Storage } from "../store.js";
-import type { Database } from "../types.js";
+import type {
+  Database,
+  OperationOptions,
+  RuntimeReconciliationResult,
+} from "../types.js";
 import { ProjectError } from "./project-errors.js";
 import {
   PROJECT_LIMITS,
@@ -10,6 +15,8 @@ import {
 export interface ProjectWriteLeaseOptions {
   waitMs?: number;
   principal?: Principal;
+  signal?: AbortSignal;
+  deadlineAt?: number;
 }
 
 export interface ProjectWriteLeaseHolder {
@@ -26,6 +33,16 @@ export interface ProjectLeaseEvent {
 }
 
 export type ProjectLeaseEventSink = (event: ProjectLeaseEvent) => void;
+export type ProjectLeaseFailureSink = (failure: ApplicationLifecycleFailure) => void;
+
+export interface ProjectLeaseRecoveryStatus {
+  projectId: string;
+  runId: string;
+  agentId?: string;
+  status: "recovery_required";
+}
+
+const MAX_SETTLED_RELEASE_ATTEMPTS = 2;
 
 /**
  * Coordinates the single-writer Project lease without owning Project policy.
@@ -37,8 +54,14 @@ export type ProjectLeaseEventSink = (event: ProjectLeaseEvent) => void;
  * Playground callers.
  */
 export class ProjectWriteLeaseCoordinator {
-  private readonly leaseWaiters = new Map<string, Set<() => void>>();
+  private readonly leaseWaiters = new Map<string, Set<(error?: Error) => void>>();
   private readonly archivingProjects = new Set<string>();
+  /** Process-local guard for Agent-owned membership/lease cleanup. */
+  private readonly projectMutations = new Set<string>();
+  /** Process-local ownership evidence used when Storage is unavailable. */
+  private readonly heldLeases = new Map<string, ProjectWriteLeaseHolder>();
+  /** A failed settled cleanup gates only the affected Project. */
+  private readonly recoveryRequired = new Map<string, ProjectLeaseRecoveryStatus>();
 
   constructor(
     private readonly store: Storage,
@@ -48,21 +71,75 @@ export class ProjectWriteLeaseCoordinator {
       principal?: Principal,
     ) => Promise<void>,
     private readonly onEvent: ProjectLeaseEventSink = () => undefined,
+    private readonly onFailure?: ProjectLeaseFailureSink,
   ) {}
 
   /**
-   * Releases leases orphaned by a server restart. A lease only ever guards a
-   * live run; nothing in-flight survives a restart, so persisted leases are
-   * stale by definition.
+   * Releases only leases whose Agent runtime has been positively reconciled.
+   * An absent result is intentionally unsafe: startup must not infer process
+   * death from a stale database row, especially for local-process mode.
    */
-  async initialize(): Promise<void> {
+  async initialize(
+    reconciliation?: RuntimeReconciliationResult,
+  ): Promise<void> {
     const stale = this.store.snapshot().projectLeases;
     if (stale.length === 0) return;
 
-    await this.store.mutate((database) => {
-      database.projectLeases = [];
-    });
-    for (const lease of stale) {
+    const confirmed = new Set(reconciliation?.confirmedAgentIds ?? []);
+    const unresolved = new Set(reconciliation?.unresolvedAgentIds ?? []);
+    const releasable = stale.filter(
+      (lease) => confirmed.has(lease.agentId) && !unresolved.has(lease.agentId),
+    );
+    const retained = stale.filter((lease) => !releasable.includes(lease));
+
+    for (const lease of retained) {
+      this.heldLeases.set(lease.projectId, {
+        agentId: lease.agentId,
+        runId: lease.runId,
+      });
+      if (this.recoveryRequired.has(lease.projectId)) continue;
+      this.recoveryRequired.set(lease.projectId, {
+        projectId: lease.projectId,
+        runId: lease.runId,
+        agentId: lease.agentId,
+        status: "recovery_required",
+      });
+      this.onEvent({
+        type: "project_write_lease_recovery_required",
+        projectId: lease.projectId,
+        agentId: lease.agentId,
+        runId: lease.runId,
+        status: "recovery_required",
+      });
+      try {
+        this.onFailure?.({
+          code: "PROJECT_LEASE_RELEASE_FAILED",
+          message: "Startup could not verify the previous Project writer; operator recovery is required",
+          projectId: lease.projectId,
+          agentId: lease.agentId,
+          runId: lease.runId,
+        });
+      } catch {
+        // A lifecycle observer must not clear the startup safety gate.
+      }
+    }
+
+    if (releasable.length > 0) {
+      const releasableKeys = new Set(
+        releasable.map((lease) => lease.projectId + "\u0000" + lease.runId),
+      );
+      await this.store.mutate((database) => {
+        database.projectLeases = database.projectLeases.filter(
+          (lease) => !releasableKeys.has(lease.projectId + "\u0000" + lease.runId),
+        );
+      });
+    }
+    for (const lease of releasable) {
+      this.heldLeases.delete(lease.projectId);
+      const recovery = this.recoveryRequired.get(lease.projectId);
+      if (recovery?.runId === lease.runId) {
+        this.recoveryRequired.delete(lease.projectId);
+      }
       this.onEvent({
         type: "project_write_lease_released",
         projectId: lease.projectId,
@@ -75,8 +152,8 @@ export class ProjectWriteLeaseCoordinator {
 
   /** Marks a Project as being moved so no new lease can race the archive. */
   beginArchive(projectId: string): void {
+    this.assertProjectMutationAllowed(projectId);
     this.requireNoWriteLease(projectId);
-    if (this.archivingProjects.has(projectId)) throw this.projectBusy();
     this.archivingProjects.add(projectId);
   }
 
@@ -85,17 +162,47 @@ export class ProjectWriteLeaseCoordinator {
     this.archivingProjects.delete(projectId);
   }
 
+  /**
+   * Reserves a Project while another lifecycle operation removes Agent-owned
+   * membership and lease records. The reservation is process-local and must
+   * be held through any compensation, so archive cannot restore an old
+   * Project snapshot over an accepted deletion.
+   */
+  beginProjectMutation(projectId: string): void {
+    this.assertProjectMutationAllowed(projectId);
+    this.projectMutations.add(projectId);
+  }
+
+  /** Releases the Agent-owned Project mutation reservation. */
+  endProjectMutation(projectId: string): void {
+    this.projectMutations.delete(projectId);
+  }
+
+  /**
+   * Rejects every Project-owned mutation while archive or its compensation is
+   * in progress. Callers must repeat this check inside their serialized store
+   * callback so a mutation that was waiting in the queue cannot slip through
+   * after the archive guard was acquired.
+   */
+  assertProjectMutationAllowed(projectId: string): void {
+    this.assertRecoveryClear(projectId);
+    this.assertNotArchiving(projectId);
+    this.assertNotProjectMutating(projectId);
+  }
+
   /** Atomic check used inside a Storage mutation during archive. */
   assertDatabaseLeaseFree(
     database: Pick<Database, "projectLeases">,
     projectId: string,
   ): void {
+    this.assertRecoveryClear(projectId);
     if (database.projectLeases.some((lease) => lease.projectId === projectId)) {
       throw this.projectBusy();
     }
   }
 
   requireNoWriteLease(projectId: string): void {
+    this.assertRecoveryClear(projectId);
     if (this.writeLeaseHolder(projectId)) throw this.projectBusy();
   }
 
@@ -105,18 +212,33 @@ export class ProjectWriteLeaseCoordinator {
     runId: string,
     options: ProjectWriteLeaseOptions = {},
   ): Promise<void> {
+    assertOperationActive(options);
+    this.assertRecoveryClear(projectId);
     this.assertNotArchiving(projectId);
+    this.assertNotProjectMutating(projectId);
     await this.authorizeAgentExecution(projectId, agentId, options.principal);
+    assertOperationActive(options);
 
     const waitMs = options.waitMs ?? PROJECT_LIMITS.writeLeaseWaitMs;
-    const deadline = Date.now() + waitMs;
+    const waitDeadline = Date.now() + waitMs;
+    const deadline =
+      options.deadlineAt !== undefined && Number.isFinite(options.deadlineAt)
+        ? Math.min(waitDeadline, options.deadlineAt)
+        : waitDeadline;
     for (;;) {
       const acquired = await this.store.mutate(async (database) => {
+        assertOperationActive(options);
         // Storage serializes this callback with role and attachment writes.
         // Reauthorize immediately before persistence to close the wait/revoke
         // race: an authorization change cannot leave an unauthorized lease.
         this.assertNotArchiving(projectId);
+        this.assertNotProjectMutating(projectId);
         await this.authorizeAgentExecution(projectId, agentId, options.principal);
+        assertOperationActive(options);
+        // Authorization may yield while archive or recovery begins. Recheck
+        // immediately before persistence so a late lease cannot be accepted
+        // into a Project that is no longer writable.
+        this.assertProjectMutationAllowed(projectId);
         if (database.projectLeases.some((lease) => lease.projectId === projectId)) {
           return false;
         }
@@ -130,6 +252,12 @@ export class ProjectWriteLeaseCoordinator {
       });
 
       if (acquired) {
+        const operationError = getOperationError(options);
+        if (operationError) {
+          await this.release(projectId, runId, { settled: true }).catch(() => undefined);
+          throw operationError;
+        }
+        this.heldLeases.set(projectId, { agentId, runId });
         this.onEvent({
           type: "project_write_lease_acquired",
           projectId,
@@ -139,44 +267,110 @@ export class ProjectWriteLeaseCoordinator {
         });
         return;
       }
-      if (Date.now() >= deadline) throw this.projectBusy();
-      await this.waitForRelease(projectId, deadline);
+      if (Date.now() >= deadline) {
+        const operationError = getOperationError(options);
+        if (operationError) throw operationError;
+        throw this.projectBusy();
+      }
+      await this.waitForRelease(projectId, deadline, options);
     }
   }
 
-  /** Idempotent; safe to call from a run's finally block. */
-  async release(projectId: string, runId: string): Promise<void> {
-    const released = await this.store.mutate((database) => {
-      const held = database.projectLeases.find(
-        (lease) => lease.projectId === projectId && lease.runId === runId,
-      );
-      if (!held) return null;
-      database.projectLeases = database.projectLeases.filter(
-        (lease) => !(lease.projectId === projectId && lease.runId === runId),
-      );
-      return held;
-    });
-    this.notifyRelease(projectId);
-    if (released) {
-      this.onEvent({
-        type: "project_write_lease_released",
-        projectId,
-        agentId: released.agentId,
-        runId,
-        status: "released",
-      });
+  /**
+   * Idempotent; safe to call from a run's finally block. A caller that has
+   * confirmed the worker and terminal Run are settled may use the one bounded
+   * retry permitted for this mutation. Unknown physical settlement gets one
+   * attempt only and retains ownership evidence on failure.
+   */
+  async release(
+    projectId: string,
+    runId: string,
+    options: { settled?: boolean } = {},
+  ): Promise<void> {
+    const maxAttempts = options.settled === true ? MAX_SETTLED_RELEASE_ATTEMPTS : 1;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        const released = await this.store.mutate((database) => {
+          const held = database.projectLeases.find(
+            (lease) => lease.projectId === projectId && lease.runId === runId,
+          );
+          if (!held) return null;
+          database.projectLeases = database.projectLeases.filter(
+            (lease) => !(lease.projectId === projectId && lease.runId === runId),
+          );
+          return held;
+        });
+        this.heldLeases.delete(projectId);
+        const recovery = this.recoveryRequired.get(projectId);
+        if (recovery?.runId === runId) this.recoveryRequired.delete(projectId);
+        this.notifyRelease(projectId);
+        if (released) {
+          this.onEvent({
+            type: "project_write_lease_released",
+            projectId,
+            agentId: released.agentId,
+            runId,
+            status: "released",
+          });
+        }
+        return;
+      } catch (error) {
+        lastError = error;
+      }
     }
+
+    this.markRecoveryRequired(projectId, runId, lastError);
+    throw lastError instanceof Error
+      ? lastError
+      : new Error("Project write lease release failed");
   }
 
   writeLeaseHolder(projectId: string): ProjectWriteLeaseHolder | null {
-    const held = this.store.snapshot().projectLeases.find(
-      (lease) => lease.projectId === projectId,
-    );
-    return held ? { agentId: held.agentId, runId: held.runId } : null;
+    try {
+      const held = this.store.snapshot().projectLeases.find(
+        (lease) => lease.projectId === projectId,
+      );
+      if (held) {
+        const owner = { agentId: held.agentId, runId: held.runId };
+        this.heldLeases.set(projectId, owner);
+        return owner;
+      }
+      if (!this.recoveryRequired.has(projectId)) this.heldLeases.delete(projectId);
+      return null;
+    } catch {
+      // Keep process-local ownership evidence available to cancellation and
+      // Project gates while a fatal adapter transition rejects snapshots.
+      return this.heldLeases.get(projectId) ?? null;
+    }
+  }
+
+  isRecoveryRequired(projectId: string): boolean {
+    return this.recoveryRequired.has(projectId);
+  }
+
+  /** Reject a new turn before it can create a queued Run for this Project. */
+  assertProjectRecoveryClear(projectId: string): void {
+    this.assertRecoveryClear(projectId);
+  }
+
+  recoveryStatus(projectId: string): ProjectLeaseRecoveryStatus | null {
+    const status = this.recoveryRequired.get(projectId);
+    return status === undefined ? null : { ...status };
+  }
+
+  private assertRecoveryClear(projectId: string): void {
+    if (this.recoveryRequired.has(projectId)) {
+      throw this.projectRecoveryRequired();
+    }
   }
 
   private assertNotArchiving(projectId: string): void {
     if (this.archivingProjects.has(projectId)) throw this.projectBusy();
+  }
+
+  private assertNotProjectMutating(projectId: string): void {
+    if (this.projectMutations.has(projectId)) throw this.projectBusy();
   }
 
   private projectBusy(): ProjectError {
@@ -187,28 +381,89 @@ export class ProjectWriteLeaseCoordinator {
     );
   }
 
-  private async waitForRelease(projectId: string, deadline: number): Promise<void> {
+  private projectRecoveryRequired(): ProjectError {
+    return new ProjectError(
+      "PROJECT_RECOVERY_REQUIRED",
+      409,
+      "Workspace cleanup requires operator recovery before another Agent can write",
+    );
+  }
+
+  private markRecoveryRequired(
+    projectId: string,
+    runId: string,
+    error: unknown,
+  ): void {
+    const held = this.heldLeases.get(projectId);
+    const status: ProjectLeaseRecoveryStatus = {
+      projectId,
+      runId,
+      ...(held?.agentId === undefined ? {} : { agentId: held.agentId }),
+      status: "recovery_required",
+    };
+    this.recoveryRequired.set(projectId, status);
+    this.onEvent({
+      type: "project_write_lease_recovery_required",
+      projectId,
+      ...(held?.agentId === undefined ? {} : { agentId: held.agentId }),
+      runId,
+      status: "recovery_required",
+    });
+    try {
+      this.onFailure?.({
+        code: "PROJECT_LEASE_RELEASE_FAILED",
+        message: "Project write lease release failed; operator recovery is required",
+        runId,
+        ...(held?.agentId === undefined ? {} : { agentId: held.agentId }),
+        projectId,
+      });
+    } catch {
+      // A lifecycle observer must not hide the original release failure or
+      // clear the recovery gate that was just recorded.
+    }
+    void error;
+  }
+
+  private async waitForRelease(
+    projectId: string,
+    deadline: number,
+    operation: ProjectWriteLeaseOptions,
+  ): Promise<void> {
     const remaining = deadline - Date.now();
     if (remaining <= 0) return;
 
-    const waiters = this.leaseWaiters.get(projectId) ?? new Set<() => void>();
+    const waiters =
+      this.leaseWaiters.get(projectId) ?? new Set<(error?: Error) => void>();
     this.leaseWaiters.set(projectId, waiters);
-    await new Promise<void>((resolve) => {
+    await new Promise<void>((resolve, reject) => {
       let settled = false;
-      const finish = () => {
+      let timer: NodeJS.Timeout | null = null;
+      const finish = (error?: Error) => {
         if (settled) return;
         settled = true;
         waiters.delete(finish);
-        clearTimeout(timer);
-        resolve();
+        if (waiters.size === 0 && this.leaseWaiters.get(projectId) === waiters) {
+          this.leaseWaiters.delete(projectId);
+        }
+        if (timer) clearTimeout(timer);
+        operation.signal?.removeEventListener("abort", onAbort);
+        if (error) reject(error);
+        else resolve();
       };
+      const onAbort = () =>
+        finish(
+          getOperationError(operation) ??
+            abortError("Project lease acquisition was aborted"),
+        );
       // Poll as well as listen: another process may release the persisted
       // lease without having access to this process's waiter set.
-      const timer = setTimeout(
-        finish,
+      timer = setTimeout(
+        () => finish(getOperationError(operation)),
         Math.min(PROJECT_LIMITS.writeLeasePollIntervalMs, remaining),
       );
       waiters.add(finish);
+      operation.signal?.addEventListener("abort", onAbort, { once: true });
+      if (operation.signal?.aborted) onAbort();
     });
   }
 
@@ -218,6 +473,37 @@ export class ProjectWriteLeaseCoordinator {
     this.leaseWaiters.delete(projectId);
     for (const waiter of waiters) waiter();
   }
+}
+
+function getOperationError(operation: OperationOptions): Error | undefined {
+  if (operation.signal?.aborted) {
+    const reason = operation.signal.reason;
+    if (reason instanceof Error && (reason.name === "AbortError" || reason.name === "TimeoutError")) {
+      return reason;
+    }
+    return abortError("Project lease acquisition was aborted");
+  }
+  if (
+    operation.deadlineAt !== undefined &&
+    Number.isFinite(operation.deadlineAt) &&
+    Date.now() >= operation.deadlineAt
+  ) {
+    const error = new Error("Project lease acquisition timed out");
+    error.name = "TimeoutError";
+    return error;
+  }
+  return undefined;
+}
+
+function assertOperationActive(operation: OperationOptions): void {
+  const error = getOperationError(operation);
+  if (error) throw error;
+}
+
+function abortError(message: string): Error {
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
 }
 
 export type { ProjectWriteLease };

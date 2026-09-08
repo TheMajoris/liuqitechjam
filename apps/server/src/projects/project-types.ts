@@ -110,6 +110,8 @@ export interface ProjectView {
   agentIds: string[];
   memberships: ProjectMembershipView[];
   status: ProjectStatus;
+  /** Present when the last settled lease cleanup needs operator recovery. */
+  recoveryRequired?: true;
   createdAt: string;
   updatedAt: string;
 }

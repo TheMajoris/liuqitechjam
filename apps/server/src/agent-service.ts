@@ -24,6 +24,8 @@ import type {
   CreateAgentInput,
   Message,
   MessageOrigin,
+  OperationOptions,
+  RuntimeReconciliationResult,
   UpdateAgentInput,
 } from "./types.js";
 import {
@@ -50,8 +52,42 @@ import type { UsageReport, UsageReportOptions } from "./usage/usage-types.js";
 import { normalizeAppearance } from "./agent-appearance.js";
 import { AgentRoleSchema } from "./roles/role-types.js";
 import { RoleError } from "./roles/role-service.js";
+import type {
+  ApplicationLifecycleFailure,
+  ApplicationLifecycleFailureSink,
+} from "./application-health.js";
+import { reconcileLocalProcessStartup } from "./runtime-reconciliation.js";
 
 const now = () => new Date().toISOString();
+const STARTUP_RUNTIME_RECOVERY_MESSAGE =
+  "Startup could not verify the previous local runtime; operator recovery is required before this Agent can run";
+
+function operationError(operation: OperationOptions): Error | undefined {
+  if (operation.signal?.aborted) {
+    const reason = operation.signal.reason;
+    if (reason instanceof Error && (reason.name === "AbortError" || reason.name === "TimeoutError")) {
+      return reason;
+    }
+    const error = new Error("Operation was aborted");
+    error.name = "AbortError";
+    return error;
+  }
+  if (
+    operation.deadlineAt !== undefined &&
+    Number.isFinite(operation.deadlineAt) &&
+    Date.now() >= operation.deadlineAt
+  ) {
+    const error = new Error("Operation timed out");
+    error.name = "TimeoutError";
+    return error;
+  }
+  return undefined;
+}
+
+function assertOperationActive(operation: OperationOptions): void {
+  const error = operationError(operation);
+  if (error) throw error;
+}
 
 /** Optional helpers are supplied by the canonical Ark resolver. Keeping them
  * optional preserves the small WorkerModelResolver injection seam for tests
@@ -96,6 +132,9 @@ export class AgentService {
   private skillService: SkillService | undefined;
   private telemetry: RuntimeTelemetry | undefined;
   private audit: AuditRecorder | undefined;
+  private lifecycleFailureSink: ApplicationLifecycleFailureSink | undefined;
+  private startupReconciliation: RuntimeReconciliationResult | undefined;
+  private readonly startupRecoveryAgents = new Set<string>();
 
   constructor(
     private readonly config: AppConfig,
@@ -126,6 +165,8 @@ export class AgentService {
       getTelemetry: () => this.telemetry,
       getAudit: () => this.audit,
       getRun: (runId) => this.getRun(runId),
+      reportLifecycleFailure: (failure: ApplicationLifecycleFailure) =>
+        this.lifecycleFailureSink?.reportLifecycleFailure(failure),
     });
     this.previewLifecycle = previewLifecycle;
     this.previewContext = previewContext;
@@ -167,21 +208,77 @@ export class AgentService {
     this.audit = audit;
   }
 
+  /** Attach the application-owned lifecycle failure sink after app assembly. */
+  setLifecycleFailureSink(sink: ApplicationLifecycleFailureSink): void {
+    this.lifecycleFailureSink = sink;
+  }
+
+  /** Supply the one startup reconciliation result shared with Project/Preview. */
+  setStartupReconciliation(result: RuntimeReconciliationResult): void {
+    this.startupReconciliation = {
+      provider: result.provider,
+      confirmedAgentIds: [...result.confirmedAgentIds],
+      confirmedPreviewIds: [...result.confirmedPreviewIds],
+      unresolvedAgentIds: [...result.unresolvedAgentIds],
+      unresolvedPreviewIds: [...result.unresolvedPreviewIds],
+    };
+  }
+
+  getStartupReconciliation(): RuntimeReconciliationResult | undefined {
+    if (this.startupReconciliation === undefined) return undefined;
+    return {
+      provider: this.startupReconciliation.provider,
+      confirmedAgentIds: [...this.startupReconciliation.confirmedAgentIds],
+      confirmedPreviewIds: [...this.startupReconciliation.confirmedPreviewIds],
+      unresolvedAgentIds: [...this.startupReconciliation.unresolvedAgentIds],
+      unresolvedPreviewIds: [...this.startupReconciliation.unresolvedPreviewIds],
+    };
+  }
+
+  /**
+   * Quiesce direct and Team Agent runs after a fatal storage transition. The
+   * coordinator uses only its in-memory execution handles on this path.
+   */
+  async quiesceForStorageFailure(options: { timeoutMs?: number } = {}): Promise<void> {
+    await this.runCoordinator.quiesceForStorageFailure(options);
+  }
+
+  /** Physical-only cancellation used by Team fatal-storage quiescence. */
+  async cancelRunForStorageFailure(runId: string): Promise<void> {
+    await this.runCoordinator.cancelRunForStorageFailure(runId);
+  }
+
   async initialize(): Promise<void> {
     await this.store.initialize();
+    if (this.startupReconciliation === undefined) {
+      const snapshot = this.store.snapshot();
+      this.startupReconciliation =
+        (await this.runner.reconcileStartup?.(snapshot)) ??
+        reconcileLocalProcessStartup(snapshot);
+    }
+    this.startupRecoveryAgents.clear();
+    for (const agentId of this.startupReconciliation.unresolvedAgentIds) {
+      this.startupRecoveryAgents.add(agentId);
+    }
     await this.skillService?.reconcileInstalledSkills(this.store);
     await this.skillService?.reconcileAgentSkillIds(this.store);
     await this.workspaces.initialize();
+    const startupRecoveryAgents = this.startupRecoveryAgents;
     await this.store.mutate((database) => {
       for (const run of database.runs) {
         if (run.status === "queued" || run.status === "running") {
+          if (startupRecoveryAgents.has(run.agentId)) continue;
           run.status = "cancelled";
           run.error = "Server restarted while this run was active";
           run.completedAt = now();
         }
       }
       for (const agent of database.agents) {
-        if (agent.status === "busy") {
+        if (startupRecoveryAgents.has(agent.id)) {
+          agent.status = "error";
+          agent.lastError = STARTUP_RUNTIME_RECOVERY_MESSAGE;
+          agent.updatedAt = now();
+        } else if (agent.status === "busy") {
           agent.status = "ready";
           agent.updatedAt = now();
         }
@@ -231,9 +328,11 @@ export class AgentService {
     // Migration is best effort so a filesystem problem does not change the
     // pre-existing startup behavior for otherwise readable Agents.
     await Promise.all(
-      this.store.snapshot().agents.map((agent) =>
-        this.workspaces.refreshInstructions(agent).catch(() => undefined),
-      ),
+      this.store.snapshot().agents
+        .filter((agent) => !this.startupRecoveryAgents.has(agent.id))
+        .map((agent) =>
+          this.workspaces.refreshInstructions(agent).catch(() => undefined),
+        ),
     );
   }
 
@@ -551,6 +650,12 @@ export class AgentService {
 
   async deleteAgent(id: string): Promise<{ archivedWorkspace: string | null }> {
     const agent = this.getAgent(id);
+    if (this.startupRecoveryAgents.has(id)) {
+      // A local runtime identity may still be alive after restart. Deleting
+      // its row would erase the only durable owner evidence and bypass the
+      // same recovery gate used by start/sendMessage.
+      throw new HttpError(409, STARTUP_RUNTIME_RECOVERY_MESSAGE);
+    }
     await this.cancelExecution(id);
     // Close the PreviewService start gate before cleanup. Any start already
     // holding the per-Agent preview lock completes first and is then stopped;
@@ -560,89 +665,109 @@ export class AgentService {
     const stoppedAgent = this.getAgent(id);
     const before = this.store.snapshot();
     const previousAttachments = before.projectAgents.filter((item) => item.agentId === id);
-    const archivedWorkspace = await this.workspaces.archive(stoppedAgent);
-    const deletedAt = now();
+    const hasProjectOwnership =
+      previousAttachments.length > 0 ||
+      before.projectLeases.some((item) => item.agentId === id);
+    const beginAgentDeletion = this.projectScope?.beginAgentDeletion;
+    if (hasProjectOwnership && beginAgentDeletion === undefined) {
+      throw new HttpError(
+        503,
+        "Project deletion coordination is not configured; retry after Project services are initialized",
+      );
+    }
+    const releaseProjectMutation =
+      this.projectScope?.beginAgentDeletion?.(id) ?? (() => undefined);
     try {
-      await this.store.mutate((database) => {
-        database.agents = database.agents.filter((item) => item.id !== id);
-        database.agentConversations = database.agentConversations.filter(
-          (item) => item.agentId !== id,
-        );
-        database.messages = database.messages.filter((item) => item.agentId !== id);
-        // Runs are historical execution records, not Agent state: they are
-        // retained and tombstoned so their traces and audit evidence stay
-        // understandable once the live Agent record is gone.
-        for (const run of database.runs) {
-          if (run.agentId !== id) continue;
-          if (run.agentName === undefined) run.agentName = stoppedAgent.name;
-          run.agentDeletedAt = deletedAt;
+      const archivedWorkspace = await this.workspaces.archive(stoppedAgent);
+      const deletedAt = now();
+      try {
+        await this.store.mutate((database) => {
+          database.agents = database.agents.filter((item) => item.id !== id);
+          database.agentConversations = database.agentConversations.filter(
+            (item) => item.agentId !== id,
+          );
+          database.messages = database.messages.filter((item) => item.agentId !== id);
+          // Runs are historical execution records, not Agent state: they are
+          // retained and tombstoned so their traces and audit evidence stay
+          // understandable once the live Agent record is gone.
+          for (const run of database.runs) {
+            if (run.agentId !== id) continue;
+            if (run.agentName === undefined) run.agentName = stoppedAgent.name;
+            run.agentDeletedAt = deletedAt;
+          }
+          database.previews = database.previews.filter((item) => item.agentId !== id);
+          // Cancellation has settled any active Project turn, so these records
+          // cannot be live anymore. Remove both membership and lease remnants so
+          // a deleted Agent can never retain Project authority or block a writer.
+          database.projectAgents = database.projectAgents.filter(
+            (item) => item.agentId !== id,
+          );
+          database.projectLeases = database.projectLeases.filter(
+            (item) => item.agentId !== id,
+          );
+        });
+        return { archivedWorkspace };
+      } catch (error) {
+        // Reconstitute the Agent and its Project memberships if local cleanup
+        // fails, then restore the physical workspace so the operation can retry.
+        await this.store.mutate((database) => {
+          database.agents = database.agents.filter((item) => item.id !== id);
+          const previousAgent = before.agents.find((item) => item.id === id);
+          database.agents.push(structuredClone(previousAgent ?? stoppedAgent));
+          database.agentConversations = database.agentConversations.filter(
+            (item) => item.agentId !== id,
+          );
+          database.agentConversations.push(
+            ...before.agentConversations
+              .filter((item) => item.agentId === id)
+              .map((item) => structuredClone(item)),
+          );
+          database.messages = database.messages.filter((item) => item.agentId !== id);
+          database.messages.push(
+            ...before.messages
+              .filter((item) => item.agentId === id)
+              .map((item) => structuredClone(item)),
+          );
+          database.runs = database.runs.filter((item) => item.agentId !== id);
+          database.runs.push(
+            ...before.runs
+              .filter((item) => item.agentId === id)
+              .map((item) => structuredClone(item)),
+          );
+          database.previews = database.previews.filter((item) => item.agentId !== id);
+          database.previews.push(
+            ...before.previews
+              .filter((item) => item.agentId === id)
+              .map((item) => structuredClone(item)),
+          );
+          database.projectAgents = database.projectAgents.filter(
+            (item) => item.agentId !== id,
+          );
+          database.projectAgents.push(...previousAttachments.map((item) => structuredClone(item)));
+          database.projectLeases = database.projectLeases.filter(
+            (item) => item.agentId !== id,
+          );
+          database.projectLeases.push(
+            ...before.projectLeases
+              .filter((item) => item.agentId === id)
+              .map((item) => structuredClone(item)),
+          );
+        });
+        if (archivedWorkspace !== null) {
+          await this.workspaces.restore(stoppedAgent, archivedWorkspace).catch(() => undefined);
         }
-        database.previews = database.previews.filter((item) => item.agentId !== id);
-        // Cancellation has settled any active Project turn, so these records
-        // cannot be live anymore. Remove both membership and lease remnants so
-        // a deleted Agent can never retain Project authority or block a writer.
-        database.projectAgents = database.projectAgents.filter(
-          (item) => item.agentId !== id,
-        );
-        database.projectLeases = database.projectLeases.filter(
-          (item) => item.agentId !== id,
-        );
-      });
-      return { archivedWorkspace };
-    } catch (error) {
-      // Reconstitute the Agent and its Project memberships if local cleanup
-      // fails, then restore the physical workspace so the operation can retry.
-      await this.store.mutate((database) => {
-        database.agents = database.agents.filter((item) => item.id !== id);
-        const previousAgent = before.agents.find((item) => item.id === id);
-        database.agents.push(structuredClone(previousAgent ?? stoppedAgent));
-        database.agentConversations = database.agentConversations.filter(
-          (item) => item.agentId !== id,
-        );
-        database.agentConversations.push(
-          ...before.agentConversations
-            .filter((item) => item.agentId === id)
-            .map((item) => structuredClone(item)),
-        );
-        database.messages = database.messages.filter((item) => item.agentId !== id);
-        database.messages.push(
-          ...before.messages
-            .filter((item) => item.agentId === id)
-            .map((item) => structuredClone(item)),
-        );
-        database.runs = database.runs.filter((item) => item.agentId !== id);
-        database.runs.push(
-          ...before.runs
-            .filter((item) => item.agentId === id)
-            .map((item) => structuredClone(item)),
-        );
-        database.previews = database.previews.filter((item) => item.agentId !== id);
-        database.previews.push(
-          ...before.previews
-            .filter((item) => item.agentId === id)
-            .map((item) => structuredClone(item)),
-        );
-        database.projectAgents = database.projectAgents.filter(
-          (item) => item.agentId !== id,
-        );
-        database.projectAgents.push(...previousAttachments.map((item) => structuredClone(item)));
-        database.projectLeases = database.projectLeases.filter(
-          (item) => item.agentId !== id,
-        );
-        database.projectLeases.push(
-          ...before.projectLeases
-            .filter((item) => item.agentId === id)
-            .map((item) => structuredClone(item)),
-        );
-      });
-      if (archivedWorkspace !== null) {
-        await this.workspaces.restore(stoppedAgent, archivedWorkspace).catch(() => undefined);
+        throw error;
       }
-      throw error;
+    }
+    finally {
+      releaseProjectMutation();
     }
   }
 
   async startAgent(id: string): Promise<Agent> {
+    if (this.startupRecoveryAgents.has(id)) {
+      throw new HttpError(409, STARTUP_RUNTIME_RECOVERY_MESSAGE);
+    }
     return this.setStatus(id, "ready");
   }
 
@@ -714,18 +839,31 @@ export class AgentService {
       orchestrationId?: string | undefined;
       /** Audit span this Run's span should be parented under. */
       parentSpan?: { traceId: string; spanId: string } | undefined;
+      /** Control-plane cancellation for pre-acceptance work. */
+      signal?: AbortSignal;
+      /** Absolute deadline covering validation and acceptance. */
+      deadlineAt?: number;
     } = {},
   ): Promise<{ run: AgentRun; message: Message }> {
+    const operation: OperationOptions = {
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(options.deadlineAt === undefined ? {} : { deadlineAt: options.deadlineAt }),
+    };
+    assertOperationActive(operation);
     if (this.runCoordinator.isCancelling(agentId)) {
       throw new HttpError(409, "This Agent is currently being cancelled");
     }
     const agentBeforeRun = this.getAgent(agentId);
+    if (this.startupRecoveryAgents.has(agentId)) {
+      throw new HttpError(409, STARTUP_RUNTIME_RECOVERY_MESSAGE);
+    }
     // Validate Project membership before a Run record exists, so an
     // unattached or unauthorized Agent never leaves a queued run behind. This
     // intentionally precedes runtime credential/model checks as well.
     const projectId = options.projectId;
     if (projectId !== undefined) {
-      await this.requireProjectScope().assertRunnable(projectId, agentId);
+      await this.requireProjectScope().assertRunnable(projectId, agentId, operation);
+      assertOperationActive(operation);
     }
     if (agentBeforeRun.modelRef === undefined) {
       throw new ModelCatalogError(
@@ -745,6 +883,7 @@ export class AgentService {
     // resolver is the catalog authority, so removed providers/models produce
     // a stable error and never leave an orphaned queued record behind.
     await this.refreshWorkerModelCatalog();
+    assertOperationActive(operation);
     const modelPlan = this.resolveAgentModelPlan(agentBeforeRun);
     // Only direct Playground turns belong to a private conversation. Team turns
     // keep their own session scope and stay out of private history entirely.
@@ -753,6 +892,7 @@ export class AgentService {
       origin === "direct" && projectId === undefined
         ? await this.resolveConversation(agentId, options.conversationId)
         : null;
+    assertOperationActive(operation);
     const timestamp = now();
     const runId = randomUUID();
     const run: AgentRun = {
@@ -781,7 +921,12 @@ export class AgentService {
       ...(conversation === null ? {} : { conversationId: conversation.id }),
       createdAt: timestamp,
     };
+    assertOperationActive(operation);
     const agentAtStart = await this.store.mutate((database) => {
+      // Storage serializes this callback. Checking again inside the mutation
+      // prevents a cancellation observed while the acceptance write waited in
+      // the queue from creating a Run after the operation stopped.
+      assertOperationActive(operation);
       const storedAgent = database.agents.find((item) => item.id === agentId);
       if (!storedAgent) {
         throw new HttpError(404, "Agent not found");
@@ -836,6 +981,7 @@ export class AgentService {
       modelPlan.fallbacks,
       modelPlan.snapshot,
       options.parentSpan,
+      operation,
     );
     return { run, message };
   }

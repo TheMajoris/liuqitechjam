@@ -1,6 +1,7 @@
 import { lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Project } from "./project-types.js";
+import type { OperationOptions } from "../types.js";
 import {
   hasCurrentPlatformInstructions,
   isPlatformManagedInstructions,
@@ -57,6 +58,21 @@ export class ProjectWorkspaceManager {
   }
 
   /**
+   * Reports whether the persisted active Project still has its expected
+   * directory. This is intentionally a read-only check: startup/archive
+   * recovery must never recreate a missing workspace or pick an archive by
+   * name.
+   */
+  async hasWorkspaceDirectory(project: Project): Promise<boolean> {
+    try {
+      return (await lstat(project.workspacePath)).isDirectory();
+    } catch (error) {
+      if (isErrno(error, "ENOENT")) return false;
+      throw error;
+    }
+  }
+
+  /**
    * The shared workspace contract: everything true for every Agent, forever.
    *
    * A directory holds exactly one AGENTS.md, so it can never describe which of
@@ -102,7 +118,10 @@ export class ProjectWorkspaceManager {
    * layout sheds the last acting Agent's identity. A user-authored AGENTS.md
    * is never swept.
    */
-  async ensureWorkspaceContract(project: Project): Promise<InstructionRefreshResult> {
+  async ensureWorkspaceContract(
+    project: Project,
+    operation: OperationOptions = {},
+  ): Promise<InstructionRefreshResult> {
     const contractPath = path.join(project.workspacePath, "AGENTS.md");
     let existing: string;
     try {
@@ -110,16 +129,19 @@ export class ProjectWorkspaceManager {
     } catch (error) {
       if (!isErrno(error, "ENOENT")) throw error;
       try {
-        await lstat(project.workspacePath);
+        const workspace = await lstat(project.workspacePath);
+        if (!workspace.isDirectory()) return "workspace_missing";
       } catch (workspaceError) {
         if (isErrno(workspaceError, "ENOENT")) return "workspace_missing";
         throw workspaceError;
       }
+      assertOperationActive(operation);
       await writeFile(contractPath, this.contractContent(), "utf8");
       return "created";
     }
     if (hasCurrentPlatformInstructions(existing)) return "current";
     if (!isPlatformManagedInstructions(existing)) return "skipped";
+    assertOperationActive(operation);
     await writeFile(contractPath, this.contractContent(), "utf8");
     return "updated";
   }
@@ -151,6 +173,27 @@ export class ProjectWorkspaceManager {
   /** Restore an archive when a subsequent privileged reconciliation fails. */
   async restore(project: Project, archivedWorkspace: string): Promise<void> {
     await rename(archivedWorkspace, project.workspacePath);
+  }
+}
+
+function assertOperationActive(operation: OperationOptions): void {
+  if (operation.signal?.aborted) {
+    const reason = operation.signal.reason;
+    if (reason instanceof Error && (reason.name === "AbortError" || reason.name === "TimeoutError")) {
+      throw reason;
+    }
+    const error = new Error("Workspace preparation was aborted");
+    error.name = "AbortError";
+    throw error;
+  }
+  if (
+    operation.deadlineAt !== undefined &&
+    Number.isFinite(operation.deadlineAt) &&
+    Date.now() >= operation.deadlineAt
+  ) {
+    const error = new Error("Workspace preparation timed out");
+    error.name = "TimeoutError";
+    throw error;
   }
 }
 

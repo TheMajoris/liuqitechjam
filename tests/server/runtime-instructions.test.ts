@@ -2,6 +2,8 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { AuthorizationError } from "../../apps/server/src/access/authorization-service.js";
+import { DefaultAuthorizationService } from "../../apps/server/src/access/default-authorization-service.js";
 import {
   AgentRuntimePromptComposer,
   RUNTIME_INSTRUCTIONS_MAX_CHARS,
@@ -269,11 +271,43 @@ describe("SkillService runtime projection", () => {
         listMetadata: () => [metadata],
         listCapabilities: async () => capabilities,
       },
+      new DefaultAuthorizationService(),
     );
     const context = await service.runtimeContext(agent("/tmp/unused", ["review"]));
     expect(context.lines.filter((line) => line.includes("Review every changed line carefully."))).toHaveLength(1);
     expect(context.lines).toContain('skill.review.capability.web.search = "available"');
     expect(context.lines[0]).toBe("<platform_skills>");
+  });
+
+  it("does not bypass a denied authorization adapter", async () => {
+    const metadata: ToolMetadata = {
+      id: "project.preview.inspect",
+      title: "Inspect preview",
+      description: "Inspect the current shared preview status.",
+      risk: "read",
+      requiredPermission: "tool.execute:project.preview.inspect",
+    };
+    const service = new SkillService(
+      new SkillRegistry([]),
+      {
+        listMetadata: () => [metadata],
+        listCapabilities: async () => ({
+          agentId: "agent-runtime-test",
+          projectId: null,
+          tools: [],
+        }),
+      },
+      {
+        async decide() {
+          return { result: "deny", reason: "test policy" };
+        },
+        async require() {
+          throw new AuthorizationError("test policy");
+        },
+      },
+    );
+
+    await expect(service.list()).rejects.toBeInstanceOf(AuthorizationError);
   });
 });
 

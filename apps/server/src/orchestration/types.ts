@@ -250,34 +250,6 @@ export interface HandoffEnvelope {
   truncated: boolean;
 }
 
-/** Serializable turn projection kept in LangGraph state. */
-export interface OrchestrationGraphTurn {
-  participantId: string;
-  agentId: string;
-  runId: string;
-  position: number;
-  output: string;
-  outputTruncated: boolean;
-}
-
-/** Serializable state fields owned by the deterministic LangGraph. */
-export interface OrchestrationGraphState {
-  sessionId: string;
-  originalPrompt: string;
-  participants: OrchestrationParticipant[];
-  /** Omitted only by legacy callers; graph execution defaults to sequential. */
-  mode?: OrchestrationMode | undefined;
-  /** Null except for natural sequential roster completion. */
-  completionReason?: OrchestrationCompletionReason | null | undefined;
-  stepIndex: number;
-  maxSteps: number;
-  lastRunId: string | null;
-  lastOutput: string | null;
-  turns: OrchestrationGraphTurn[];
-  status: "running" | "completed" | "failed" | "stopped";
-  errorCode: OrchestrationErrorCode | null;
-}
-
 export interface CreateOrchestrationInput {
   name: string;
   originalPrompt: string;

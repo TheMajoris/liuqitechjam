@@ -72,12 +72,33 @@ export interface SupervisorSelectionContext {
   recentTurns?: readonly SupervisorTurnContext[];
 }
 
+/** Maximum number of provider HTTP calls allowed by one routing selection. */
+export const DEFAULT_SUPERVISOR_MAX_HTTP_CALLS = 4;
+
+/** Mutable, runtime-only budget shared by one selection and its corrections. */
+export interface SupervisorRequestBudget {
+  /** Absolute wall-clock deadline for all provider calls in the selection. */
+  deadlineAt: number;
+  /** Number of provider HTTP calls already consumed by this selection. */
+  calls: number;
+  /** Optional lower cap used by deterministic tests or a tighter caller policy. */
+  maxCalls?: number;
+}
+
+export function createSupervisorRequestBudget(
+  deadlineAt: number,
+): SupervisorRequestBudget {
+  return { deadlineAt, calls: 0 };
+}
+
 export interface SupervisorProviderOptions {
   signal?: AbortSignal;
-  /** Optional per-call override; providers still enforce their own default. */
+  /** Optional per-call override used when a shared budget is not supplied. */
   timeoutMs?: number;
   /** Runtime-only supervisor model captured when the cycle was accepted. */
   model?: string;
+  /** Shared absolute deadline and HTTP-call budget for one routing selection. */
+  requestBudget?: SupervisorRequestBudget;
 }
 
 /** Provider boundary; model/provider implementations stay behind this seam. */

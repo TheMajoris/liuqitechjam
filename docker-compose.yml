@@ -22,6 +22,9 @@ services:
       AGENT_WORKSPACE_ROOT: /app/workspaces
       CODEX_HOME: /app/codex-home
       CODEX_SANDBOX_MODE: ${CODEX_SANDBOX_MODE:-workspace-write}
+      # Set a stable, unique value for every concurrently running deployment;
+      # startup reconciliation only removes runtimes in this namespace.
+      RUNTIME_INSTANCE_ID: ${RUNTIME_INSTANCE_ID:-compose}
       APP_AUTH_TOKEN: ${APP_AUTH_TOKEN:-}
       ARK_API_KEY: ${ARK_API_KEY:-}
       ARK_BASE_URL: ${ARK_BASE_URL:-https://ark.ap-southeast.bytepluses.com/api/v3}

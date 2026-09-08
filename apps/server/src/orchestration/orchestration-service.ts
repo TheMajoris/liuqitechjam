@@ -59,7 +59,6 @@ import {
   normalizeOrchestrationDependencies,
   type ActiveOrchestrationSession,
   type OrchestrationAgentAccess,
-  type OrchestrationGraphRunner,
   type OrchestrationInvokerFactory,
   type OrchestrationProjectBinding,
   type OrchestrationServiceDependencies,
@@ -67,10 +66,10 @@ import {
 } from "./orchestration-runtime.js";
 import { SupervisorError, createAbortError } from "./supervisor/errors.js";
 import { DEFAULT_SUPERVISOR_TIMEOUT_MS } from "./supervisor/provider.js";
+import { createSupervisorRequestBudget } from "./supervisor/types.js";
 
 export type {
   OrchestrationAgentAccess,
-  OrchestrationGraphRunner,
   OrchestrationInvokerFactory,
   OrchestrationProjectBinding,
   OrchestrationServiceDependencies,
@@ -83,9 +82,31 @@ export const DEFAULT_ORCHESTRATION_LIST_LIMIT = 100;
 /** Stable lifecycle error returned when a saved draft is not runnable yet. */
 export const EMPTY_ORCHESTRATION_START_MESSAGE =
   "A task and at least one Agent are required before starting this Conversation";
+const STORAGE_QUIESCE_TIMEOUT_MS = 5_000;
 
 function lifecycleConflict(message: string): HttpError {
   return new HttpError(409, message);
+}
+
+/** Observe all cleanup branches while bounding the shutdown observer. */
+async function settleWithin(
+  promise: Promise<void>,
+  timeoutMs: number,
+): Promise<void> {
+  const boundedTimeout =
+    Number.isFinite(timeoutMs) && timeoutMs >= 0
+      ? timeoutMs
+      : STORAGE_QUIESCE_TIMEOUT_MS;
+  let timer: NodeJS.Timeout | null = null;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, boundedTimeout);
+    timer.unref();
+  });
+  try {
+    await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function participantsMatch(
@@ -136,20 +157,13 @@ export class OrchestrationService {
     store: Storage,
     agents: OrchestrationAgentAccess,
     invoker?: OrchestrationInvokerFactory,
-    graphRunner?: OrchestrationGraphRunner,
   );
   constructor(
     value: Storage | OrchestrationServiceDependencies,
     agents?: OrchestrationAgentAccess,
     invoker?: OrchestrationInvokerFactory,
-    graphRunner?: OrchestrationGraphRunner,
   ) {
-    const normalized = normalizeOrchestrationDependencies(
-      value,
-      agents,
-      invoker,
-      graphRunner,
-    );
+    const normalized = normalizeOrchestrationDependencies(value, agents, invoker);
     this.store = normalized.store;
     this.journal = new OrchestrationJournal(this.store);
     this.agents = normalized.agents;
@@ -204,7 +218,7 @@ export class OrchestrationService {
     });
   }
 
-  /** Attach runtime telemetry after the application graph is assembled. */
+  /** Attach runtime telemetry after the orchestration runtime is assembled. */
   setTelemetry(telemetry: RuntimeTelemetry): void {
     this.telemetry = telemetry;
   }
@@ -217,6 +231,27 @@ export class OrchestrationService {
   /** Abort and settle every in-process child run before server shutdown. */
   async shutdown(): Promise<void> {
     await this.cancelActiveSessions();
+  }
+
+  /**
+   * Storage-fatal shutdown path. It never reads or mutates the journal: the
+   * active-session map and each context's child Run handle are sufficient to
+   * abort Team routing and request physical child cancellation.
+   */
+  async quiesceForStorageFailure(options: { timeoutMs?: number } = {}): Promise<void> {
+    const active = [...this.activeSessions.values()];
+    if (active.length === 0) return;
+    const cancellations = active.map(async (context) => {
+      context.controller.abort();
+      if (context.currentRunId) {
+        await this.cancelChildRunForStorageFailure(context, context.currentRunId);
+      }
+      await context.execution?.catch(() => undefined);
+    });
+    await settleWithin(
+      Promise.all(cancellations).then(() => undefined),
+      options.timeoutMs ?? STORAGE_QUIESCE_TIMEOUT_MS,
+    );
   }
 
   private async cancelActiveSessions(): Promise<void> {
@@ -751,10 +786,24 @@ export class OrchestrationService {
    * archive or permanently delete. This is the Workspace-level counterpart to
    * `deleteSession`.
    */
-  async removeSessionsForProject(projectId: string): Promise<void> {
+  async removeSessionsForProject(
+    projectId: string,
+    options: { archiveOwned?: boolean } = {},
+  ): Promise<void> {
+    // ProjectService holds the archive guard while it asks orchestration to
+    // remove child records as part of permanent deletion. That trusted path
+    // is the one exception; ordinary callers must participate in the guard so
+    // compensation cannot restore over an accepted Project mutation.
+    const archiveOwned = options.archiveOwned === true;
+    if (!archiveOwned) {
+      this.projectBinding?.assertProjectMutationAllowed?.(projectId);
+    }
     await this.stopSessionsForProject(projectId);
 
     await this.store.mutate((database) => {
+      if (!archiveOwned) {
+        this.projectBinding?.assertProjectMutationAllowed?.(projectId);
+      }
       const childIds = new Set(
         database.orchestrations
           .filter((session) => session.projectId === projectId)
@@ -832,12 +881,27 @@ export class OrchestrationService {
     if (statusIsActive(current.status) || this.activeSessions.has(id)) {
       throw lifecycleConflict("Stop the active orchestration before deleting it");
     }
+    if (current.projectId) {
+      this.projectBinding?.assertProjectMutationAllowed?.(current.projectId);
+    }
 
     await this.store.mutate((database) => {
       const session = database.orchestrations.find((item) => item.id === id);
       if (!session) throw new HttpError(404, "Orchestration not found");
       if (statusIsActive(session.status) || this.activeSessions.has(id)) {
         throw lifecycleConflict("Stop the active orchestration before deleting it");
+      }
+
+      // The legacy teamId pointer may identify Projects whose session record
+      // is missing its projectId, so collect every affected Project while the
+      // store is serialized and guard immediately before changing any of them.
+      const affectedProjectIds = new Set<string>();
+      if (session.projectId) affectedProjectIds.add(session.projectId);
+      for (const project of database.projects) {
+        if (project.teamId === id) affectedProjectIds.add(project.id);
+      }
+      for (const projectId of affectedProjectIds) {
+        this.projectBinding?.assertProjectMutationAllowed?.(projectId);
       }
 
       database.orchestrations = database.orchestrations.filter(
@@ -1214,8 +1278,29 @@ export class OrchestrationService {
         const normalSelector = selector;
         let correctionUsed = false;
         selector = async (input, options) => {
-          const startedAt = Date.now();
-          const decision = await normalSelector(input, options);
+          const configuredBudgetMs =
+            options?.timeoutMs ?? this.supervisorTimeoutMs;
+          const selectionBudgetMs =
+            configuredBudgetMs !== undefined &&
+            Number.isInteger(configuredBudgetMs) &&
+            configuredBudgetMs > 0
+              ? configuredBudgetMs
+              : DEFAULT_SUPERVISOR_TIMEOUT_MS;
+          const requestBudget =
+            options?.requestBudget ??
+            createSupervisorRequestBudget(Date.now() + selectionBudgetMs);
+          const remainingTimeoutMs = requestBudget.deadlineAt - Date.now();
+          if (!Number.isFinite(remainingTimeoutMs) || remainingTimeoutMs <= 0) {
+            throw new SupervisorError(
+              "SUPERVISOR_TIMED_OUT",
+              "Supervisor did not make a routing decision before the routing deadline",
+            );
+          }
+          const selectionOptions = {
+            ...(options ?? {}),
+            requestBudget,
+          };
+          const decision = await normalSelector(input, selectionOptions);
           if (
             input.mode !== "supervisor" ||
             (input.cycleIndex ?? 0) <= 0 ||
@@ -1238,18 +1323,8 @@ export class OrchestrationService {
           // A corrective provider call is still part of the same selection
           // deadline. It is side-effect free: no supervisor decision hook or
           // child Run is recorded until an eligible invoke is returned.
-          const elapsedMs = Math.max(0, Date.now() - startedAt);
-          const configuredBudgetMs =
-            options?.timeoutMs ?? this.supervisorTimeoutMs;
-          const selectionBudgetMs =
-            configuredBudgetMs !== undefined &&
-            Number.isInteger(configuredBudgetMs) &&
-            configuredBudgetMs > 0
-              ? configuredBudgetMs
-              : DEFAULT_SUPERVISOR_TIMEOUT_MS;
-          const remainingTimeoutMs =
-            selectionBudgetMs - elapsedMs;
-          if (remainingTimeoutMs <= 0) {
+          const correctionTimeoutMs = requestBudget.deadlineAt - Date.now();
+          if (correctionTimeoutMs <= 0) {
             throw new SupervisorError(
               "SUPERVISOR_TIMED_OUT",
               "Supervisor did not choose an Agent for this follow-up before the routing deadline",
@@ -1260,7 +1335,11 @@ export class OrchestrationService {
               ...input,
               requireCurrentCycleDispatch: true,
             },
-            { ...(options ?? {}), timeoutMs: remainingTimeoutMs },
+            {
+              ...selectionOptions,
+              requestBudget,
+              timeoutMs: correctionTimeoutMs,
+            },
           );
           const participant =
             typeof corrected === "object" && corrected !== null &&
@@ -1334,9 +1413,15 @@ export class OrchestrationService {
                   spanId: context.participantSpan.spanId,
                 },
               }
-            : {}),
+              : {}),
         }),
       cancel: (runId) => invoker.cancel(runId),
+      ...(invoker.cancelForStorageFailure === undefined
+        ? {}
+        : {
+            cancelForStorageFailure: (runId: string) =>
+              invoker.cancelForStorageFailure!(runId),
+          }),
     };
     this.activeSessions.set(session.id, context);
     const execution = this.runSession(context);
@@ -1357,6 +1442,28 @@ export class OrchestrationService {
     } catch {
       // The engine's abort path and persisted terminal record remain
       // authoritative even if child cleanup fails.
+    }
+  }
+
+  private async cancelChildRunForStorageFailure(
+    context: ActiveOrchestrationSession,
+    runId: string,
+  ): Promise<void> {
+    // The journal may already be unreadable. Prefer the dedicated physical
+    // cancellation seam and never turn this fatal path into a Storage read.
+    if (context.cancellationRequestedRunId === runId) return;
+    context.cancellationRequestedRunId = runId;
+    try {
+      if (context.invoker.cancelForStorageFailure) {
+        await context.invoker.cancelForStorageFailure(runId);
+      } else {
+        // Compatibility for injected test/legacy invokers; production uses the
+        // memory-first method above.
+        await context.invoker.cancel(runId);
+      }
+    } catch {
+      // The fatal shutdown observer is bounded; physical cancellation remains
+      // best effort and must not mask the original storage failure.
     }
   }
 
@@ -1798,6 +1905,3 @@ export class OrchestrationService {
     await this.recordTerminal(id, outcome);
   }
 }
-
-/** Retain the graph-builder seam for callers that want to inspect the graph. */
-export { buildOrchestrationGraph } from "./graph.js";
