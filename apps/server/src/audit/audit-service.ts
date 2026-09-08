@@ -116,6 +116,7 @@ export class AuditService implements AuditRecorder, AuditReader {
       this.readNormalized(),
       filter,
       this.contextWindowFor,
+      this.runtime?.readConversations?.() ?? [],
     );
   }
 
@@ -126,6 +127,7 @@ export class AuditService implements AuditRecorder, AuditReader {
       this.readNormalized(),
       runId,
       this.contextWindowFor,
+      this.runtime?.readConversations?.() ?? [],
     );
   }
 
@@ -219,6 +221,8 @@ export {
 } from "./audit-trace.js";
 export {
   queryAuditTimeline,
+  type AuditConversationKind,
+  type AuditConversationSnapshot,
   type AuditRunReader,
   type AuditRunSnapshot,
   type AuditTimeline,
@@ -230,9 +234,16 @@ export {
   listRunHistory,
   DEFAULT_RUN_HISTORY_LIMIT,
   MAX_RUN_HISTORY_LIMIT,
+  type RunConversation,
   type RunHistoryEntry,
   type RunHistoryQuery,
 } from "./run-history.js";
+export {
+  summarizeRunTools,
+  toolEventName,
+  type RunToolName,
+  type RunToolUsage,
+} from "./run-tools.js";
 export {
   JsonAuditStoreAdapter,
   StorageAuditStoreAdapter,

@@ -8352,14 +8352,235 @@ button.assignment-archive:hover:not(:disabled) {
 .run-list-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   flex-wrap: wrap;
   margin-bottom: 12px;
 }
 
+/* The search box takes the room the spelled-out sort options used to. */
+.run-list-toolbar .control-search {
+  flex: 1 1 220px;
+  min-width: 180px;
+}
+
+.run-list-toolbar > .button.is-iconic {
+  margin-left: auto;
+}
+
+/*
+ * Shared controls for the observability toolbars.
+ *
+ * A glyph replaces a label only where the control is one of a familiar few
+ * and the label survives as the accessible name; anything a reader has to
+ * read to understand keeps its words.
+ *
+ * The surface is stated here rather than left to the browser's `buttonface`,
+ * so a button, a search box and a menu standing side by side in one toolbar
+ * are the same object in three shapes instead of three near-misses.
+ */
+.icon {
+  flex: 0 0 auto;
+}
+
+.trace-runs .button,
+.run-list .button,
+.trace-detail .button,
+.control-search,
+.control-select {
+  border: 1px solid var(--hairline);
+  background: #fff;
+  color: var(--ink);
+}
+
+.trace-runs .button:hover:not(:disabled),
+.run-list .button:hover:not(:disabled),
+.trace-detail .button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--purple) 28%, var(--hairline));
+  color: var(--purple-dark);
+}
+
+.button.has-icon {
+  gap: 7px;
+}
+
+.button.is-iconic {
+  min-width: 38px;
+  padding: 0 10px;
+}
+
+.control-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 11px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--muted);
+}
+
+.control-search:focus-within {
+  border-color: var(--purple);
+  box-shadow: 0 0 0 3px var(--purple-soft);
+}
+
+/* Undoes the global field sizing: this input is the box, not inside one. */
+.control-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: auto;
+  margin-top: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+/* The browser's own clear affordance would sit beside ours. */
+.control-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.control-search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  color: var(--muted);
+  background: var(--line);
+  cursor: pointer;
+}
+
+.control-search-clear:hover {
+  color: var(--ink);
+}
+
+/* A menu, not a row of buttons: rarely changed settings cost one control each. */
+.control-select {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 11px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--muted);
+}
+
+.control-select:focus-within {
+  border-color: var(--purple);
+  box-shadow: 0 0 0 3px var(--purple-soft);
+}
+
+.control-select select {
+  border: 0;
+  padding: 0 2px 0 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+}
+
+.link-button {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--purple);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* --- Stepping between Runs -------------------------------------------- */
+
+/*
+ * The arrows sit at the page's two edges, each pointing the way it moves, so
+ * the gesture matches the direction of travel through the list.
+ */
+.trace-stepper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.trace-stepper-position {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Export menu ------------------------------------------------------- */
+
+.trace-export {
+  position: relative;
+}
+
+.trace-export-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+  padding: 5px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--paper);
+  box-shadow: var(--elevation-2);
+}
+
+.trace-export-item {
+  border: 0;
+  border-radius: 7px;
+  padding: 8px 10px;
+  color: var(--ink);
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.trace-export-item:hover {
+  background: var(--purple-soft);
+  color: var(--purple-dark);
+}
+
 .run-table td strong {
   display: block;
+}
+
+/* A Run is titled by its task, so the cell is clipped rather than stretched. */
+.usage-table td.run-column,
+.usage-table th.run-column {
+  min-width: 170px;
+  max-width: 280px;
+}
+
+.usage-table td.run-column strong,
+.usage-table td.run-column .trace-row-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .trace-deleted-badge {
@@ -8384,6 +8605,107 @@ button.assignment-archive:hover:not(:disabled) {
 .trace-run-title {
   margin: 4px 0 0;
   color: var(--muted);
+}
+
+.trace-run-conversation,
+.trace-run-tools {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+/*
+ * A conversation's kind, said in one glance.
+ *
+ * A Team session and a private chat cost differently and are read
+ * differently, and the titles alone do not distinguish them.
+ */
+.conversation-kind {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.conversation-kind.is-team {
+  border-color: color-mix(in srgb, var(--purple) 35%, transparent);
+  background: var(--purple-soft);
+  color: var(--purple);
+}
+
+.conversation-kind.is-direct {
+  background: var(--line);
+  color: var(--muted);
+}
+
+/* The conversation cell carries a title and a kind, so it needs real width. */
+.usage-table td.conversation-column,
+.usage-table th.conversation-column {
+  min-width: 150px;
+  max-width: 240px;
+}
+
+.usage-table td.conversation-column strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-table td.conversation-column .trace-row-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* What a Run called: the count, and under it the names behind it. */
+.usage-table td.tool-column,
+.usage-table th.tool-column {
+  min-width: 118px;
+  max-width: 190px;
+  text-align: right;
+}
+
+.usage-table td.tool-column strong {
+  display: block;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-table td.tool-column .trace-row-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-table td.tool-column .is-absent {
+  color: var(--muted);
+}
+
+/* The panel row a table scope came from, marked so the pair reads as one. */
+.token-hotspot.is-selected > button {
+  background: var(--purple-soft);
+  box-shadow: inset 2px 0 0 var(--purple);
+}
+
+.run-list-scope {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--purple-soft);
+  color: var(--ink);
+  font-size: 12px;
 }
 
 .agent-pane-tabs {
@@ -8552,11 +8874,26 @@ button.assignment-archive:hover:not(:disabled) {
   font-size: 12px;
   font-weight: 620;
   white-space: nowrap;
+}
+
+/*
+ * The label yields before its meta does.
+ *
+ * A row is named by a task prompt, which has no bounded length, while the
+ * Agents beside it are short and are what tells two same-named rows apart.
+ * Clipping the long half keeps both readable.
+ */
+.token-hotspot-label {
+  overflow: hidden;
+  flex: 0 1 auto;
+  min-width: 0;
   text-overflow: ellipsis;
 }
 
 .token-hotspot-meta {
   overflow: hidden;
+  flex: 0 1 auto;
+  min-width: 0;
   color: var(--muted);
   font-size: 10.5px;
   font-weight: 500;
@@ -8585,6 +8922,8 @@ button.assignment-archive:hover:not(:disabled) {
   grid-column: 1 / -1;
   display: block;
   min-width: 3px;
+  /* A width is always a share of the row's own scale; nothing may exceed it. */
+  max-width: 100%;
   transition: width 260ms var(--ease-out);
 }
 

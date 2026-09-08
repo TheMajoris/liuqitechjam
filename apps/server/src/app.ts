@@ -2,6 +2,7 @@ import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 import { timingSafeEqual } from "node:crypto";
+import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
@@ -1115,9 +1116,21 @@ export async function createApp(
   // API-only and the separate web dev server handles the frontend.
   if (config.nodeEnv === "production") {
     const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
+    const assetsRoot = join(webRoot, "assets");
     await app.register(fastifyStatic, {
       root: webRoot,
       prefix: "/",
+      // Vite fingerprints every file it emits into `assets`, so a given URL
+      // there never changes content and can be cached indefinitely. Everything
+      // else, index.html above all, must be refetched: a browser that reuses a
+      // stale shell asks for asset hashes the new build no longer serves, which
+      // is why a redeploy used to need a hard reload or a private window.
+      setHeaders(reply, filePath) {
+        const cacheControl = filePath.startsWith(assetsRoot + sep)
+          ? "public, max-age=31536000, immutable"
+          : "no-store";
+        reply.header("cache-control", cacheControl);
+      },
     });
     app.setNotFoundHandler((request, reply) => {
       if (request.url.startsWith("/api/")) {
