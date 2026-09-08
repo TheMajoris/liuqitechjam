@@ -1,11 +1,18 @@
-import type { AgentPreviewContext, PreviewContextProvider } from "./preview/preview-context-provider.js";
+import type {
+  AgentPreviewContext,
+  PreviewContextProvider,
+  RuntimeContextSections,
+} from "./preview/preview-context-provider.js";
 import { composeRuntimeContextPrompt } from "./preview/preview-context-provider.js";
 import {
   projectRuntimeContextLines,
   type ProjectRunBinding,
 } from "./projects/project-execution.js";
 import type { Agent } from "./types.js";
-import type { SkillRuntimeContext } from "./skills/skill-types.js";
+import type {
+  SkillRuntimeContext,
+  SkillRuntimeProjection,
+} from "./skills/skill-types.js";
 
 /**
  * Bounds the configured instruction text delivered per turn. Long instructions
@@ -54,6 +61,13 @@ type SkillContextReader = (
   orchestrationId?: string,
 ) => Promise<SkillRuntimeContext | undefined>;
 
+/** Prompt plus the once-resolved facts needed by discovery and audit wiring. */
+export interface AgentRuntimePromptResult {
+  prompt: string;
+  previewContext: AgentPreviewContext;
+  skillProjection: SkillRuntimeProjection | undefined;
+}
+
 /**
  * Builds the trusted prompt envelope at the runtime seam.
  *
@@ -75,47 +89,73 @@ export class AgentRuntimePromptComposer {
     runId?: string,
     orchestrationId?: string,
   ): Promise<string> {
+    const result = await this.composeWithContext(
+      agent,
+      prompt,
+      binding,
+      projectId,
+      runId,
+      orchestrationId,
+    );
+    return result.prompt;
+  }
+
+  /**
+   * Compose the worker prompt and return the exact skill projection used to
+   * render it. Consumers such as MCP discovery must reuse this projection for
+   * the same run instead of resolving capabilities again.
+   */
+  async composeWithContext(
+    agent: Agent,
+    prompt: string,
+    binding: ProjectRunBinding | null,
+    projectId?: string,
+    runId?: string,
+    orchestrationId?: string,
+  ): Promise<AgentRuntimePromptResult> {
     const projectLines = binding ? projectRuntimeContextLines(binding) : [];
     const skillContext = await this.skillContext(agent, projectId, runId, orchestrationId);
-    // Identity first, then scope, then capabilities: who is acting, where the
-    // turn runs, and what it may use.
-    const extraLines = [
-      ...agentIdentityLines(agent),
-      ...projectLines,
-      ...(skillContext?.lines ?? []),
-    ];
+    const sections: RuntimeContextSections = {
+      identityLines: agentIdentityLines(agent),
+      stableSkillLines: skillContext?.stableLines ?? [],
+      currentStateLines: [
+        ...projectLines,
+        ...(skillContext?.capabilityLines.length
+          ? [
+              "<platform_skill_capabilities>",
+              ...skillContext.capabilityLines,
+              "</platform_skill_capabilities>",
+            ]
+          : []),
+      ],
+    };
+    const composeForPreview = (
+      previewContext: AgentPreviewContext,
+    ): AgentRuntimePromptResult => ({
+      prompt: composeRuntimeContextPrompt(prompt, previewContext, [], sections),
+      previewContext,
+      skillProjection: skillContext,
+    });
 
     // A Project turn is already bound to the Project-owned preview status.
     // Never ask the private Agent provider here: doing so could leak private
     // preview state into a shared Project prompt.
     if (binding !== null) {
-      return composeRuntimeContextPrompt(
-        prompt,
-        { status: binding.previewStatus },
-        extraLines,
-      );
+      const previewContext = { status: binding.previewStatus } satisfies AgentPreviewContext;
+      return composeForPreview(previewContext);
     }
 
     const provider = this.previewProvider();
     if (!provider) {
-      return this.composeWithoutPreview(prompt, extraLines);
+      const previewContext = { status: "not_started" } satisfies AgentPreviewContext;
+      return composeForPreview(previewContext);
     }
     try {
-      const context = await provider.getForAgent(agent.id);
-      return composeRuntimeContextPrompt(prompt, context, extraLines);
+      const previewContext = await provider.getForAgent(agent.id);
+      return composeForPreview(previewContext);
     } catch {
-      return this.composeWithoutPreview(prompt, extraLines);
+      const previewContext = { status: "not_started" } satisfies AgentPreviewContext;
+      return composeForPreview(previewContext);
     }
-  }
-
-  private composeWithoutPreview(prompt: string, extraLines: readonly string[]): string {
-    // Keep a runtime envelope even when the optional Preview provider is not
-    // configured. The envelope carries the response-language policy and the
-    // user/platform boundary that used to be repeated in AGENTS.md.
-    return composeRuntimeContextPrompt(
-      prompt,
-      { status: "not_started" } satisfies AgentPreviewContext,
-      extraLines,
-    );
   }
 }

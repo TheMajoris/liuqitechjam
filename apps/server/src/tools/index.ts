@@ -38,14 +38,27 @@ export type {
   WebFetchResult,
 } from "./web-fetch-adapter.js";
 export {
+  countToolsListMessages,
   MCP_BEARER_TOKEN_ENV,
+  MCP_TOOLS_LIST_REQUEST_BOUND,
   McpSessionService,
 } from "./mcp-session-service.js";
 export type {
   McpSessionContext,
+  McpSessionDiagnostics,
   MintMcpSessionInput,
   MintedMcpSession,
 } from "./mcp-session-service.js";
+export {
+  EffectiveToolResolver,
+  resolveEffectiveToolIds,
+} from "./effective-tool-resolver.js";
+export type {
+  EffectiveToolResolution,
+  EffectiveToolResolutionDiagnostics,
+  EffectiveToolResolverInput,
+  EffectiveToolResolutionStatus,
+} from "./effective-tool-resolver.js";
 export {
   ToolError,
   isToolError,

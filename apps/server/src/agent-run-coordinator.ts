@@ -18,6 +18,8 @@ import {
   McpSessionService,
   type MintedMcpSession,
 } from "./tools/mcp-session-service.js";
+import type { EffectiveToolResolution } from "./tools/effective-tool-resolver.js";
+import type { SkillRuntimeProjection } from "./skills/skill-types.js";
 import type { RuntimeTelemetry, TelemetrySpan } from "./telemetry/telemetry-types.js";
 import { correlationAttributes } from "./telemetry/telemetry-types.js";
 import { usageAttributes } from "./telemetry/telemetry-usage.js";
@@ -139,6 +141,13 @@ export interface AgentRunCoordinatorDependencies {
   prompt: AgentRuntimePromptComposer;
   getProjectScope: () => ProjectExecutionScope | undefined;
   getMcpSessions: () => McpSessionService | undefined;
+  getEffectiveToolResolution?: () =>
+    | ((
+        agent: Agent,
+        projectId: string | undefined,
+        projection: SkillRuntimeProjection | undefined,
+      ) => EffectiveToolResolution)
+    | undefined;
   getTelemetry: () => RuntimeTelemetry | undefined;
   /** Optional server-owned audit sink for fallback usage events. */
   getAudit?: () => AuditRecorder | undefined;
@@ -697,7 +706,7 @@ export class AgentRunCoordinator {
         const afterProjectPreparation = this.executionControlError(run.id, operation);
         if (afterProjectPreparation) throw afterProjectPreparation;
       }
-      const executionPrompt = await this.dependencies.prompt.compose(
+      const runtimePrompt = await this.dependencies.prompt.composeWithContext(
         agentAtStart,
         run.prompt,
         binding,
@@ -705,6 +714,7 @@ export class AgentRunCoordinator {
         run.id,
         orchestrationId,
       );
+      const executionPrompt = runtimePrompt.prompt;
       const afterPrompt = this.executionControlError(run.id, operation);
       if (afterPrompt) throw afterPrompt;
       // Mint as late as possible: the opaque token exists only for the child
@@ -716,6 +726,41 @@ export class AgentRunCoordinator {
       const mcpSessions = this.dependencies.getMcpSessions();
       if (mcpSessions) {
         mcpUrl = this.mcpUrl();
+        let toolResolution: EffectiveToolResolution | undefined;
+        const resolveEffectiveTools = this.dependencies.getEffectiveToolResolution?.();
+        if (!resolveEffectiveTools && this.dependencies.config.mcpScopedAdvertisement) {
+          toolResolution = {
+            ok: false,
+            advertisedToolIds: [],
+            diagnostics: {
+              status: "failed",
+              configuredCatalogueSize: 0,
+              advertisedToolCount: 0,
+              reason: "Effective tool resolver is unavailable",
+            },
+          };
+        } else if (resolveEffectiveTools) {
+          try {
+            toolResolution = resolveEffectiveTools(
+              agentAtStart,
+              projectId,
+              runtimePrompt.skillProjection,
+            );
+          } catch {
+            toolResolution = this.dependencies.config.mcpScopedAdvertisement
+              ? {
+                  ok: false,
+                  advertisedToolIds: [],
+                  diagnostics: {
+                    status: "failed",
+                    configuredCatalogueSize: 0,
+                    advertisedToolCount: 0,
+                    reason: "Effective tool resolution failed",
+                  },
+                }
+              : undefined;
+          }
+        }
         mintedMcpSession = mcpSessions.mint({
           agentId: agentAtStart.id,
           ...(projectId === undefined ? {} : { projectId }),
@@ -724,6 +769,18 @@ export class AgentRunCoordinator {
           ...(traceCarrier.traceparent === undefined
             ? {}
             : { traceparent: traceCarrier.traceparent }),
+          ...(toolResolution === undefined
+            ? {}
+            : {
+                advertisedToolIds: toolResolution.advertisedToolIds,
+                diagnostics: {
+                  configuredCatalogueSize:
+                    toolResolution.diagnostics.configuredCatalogueSize,
+                  advertisedToolCount:
+                    toolResolution.diagnostics.advertisedToolCount,
+                  resolutionStatus: toolResolution.diagnostics.status,
+                },
+              }),
         });
       }
       const initialThreadId = binding

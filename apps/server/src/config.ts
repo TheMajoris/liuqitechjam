@@ -101,6 +101,11 @@ const envSchema = z.object({
   // An explicit value is allowed for deployments with a shorter-lived policy;
   // the default below is derived from CODEX_TIMEOUT_MS instead of this field.
   MCP_TOKEN_TTL_MS: z.coerce.number().int().min(1_000).max(MAX_MCP_TOKEN_TTL_MS).optional(),
+  /** Opt in to per-run MCP catalogue scoping. Omission preserves legacy advertisement. */
+  MCP_SCOPED_ADVERTISEMENT: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
   /** Local-first by default; Brave remains available as an explicit option. */
   SEARCH_PROVIDER: z.enum(["searxng", "brave", "disabled"]).default("searxng"),
   SEARXNG_URL: z
@@ -233,6 +238,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     mcpContainerUrl: env.MCP_CONTAINER_URL?.trim() || "",
     mcpTokenTtlMs:
       env.MCP_TOKEN_TTL_MS ?? env.CODEX_TIMEOUT_MS + MCP_TOKEN_GRACE_MS,
+    mcpScopedAdvertisement: env.MCP_SCOPED_ADVERTISEMENT,
     searchProvider: env.SEARCH_PROVIDER,
     searxngUrl: env.SEARXNG_URL.replace(/\/+$/, ""),
     searxngTimeoutMs: env.SEARXNG_TIMEOUT_MS,

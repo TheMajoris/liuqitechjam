@@ -104,4 +104,77 @@ describe("McpSessionService audit lifecycle", () => {
     expect(service.revoke(token)).toBe(true);
     expect(audit.inputs).toHaveLength(0);
   });
+
+  it("clones and freezes the advertised snapshot while refreshing each next run", () => {
+    const service = new McpSessionService(60_000);
+    const firstIds = ["web.search"];
+    const first = service.mint({
+      agentId: "agent-snapshot",
+      runId: "run-first",
+      advertisedToolIds: firstIds,
+      diagnostics: {
+        configuredCatalogueSize: 4,
+        advertisedToolCount: 1,
+        resolutionStatus: "scoped",
+      },
+    });
+    firstIds.push("web.fetch");
+
+    expect(first.context.advertisedToolIds).toEqual(["web.search"]);
+    expect(Object.isFrozen(first.context.advertisedToolIds)).toBe(true);
+    expect(first.context.diagnostics).toMatchObject({
+      configuredCatalogueSize: 4,
+      advertisedToolCount: 1,
+      resolutionStatus: "scoped",
+    });
+    expect(Object.isFrozen(first.context.diagnostics)).toBe(true);
+    expect(service.resolve(first.token)?.advertisedToolIds).toEqual(["web.search"]);
+
+    const second = service.mint({
+      agentId: "agent-snapshot",
+      runId: "run-second",
+      advertisedToolIds: ["web.fetch"],
+      diagnostics: { configuredCatalogueSize: 4, advertisedToolCount: 1, resolutionStatus: "scoped" },
+    });
+    expect(service.resolve(second.token)?.advertisedToolIds).toEqual(["web.fetch"]);
+    expect(service.resolve(first.token)?.runId).toBe("run-first");
+  });
+
+  it("records catalogue size separately and caps batch discovery observations", () => {
+    const service = new McpSessionService(60_000);
+    const { token } = service.mint({
+      agentId: "agent-discovery",
+      runId: "run-discovery",
+      advertisedToolIds: [],
+    });
+
+    service.recordCatalogueObservation("run-discovery", 4, 0);
+    service.recordCatalogueObservation("run-discovery", 99, 99);
+    service.observeToolsList("run-discovery", 40);
+    service.observeToolsList("run-discovery", 2);
+
+    expect(service.resolve(token)?.diagnostics).toMatchObject({
+      configuredCatalogueSize: 4,
+      advertisedToolCount: 0,
+      toolsListRequestsObserved: 32,
+      toolsListRequestBound: 32,
+      toolsListRequestCountStatus: "capped",
+    });
+  });
+
+  it("marks malformed discovery bodies unknown without retaining a partial count", () => {
+    const service = new McpSessionService(60_000);
+    const { token } = service.mint({ agentId: "agent-unknown", runId: "run-unknown" });
+
+    service.observeToolsListMessage("run-unknown", [
+      { jsonrpc: "2.0", id: 1, method: "tools/list" },
+      null,
+    ]);
+
+    expect(service.resolve(token)?.diagnostics).toMatchObject({
+      toolsListRequestBound: 32,
+      toolsListRequestCountStatus: "unknown",
+    });
+    expect(service.resolve(token)?.diagnostics).not.toHaveProperty("toolsListRequestsObserved");
+  });
 });

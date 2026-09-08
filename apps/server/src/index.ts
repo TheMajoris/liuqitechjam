@@ -39,6 +39,7 @@ import { ProjectServiceExecutionScope } from "./projects/project-execution.js";
 import { createSearchProvider } from "./tools/search-provider-factory.js";
 import { WebFetchAdapter } from "./tools/web-fetch-adapter.js";
 import { McpSessionService } from "./tools/mcp-session-service.js";
+import { EffectiveToolResolver } from "./tools/effective-tool-resolver.js";
 import {
   createBuiltInToolRegistry,
   ToolService,
@@ -295,6 +296,29 @@ const skillService = new SkillService(
 const roleService = new RoleService(store, toolService, skillService, authorization);
 toolService.setProjectRoleToolResolver(roleService);
 skillService.setProjectRoleSkillResolver(roleService);
+const effectiveToolResolver = new EffectiveToolResolver();
+service.setEffectiveToolResolution((agent, projectId, projection) => {
+  if (config.mcpScopedAdvertisement && projection === undefined) {
+    return {
+      ok: false,
+      advertisedToolIds: [],
+      diagnostics: {
+        status: "failed",
+        configuredCatalogueSize: toolRegistry.list().length,
+        advertisedToolCount: 0,
+        reason: "Runtime capability projection is unavailable",
+      },
+    };
+  }
+  const effectiveRole = roleService.getEffectiveRole(agent.id, projectId, agent);
+  return effectiveToolResolver.resolve({
+    registry: toolRegistry,
+    ...(effectiveRole === undefined ? {} : { effectiveRole }),
+    assignedSkills: projection?.skills ?? [],
+    capabilities: projection?.toolCapabilities ?? [],
+    legacyFullAdvertisement: !config.mcpScopedAdvertisement,
+  });
+});
 service.setSkillService(skillService);
 projectService.setSkillService(skillService);
 // Reconcile disposable runtimes once, before any service can reset a busy
@@ -458,6 +482,7 @@ const app = await createApp(
   {
     sessions: mcpSessions,
     toolService,
+    legacyFullAdvertisement: !config.mcpScopedAdvertisement,
     skillService,
     roleService,
     auditService: audit,

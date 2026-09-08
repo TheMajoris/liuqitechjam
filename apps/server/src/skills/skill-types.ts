@@ -1,5 +1,6 @@
 import type {
   ToolAvailability,
+  ToolCapabilitiesView,
   ToolMetadata,
 } from "../tools/tool-types.js";
 
@@ -65,9 +66,31 @@ export interface AgentSkillsView {
   skills: AssignedSkillView[];
 }
 
+/**
+ * Once-resolved, read-only facts shared by runtime rendering and discovery.
+ *
+ * `toolCapabilities` is the complete capability view returned for this Agent
+ * and Project scope. Consumers must reuse it rather than asking the capability
+ * service again for the same run.
+ */
+export interface SkillRuntimeProjection {
+  agentId: string;
+  projectId: string | null;
+  /** Preserves configured Agent/role assignment order. */
+  skillIds: readonly string[];
+  skills: readonly AssignedSkillView[];
+  toolCapabilities: ToolCapabilitiesView;
+  /** Stable skill names/instructions; safe to place before mutable state. */
+  stableLines: readonly string[];
+  /** Redacted current capability state; safe to place after fixed policies. */
+  capabilityLines: readonly string[];
+}
+
 /** Bounded, safe facts consumed by workspace writers and runtime prompts. */
-export interface SkillRuntimeContext {
-  skills: AssignedSkillView[];
-  /** Already redacted and bounded lines; safe to place in a prompt envelope. */
-  lines: string[];
+export interface SkillRuntimeContext extends SkillRuntimeProjection {
+  /**
+   * Compatibility projection for existing callers. New runtime renderers
+   * should use `stableLines` and `capabilityLines` separately.
+   */
+  lines: readonly string[];
 }

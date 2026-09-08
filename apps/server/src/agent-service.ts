@@ -41,12 +41,16 @@ import {
   type ProjectExecutionScope,
 } from "./projects/project-execution.js";
 import { AgentRunCoordinator } from "./agent-run-coordinator.js";
-import type { SkillRuntimeContext } from "./skills/skill-types.js";
+import type {
+  SkillRuntimeContext,
+  SkillRuntimeProjection,
+} from "./skills/skill-types.js";
 import type { SkillService } from "./skills/skill-service.js";
 import { AgentRuntimePromptComposer } from "./agent-runtime-prompt.js";
 import type { RuntimeTelemetry } from "./telemetry/telemetry-types.js";
 import type { AuditRecorder } from "./audit/audit-types.js";
 import type { McpSessionService } from "./tools/mcp-session-service.js";
+import type { EffectiveToolResolution } from "./tools/effective-tool-resolver.js";
 import { buildUsageReport } from "./usage/usage-aggregator.js";
 import type { UsageReport, UsageReportOptions } from "./usage/usage-types.js";
 import { normalizeAppearance } from "./agent-appearance.js";
@@ -61,6 +65,12 @@ import { reconcileLocalProcessStartup } from "./runtime-reconciliation.js";
 const now = () => new Date().toISOString();
 const STARTUP_RUNTIME_RECOVERY_MESSAGE =
   "Startup could not verify the previous local runtime; operator recovery is required before this Agent can run";
+
+export type EffectiveToolResolutionReader = (
+  agent: Agent,
+  projectId: string | undefined,
+  projection: SkillRuntimeProjection | undefined,
+) => EffectiveToolResolution;
 
 function operationError(operation: OperationOptions): Error | undefined {
   if (operation.signal?.aborted) {
@@ -130,6 +140,7 @@ export class AgentService {
   private projectScope: ProjectExecutionScope | undefined;
   private mcpSessions: McpSessionService | undefined;
   private skillService: SkillService | undefined;
+  private effectiveToolResolution: EffectiveToolResolutionReader | undefined;
   private telemetry: RuntimeTelemetry | undefined;
   private audit: AuditRecorder | undefined;
   private lifecycleFailureSink: ApplicationLifecycleFailureSink | undefined;
@@ -162,6 +173,7 @@ export class AgentService {
       prompt: runtimePrompt,
       getProjectScope: () => this.projectScope,
       getMcpSessions: () => this.mcpSessions,
+      getEffectiveToolResolution: () => this.effectiveToolResolution,
       getTelemetry: () => this.telemetry,
       getAudit: () => this.audit,
       getRun: (runId) => this.getRun(runId),
@@ -196,6 +208,11 @@ export class AgentService {
   /** Attach the code-owned skill/capability composer after app assembly. */
   setSkillService(skillService: SkillService): void {
     this.skillService = skillService;
+  }
+
+  /** Attach the discovery-only resolver after roles, skills, and tools exist. */
+  setEffectiveToolResolution(reader: EffectiveToolResolutionReader): void {
+    this.effectiveToolResolution = reader;
   }
 
   /** Attach runtime telemetry after the service graph has been assembled. */
