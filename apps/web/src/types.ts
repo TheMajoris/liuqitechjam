@@ -465,6 +465,34 @@ export interface RunContextWindow {
   usedShare: number;
 }
 
+/** One named tool, command, or skill and how often a Run reached for it. */
+export interface RunToolName {
+  name: string;
+  calls: number;
+  failed: number;
+}
+
+/** What a Run called, named — not just how many events it produced. */
+export interface RunToolUsage {
+  /** Reconciled tool and skill invocations; a double-recorded call counted once. */
+  calls: number;
+  /** Commands the Run ran inside its sandbox. */
+  sandboxCommands: number;
+  /** The names behind those counts, busiest first. */
+  names: RunToolName[];
+}
+
+export type RunConversationKind = "direct" | "team";
+
+/** The thread a Run belongs to: a private conversation or a Team session. */
+export interface RunConversation {
+  id: string;
+  kind: RunConversationKind;
+  title: string;
+  /** True when the title came from the Run's task rather than the thread. */
+  derived: boolean;
+}
+
 export interface RunHistoryEntry {
   runId: string;
   agentId: string;
@@ -483,6 +511,9 @@ export interface RunHistoryEntry {
   tokens: RunTokenTotals;
   /** Null when the model has no configured window or nothing was reported. */
   context: RunContextWindow | null;
+  /** Null for a Run that belongs to no thread. */
+  conversation: RunConversation | null;
+  tools: RunToolUsage;
   failed: boolean;
   error: string | null;
 }

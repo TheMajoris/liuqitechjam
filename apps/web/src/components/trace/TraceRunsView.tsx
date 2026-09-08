@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../../api";
 import type { AuditTraceSummary, RunHistoryEntry } from "../../types";
 import { Spinner } from "../playground/Spinner";
@@ -6,6 +6,7 @@ import { formatDuration, formatPercent } from "../insights/usage-format";
 import { RunListView } from "./RunListView";
 import { describeTokens, formatStarted, formatTokenCell, shortId } from "./run-format";
 import { statusFilter } from "./trace-tree";
+import { DownloadIcon } from "./icons";
 import {
   TokenHotspots,
   TokenSplitBar,
@@ -18,7 +19,8 @@ interface TraceRunsViewProps {
   projectId?: string;
   agentId?: string;
   onOpenTrace: (traceId: string) => void;
-  onOpenRun: (runId: string) => void;
+  /** The Runs in view travel with the opened one, so its page can step on. */
+  onOpenRun: (runId: string, siblings: readonly string[]) => void;
 }
 
 const FILTERS = [
@@ -118,6 +120,26 @@ export function TraceRunsView({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState<"jsonl" | "csv" | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement | null>(null);
+
+  // The menu closes on a click anywhere else and on Escape, so it never
+  // outlives the reader's attention.
+  useEffect(() => {
+    if (!exportOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!exportMenuRef.current?.contains(event.target as Node)) setExportOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setExportOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [exportOpen]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -221,23 +243,41 @@ export function TraceRunsView({
               Traces
             </button>
           </div>
-          <div className="insights-range" role="group" aria-label="Export">
+          {/*
+            * One control, two formats. The format is a detail of the export,
+            * not a second thing to decide before doing it, so it moved off the
+            * header and into the menu the export itself opens.
+            */}
+          <div className="trace-export" ref={exportMenuRef}>
             <button
               type="button"
-              className="button"
+              className="button has-icon"
+              aria-haspopup="menu"
+              aria-expanded={exportOpen}
               disabled={exporting !== null}
-              onClick={() => void runExport("jsonl")}
+              onClick={() => setExportOpen((open) => !open)}
             >
-              JSONL
+              <DownloadIcon />
+              {exporting === null ? "Export" : "Exporting…"}
             </button>
-            <button
-              type="button"
-              className="button"
-              disabled={exporting !== null}
-              onClick={() => void runExport("csv")}
-            >
-              CSV
-            </button>
+            {exportOpen && (
+              <div className="trace-export-menu" role="menu" aria-label="Export format">
+                {(["jsonl", "csv"] as const).map((format) => (
+                  <button
+                    key={format}
+                    type="button"
+                    role="menuitem"
+                    className="trace-export-item"
+                    onClick={() => {
+                      setExportOpen(false);
+                      void runExport(format);
+                    }}
+                  >
+                    {format.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </header>
@@ -296,8 +336,8 @@ export function TraceRunsView({
               onSelect={(traceId) => {
                 const trace = rows.find((item) => item.traceId === traceId);
                 const runId = trace?.runIds.length === 1 ? trace.runIds[0] : undefined;
-                if (runId === undefined) onOpenTrace(traceId);
-                else onOpenRun(runId);
+                if (runId === undefined || trace === undefined) onOpenTrace(traceId);
+                else onOpenRun(runId, trace.runIds);
               }}
             />
             <div className="usage-table-scroll">
@@ -323,7 +363,7 @@ export function TraceRunsView({
                     const open = () => {
                       const runId = trace.runIds.length === 1 ? trace.runIds[0] : undefined;
                       if (runId === undefined) onOpenTrace(trace.traceId);
-                      else onOpenRun(runId);
+                      else onOpenRun(runId, trace.runIds);
                     };
                     return (
                       <tr

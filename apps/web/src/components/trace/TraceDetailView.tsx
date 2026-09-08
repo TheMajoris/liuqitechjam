@@ -8,7 +8,17 @@ import type {
 } from "../../types";
 import { Spinner } from "../playground/Spinner";
 import { formatCount, formatDuration, formatPercent } from "../insights/usage-format";
-import { describeTokens, formatStarted, formatTokenCell, shortId } from "./run-format";
+import {
+  conversationKindLabel,
+  describeConversation,
+  describeTokens,
+  describeTools,
+  formatStarted,
+  formatTokenCell,
+  shortId,
+  summarizeTools,
+  toolTotal,
+} from "./run-format";
 import {
   categoryColorVar,
   flattenTrace,
@@ -20,6 +30,7 @@ import {
   type FlatSpan,
   type TraceModelEvidence,
 } from "./trace-tree";
+import { BackIcon, ChevronLeftIcon, ChevronRightIcon } from "./icons";
 import {
   CACHED_TOKENS_HELP,
   TokenHotspots,
@@ -42,6 +53,13 @@ interface TraceDetailViewProps {
   runId?: string;
   onBack: () => void;
   backLabel?: string;
+  /**
+   * The Runs the list had in view, in its order, so the arrows step the way
+   * the reader was already reading rather than in an order invented here.
+   */
+  siblingRunIds?: readonly string[];
+  /** Opens a sibling Run in place; without it the arrows are not rendered. */
+  onOpenRun?: (runId: string) => void;
 }
 
 function nodeSpanId(node: AuditTraceNode): string {
@@ -196,7 +214,12 @@ function modelHotspots(evidence: readonly TraceModelEvidence[]): TokenHotspot[] 
   return [...rows.values()];
 }
 
-/** Run header shown when the detail view was opened from a Run. */
+/**
+ * Run header shown when the detail view was opened from a Run.
+ *
+ * The conversation is part of the Run's identity, not a detail: a Team turn
+ * only makes sense read as one participant's share of a shared thread.
+ */
 function RunSummaryHeading({ run }: { run: RunHistoryEntry }) {
   return (
     <>
@@ -206,6 +229,19 @@ function RunSummaryHeading({ run }: { run: RunHistoryEntry }) {
       </span>
       <h2>Run {shortId(run.runId)}</h2>
       <p className="trace-run-title">{run.title}</p>
+      {run.conversation !== null && (
+        <p className="trace-run-conversation" title={describeConversation(run)}>
+          <span className={"conversation-kind is-" + run.conversation.kind}>
+            {conversationKindLabel(run.conversation)}
+          </span>
+          {run.conversation.title}
+        </p>
+      )}
+      {toolTotal(run.tools) > 0 && (
+        <p className="trace-run-tools" title={describeTools(run.tools)}>
+          {summarizeTools(run.tools)}
+        </p>
+      )}
     </>
   );
 }
@@ -215,6 +251,8 @@ export function TraceDetailView({
   runId,
   onBack,
   backLabel = "Back",
+  siblingRunIds,
+  onOpenRun,
 }: TraceDetailViewProps) {
   const [trace, setTrace] = useState<AuditTrace | null>(null);
   const [run, setRun] = useState<RunHistoryEntry | null>(null);
@@ -257,6 +295,39 @@ export function TraceDetailView({
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Position in the list the reader came from. A Run that is no longer in that
+  // list — the list was refiltered, or the page was opened directly — simply
+  // has no neighbours rather than being given the wrong ones.
+  const siblings = siblingRunIds ?? [];
+  const position = runId === undefined ? -1 : siblings.indexOf(runId);
+  const previousRunId = position > 0 ? siblings[position - 1] : undefined;
+  const nextRunId =
+    position >= 0 && position < siblings.length - 1 ? siblings[position + 1] : undefined;
+  const canStep = onOpenRun !== undefined && position >= 0;
+
+  /**
+   * Left and right step between Runs.
+   *
+   * The keys are ignored while a field or an editable region has focus, so
+   * they never steal a caret movement from someone typing.
+   */
+  useEffect(() => {
+    if (!canStep) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (target?.isContentEditable === true) return;
+      const step = event.key === "ArrowLeft" ? previousRunId : event.key === "ArrowRight" ? nextRunId : undefined;
+      if (step === undefined) return;
+      event.preventDefault();
+      onOpenRun?.(step);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [canStep, previousRunId, nextRunId, onOpenRun]);
 
   const spans = useMemo<FlatSpan[]>(() => (trace ? flattenTrace(trace) : []), [trace]);
   const bars = useMemo(() => (trace ? timelineBars(spans, trace) : []), [spans, trace]);
@@ -399,6 +470,36 @@ export function TraceDetailView({
 
   return (
     <div className="insights-view trace-detail">
+      {canStep && (
+        // Arrows sit at the two edges of the page, pointing the way they move,
+        // with the position between them so a reader knows how far through the
+        // list they are without going back to it.
+        <nav className="trace-stepper" aria-label="Step between runs">
+          <button
+            type="button"
+            className="button is-iconic"
+            disabled={previousRunId === undefined}
+            aria-label="Previous run"
+            title="Previous run (←)"
+            onClick={() => previousRunId && onOpenRun?.(previousRunId)}
+          >
+            <ChevronLeftIcon />
+          </button>
+          <span className="trace-stepper-position">
+            Run {position + 1} of {siblings.length}
+          </span>
+          <button
+            type="button"
+            className="button is-iconic"
+            disabled={nextRunId === undefined}
+            aria-label="Next run"
+            title="Next run (→)"
+            onClick={() => nextRunId && onOpenRun?.(nextRunId)}
+          >
+            <ChevronRightIcon />
+          </button>
+        </nav>
+      )}
       <header className="insights-head">
         <div>
           {run === null ? (
@@ -456,7 +557,8 @@ export function TraceDetailView({
                 Jump to failing step
               </button>
             )}
-            <button type="button" className="button" onClick={onBack}>
+            <button type="button" className="button has-icon" onClick={onBack}>
+              <BackIcon />
               {backLabel}
             </button>
           </div>
