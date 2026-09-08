@@ -94,6 +94,8 @@ export function AgentWorkspaceView({
   // Agent's historical Runs and their evidence.
   const [tab, setTab] = useState<"conversation" | "runs">("conversation");
   const [openRunId, setOpenRunId] = useState<string | null>(null);
+  // The Runs the list had in view, so the detail page can step through them.
+  const [openRunSiblings, setOpenRunSiblings] = useState<readonly string[]>([]);
   const openConversation = controller.conversations.find(
     (conversation) => conversation.id === controller.conversationId,
   );
@@ -230,7 +232,10 @@ export function AgentWorkspaceView({
                 <RunListView
                   agentId={agent.id}
                   hideAgent
-                  onOpenRun={setOpenRunId}
+                  onOpenRun={(id, siblings) => {
+                    setOpenRunSiblings(siblings);
+                    setOpenRunId(id);
+                  }}
                   emptyMessage={"No runs recorded for " + agent.name + " yet."}
                 />
               </div>
@@ -239,6 +244,8 @@ export function AgentWorkspaceView({
                 <TraceDetailView
                   runId={openRunId}
                   backLabel="Back to runs"
+                  siblingRunIds={openRunSiblings}
+                  onOpenRun={setOpenRunId}
                   onBack={() => setOpenRunId(null)}
                 />
               </div>

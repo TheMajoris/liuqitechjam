@@ -18,6 +18,13 @@ export interface TokenHotspot {
   runs: number;
   /** Runs that reported no counters, which is why a total can be an undercount. */
   runsMissing?: number;
+  /**
+   * One extra clause for this row's footer, e.g. what it called.
+   *
+   * Tokens say how much a row cost; they never say what it did. A row that
+   * knows what it did says so here rather than making a reader open it.
+   */
+  note?: string | null;
 }
 
 interface TokenHotspotsProps {
@@ -28,6 +35,8 @@ interface TokenHotspotsProps {
   /** Rows beyond this fold into a single "everything else" bar. */
   limit?: number;
   onSelect?: (id: string) => void;
+  /** Marks the row a selection elsewhere is currently scoped to. */
+  selectedId?: string | null;
 }
 
 /**
@@ -185,6 +194,7 @@ export function TokenHotspots({
   rows,
   limit = 6,
   onSelect,
+  selectedId = null,
 }: TokenHotspotsProps) {
   const ranked = [...rows]
     .filter((row) => row.netNewTokens > 0)
@@ -206,7 +216,13 @@ export function TokenHotspots({
 
   const shown = ranked.slice(0, limit);
   const rest = ranked.slice(limit);
-  const peak = shown[0]?.netNewTokens ?? 1;
+  const restTokens = rest.reduce((sum, row) => sum + row.netNewTokens, 0);
+  // One scale for the whole column, the folded tail included. The tail sums
+  // many rows and is regularly larger than any single one, so drawing it
+  // against the leader ran it past the panel edge while implying the two were
+  // the same kind of quantity. Sharing a scale keeps every length comparable:
+  // when the tail is the biggest thing here, it is the bar that fills the row.
+  const peak = Math.max(shown[0]?.netNewTokens ?? 0, restTokens, 1);
 
   return (
     <section className="token-hotspots" aria-label={title}>
@@ -225,8 +241,17 @@ export function TokenHotspots({
           const share = formatPercent(row.netNewTokens, total);
           const body = (
             <>
-              <span className="token-hotspot-name">
-                {row.label}
+              {/*
+                * The label is its own element so it can be clipped: a task
+                * prompt runs to any length, and a row that grows with it
+                * pushes the figure a reader came for off to one side. The
+                * full text stays reachable on hover.
+                */}
+              <span
+                className="token-hotspot-name"
+                title={row.meta ? row.label + " · " + row.meta : row.label}
+              >
+                <span className="token-hotspot-label">{row.label}</span>
                 {row.meta && <span className="token-hotspot-meta">{row.meta}</span>}
               </span>
               <span className="token-hotspot-figures">
@@ -250,13 +275,19 @@ export function TokenHotspots({
                 </span>
                 {" · "}
                 {formatCount(row.totalTokens)} billed
+                {row.note ? " · " + row.note : ""}
               </span>
             </>
           );
+          const selected = selectedId !== null && selectedId === row.id;
           return (
-            <li key={row.id} className="token-hotspot">
+            <li key={row.id} className={"token-hotspot" + (selected ? " is-selected" : "")}>
               {onSelect ? (
-                <button type="button" onClick={() => onSelect(row.id)}>
+                <button
+                  type="button"
+                  aria-pressed={selectedId === null ? undefined : selected}
+                  onClick={() => onSelect(row.id)}
+                >
                   {body}
                 </button>
               ) : (
@@ -272,22 +303,14 @@ export function TokenHotspots({
                 {rest.length} other {rest.length === 1 ? subject : subject + "s"}
               </span>
               <span className="token-hotspot-figures">
-                <strong>
-                  {formatCount(rest.reduce((sum, row) => sum + row.netNewTokens, 0))}
-                </strong>
+                <strong>{formatCount(restTokens)}</strong>
                 <span className="token-hotspot-share">
-                  {formatPercent(
-                    rest.reduce((sum, row) => sum + row.netNewTokens, 0),
-                    total,
-                  )}
+                  {formatPercent(restTokens, total)}
                 </span>
               </span>
               <span
                 className="token-hotspot-bar"
-                style={{
-                  width:
-                    (rest.reduce((sum, row) => sum + row.netNewTokens, 0) / peak) * 100 + "%",
-                }}
+                style={{ width: (restTokens / peak) * 100 + "%" }}
               >
                 <span className="token-split">
                   <span className="token-split-part is-rest" style={{ width: "100%" }} />
