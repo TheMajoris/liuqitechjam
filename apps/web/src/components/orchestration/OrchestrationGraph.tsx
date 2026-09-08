@@ -15,7 +15,6 @@ import {
   type GraphNode,
   type GraphRow,
 } from "./orchestration-graph";
-import { Collapse } from "../../motion/Collapse";
 import { OrchestrationTurnInspector } from "./OrchestrationTurnInspector";
 import { briefLine } from "./turn-narrative";
 
@@ -450,24 +449,11 @@ export function OrchestrationGraph({
                       content paints over the turns below. An instant
                       disclosure is correct; an overlapping one is not. */}
                   {open && (
-<<<<<<< HEAD
-                  <div className="orch-log-detail" id={`orch-log-detail-${row.id}`}>
-                    <OrchestrationTurnInspector
-                      node={row}
-                      agents={agents}
-                      participants={detail?.session.participants ?? []}
-                      onRetry={onRetry}
-                      retryPending={retryPending}
-                      retryBlocked={retryBlocked}
-                      retryDisabled={retryDisabled}
-                      onClose={() => toggleRow(row.id)}
-                    />
-                  </Collapse>
-=======
                     <div className="orch-log-detail" id={`orch-log-detail-${row.id}`}>
                       <OrchestrationTurnInspector
                         node={row}
                         agents={agents}
+                        participants={detail?.session.participants ?? []}
                         onRetry={onRetry}
                         retryPending={retryPending}
                         retryBlocked={retryBlocked}
@@ -484,7 +470,6 @@ export function OrchestrationGraph({
                       />
                     </div>
                   )}
->>>>>>> fbac588 (feat: add Git-backed workspace source checkpoints with restore-and-resume)
                 </li>
               );
             })}

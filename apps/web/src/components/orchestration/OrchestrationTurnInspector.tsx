@@ -1,10 +1,7 @@
-<<<<<<< HEAD
 import { useMemo } from "react";
-import type { Agent, OrchestrationParticipant } from "../../types";
+import type { Agent, OrchestrationParticipant, WorkspaceCheckpointView } from "../../types";
 import { MarkdownMessage } from "../MarkdownMessage";
-=======
-import type { Agent, WorkspaceCheckpointView } from "../../types";
->>>>>>> fbac588 (feat: add Git-backed workspace source checkpoints with restore-and-resume)
+
 import {
   agentName,
   eventLabel,
@@ -112,7 +109,9 @@ export function OrchestrationTurnInspector({
   const { turn } = node;
   const reason = node.reason && !isInternalWording(node.reason) ? node.reason.trim() : "";
   const canRetry = Boolean(onRetry) && turn.stepIndex !== undefined;
-<<<<<<< HEAD
+  const completed = turn.status === "completed";
+  const recoverable = completed && checkpoint !== undefined && checkpoint.recoverable;
+  const canRecover = recoverable && Boolean(onRecover);
   const briefing = useMemo(
     () => buildTurnBriefing(turn.safeInputSummary),
     [turn.safeInputSummary],
@@ -120,19 +119,13 @@ export function OrchestrationTurnInspector({
   const reply = useMemo(() => digestReply(turn.safeOutput), [turn.safeOutput]);
   const speaker = (excerpt: NarrativeExcerpt) =>
     speakerLabel(agents, participants, excerpt);
-=======
-  const name = agentName(agents, turn.agentId);
-  const completed = turn.status === "completed";
-  const recoverable = completed && checkpoint !== undefined && checkpoint.recoverable;
-  const canRecover = recoverable && Boolean(onRecover);
->>>>>>> fbac588 (feat: add Git-backed workspace source checkpoints with restore-and-resume)
 
   return (
     <aside className="orch-inspector" aria-labelledby="orch-inspector-heading">
       <div className="orch-inspector-head">
         <div>
           <span className="orch-eyebrow">Step {node.stepNumber}</span>
-          <h3 id="orch-inspector-heading">{name}</h3>
+          <h3 id="orch-inspector-heading">{agentName(agents, turn.agentId)}</h3>
         </div>
         <button
           type="button"
@@ -335,7 +328,7 @@ export function OrchestrationTurnInspector({
             disabled={recoverPending || recoverBlocked || recoverDisabled}
             onClick={() => onRecover?.(checkpoint.checkpointId)}
           >
-            {recoverPending ? "Restoring…" : `Restore after ${name} and resume`}
+            {recoverPending ? "Restoring…" : `Restore after ${agentName(agents, turn.agentId)} and resume`}
           </button>
           <p className="orch-inspector-note" role={recoverPending ? "status" : undefined}>
             {recoverBlocked
@@ -366,7 +359,7 @@ export function OrchestrationTurnInspector({
                 ? "Retrying this Agent turn using the current files…"
                 : retryDisabled
                   ? "Wait for the current action to finish."
-                  : "This reruns the Agent turn using the current files and continues from there. Earlier turns stay in the record. Workspace files are not rolled back."}
+                  : "This reruns the Agent turn using the current files and continues from there. Earlier turns stay in the record. Shared Workspace files are not rolled back."}
           </p>
         </section>
       )}
