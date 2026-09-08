@@ -9660,9 +9660,6 @@ button.assignment-archive:hover:not(:disabled) {
   background: var(--purple-soft);
 }
 
-.orch-switch.is-inline {
-  margin: 10px 0 0;
-}
 
 .orch-switch input {
   margin-top: 2px;
@@ -9856,4 +9853,84 @@ button.assignment-archive:hover:not(:disabled) {
 
 .tutorial-skip:hover {
   color: var(--ink);
+}
+
+/* ============================================================================
+   Clarify-first as a composer control.
+   ========================================================================= */
+
+/*
+ * It sits inside the composer surface, beside Send, because it is a property
+ * of the message being sent — how the team should treat this task — not of the
+ * conversation's identity. It used to be a full-width tinted slab in the run
+ * header, which gave a two-state preference more visual weight than the roster.
+ */
+.composer-toggle {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color 160ms var(--ease-out),
+    border-color 160ms var(--ease-out),
+    background 160ms var(--ease-out);
+}
+
+.composer-toggle > span {
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  /* A filled disc in the pill's own colour, with the glyph knocked out of it. */
+  background: currentColor;
+  color: var(--paper);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.composer-toggle:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: #c9c5b9;
+}
+
+.composer-toggle.is-on {
+  color: var(--purple-dark);
+  border-color: rgba(105, 84, 217, 0.42);
+  background: var(--purple-soft);
+}
+
+.composer-toggle.is-on:hover:not(:disabled) {
+  background: #e6e1ff;
+}
+
+.composer-toggle:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.composer-toggle:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 2px;
+}
+
+/* On a narrow pane the label yields; the pill keeps its glyph and its state. */
+@media (max-width: 680px) {
+  .composer-toggle {
+    padding: 0 9px;
+    font-size: 0;
+    gap: 0;
+  }
 }

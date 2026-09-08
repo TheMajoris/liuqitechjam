@@ -325,3 +325,48 @@ export const ROBOT_HANDS = {
   a: ["mm....mm", "........"],
   b: ["........", "mm....mm"],
 } as const satisfies Record<AvatarHands, PixelGrid>;
+
+/* ==========================================================================
+   Leaving the office.
+
+   Two props for the departure sequence: the notice that arrives, and the box
+   the Agent carries out with it. Drawn in their own palette rather than the
+   avatar's, because neither belongs to the character — cardboard is cardboard
+   whatever colour shirt an Agent wears.
+
+   Legend
+     k outline    B cardboard   w tape / paper    r ink    g leaf
+   ========================================================================== */
+
+export const DEPARTURE_PALETTE = {
+  k: "#2f2b26",
+  B: "#c08c58",
+  w: "#f4f2ec",
+  r: "#c55353",
+  g: "#4f8a5c",
+} as const;
+
+/** A packing box with a desk plant poking out of it. */
+export const MOVING_BOX: PixelGrid = [
+  "....gg.g....",
+  "...gggggg...",
+  "....g.g.....",
+  "..kkkkkkkk..",
+  "..kBBBBBBk..",
+  "..kBwwwwBk..",
+  "..kBBBBBBk..",
+  "..kBBBBBBk..",
+  "..kkkkkkkk..",
+];
+
+/** The notice, fluttering down. */
+export const PINK_SLIP: PixelGrid = [
+  "kkkkkkkk",
+  "kwwwwwwk",
+  "kwrrrrwk",
+  "kwwwwwwk",
+  "kwrrrwwk",
+  "kwwwwwwk",
+  "kwrrwwwk",
+  "kkkkkkkk",
+];

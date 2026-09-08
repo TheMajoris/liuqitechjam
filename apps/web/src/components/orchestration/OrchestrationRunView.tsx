@@ -30,8 +30,6 @@ interface OrchestrationRunViewProps {
   modelProviders?: ModelProviderDescriptor[];
   /** Opens the room on the Agent whose turn failed; omitted hides the button. */
   onInspectFailure?: ((agentId: string | null) => void) | undefined;
-  /** Prompt-policy edit; omitted hides the switch. */
-  onClarifyFirstChange?: ((clarifyFirst: boolean) => void) | undefined;
 }
 
 function StatusMark({ status }: { status: OrchestrationSession["status"] }) {
@@ -81,7 +79,6 @@ export function OrchestrationRunView({
   onDelete,
   modelProviders = [],
   onInspectFailure,
-  onClarifyFirstChange,
 }: OrchestrationRunViewProps) {
   const confirm = useConfirm();
   const failure = diagnoseFailure(detail, agents);
@@ -175,39 +172,18 @@ export function OrchestrationRunView({
         modelProviders={modelProviders}
       />
 
-      {onClarifyFirstChange && (
-        <label
-          className={"orch-switch is-inline" + (session.clarifyFirst ? " is-on" : "")}
-          title={
-            active
-              ? "Stop the conversation to change how its Agents work"
-              : "Applies from the next turn onward"
-          }
-        >
-          <input
-            type="checkbox"
-            checked={session.clarifyFirst === true}
-            // Editing mid-cycle would change the rules inside a run the
-            // transcript already records, so it waits for the run to settle.
-            disabled={active || action !== null}
-            onChange={(event) => onClarifyFirstChange(event.target.checked)}
-          />
-          <span className="orch-switch-copy">
-            <strong>Always clarify first</strong>
-            <span>
-              Agents ask you questions until the task is unambiguous before they
-              change anything. Applies from the next turn.
-            </span>
-          </span>
-        </label>
-      )}
-
       <p className="orch-run-summary" aria-live="polite">
         <span className="orch-run-replies">
           {replyCount} {replyCount === 1 ? "reply" : "replies"}
         </span>
-        <span aria-hidden="true"> · </span>
-        <span className="orch-run-summary-line">{summaryLine(session, currentAgent)}</span>
+        {/* A failure is stated once, in the alert below, which is the only
+            one of the two that can carry the Agent name and the detail. */}
+        {!failed && (
+          <>
+            <span aria-hidden="true"> · </span>
+            <span className="orch-run-summary-line">{summaryLine(session, currentAgent)}</span>
+          </>
+        )}
       </p>
 
       {failed && (
@@ -227,13 +203,17 @@ export function OrchestrationRunView({
             )}
           </div>
           <div className="orch-failure-actions">
-            {onInspectFailure && (
+            {/* Only offered when there is somewhere specific to go. A failure
+                with no recorded turn — the supervisor never picked anyone —
+                has no Agent to show, and a button that just switches tabs is
+                worse than no button. */}
+            {onInspectFailure && failure?.agentId && (
               <button
                 type="button"
                 className="orch-button orch-button-quiet"
-                onClick={() => onInspectFailure(failure?.agentId ?? null)}
+                onClick={() => onInspectFailure(failure.agentId)}
               >
-                {failure?.agentName ? `Show ${failure.agentName}` : "Show the room"}
+                Show {failure.agentName}
               </button>
             )}
             {showTechnicalErrorCode && session.errorCode && (
