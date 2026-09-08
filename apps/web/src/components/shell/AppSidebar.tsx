@@ -1,5 +1,8 @@
+import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import { useConfirm } from "../ConfirmDialog";
+import { Collapse } from "../../motion/Collapse";
+import { OFFSET, transitions, variants } from "../../motion/motion-tokens";
 import type {
   Agent,
   OrchestrationSession,
@@ -62,6 +65,51 @@ function agentStatusLabel(status: Agent["status"]): string {
  * past its right edge. State reads on the meta line next to the timestamp,
  * which leaves the name the full width it needs before it has to truncate.
  */
+/**
+ * One overview destination.
+ *
+ * The selected background is a single element shared by the whole nav rather
+ * than a class on each button, so choosing a destination moves the highlight
+ * from the old one to the new one. That travel is the answer to "where did I
+ * just come from", which three independently painted backgrounds cannot give.
+ */
+function ShellNavItem({
+  glyph,
+  label,
+  selected,
+  onClick,
+}: {
+  glyph: string;
+  label: string;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={"shell-nav-item" + (selected ? " selected" : "")}
+      aria-current={selected ? "page" : undefined}
+      onClick={onClick}
+    >
+      {selected && (
+        // No opacity of its own: a `layoutId` element is crossfaded by the
+        // projection between the two positions, and declaring `initial`
+        // alongside that leaves the highlight stuck at the entry value.
+        <motion.span
+          className="shell-nav-highlight"
+          layoutId="shell-nav-highlight"
+          transition={transitions.travel}
+          aria-hidden="true"
+        />
+      )}
+      <span className="shell-nav-label">
+        <span aria-hidden="true">{glyph}</span>
+        {label}
+      </span>
+    </button>
+  );
+}
+
 function ConversationRow({
   session,
   selected,
@@ -78,7 +126,15 @@ function ConversationRow({
   const confirm = useConfirm();
   const active = isOrchestrationActive(session.status);
   return (
-    <div className={"conversation-row" + (selected ? " is-selected" : "")}>
+    <motion.div
+      className={"conversation-row" + (selected ? " is-selected" : "")}
+      layout="position"
+      variants={variants.row}
+      initial="initial"
+      animate="animate"
+      exit="exit"
+      transition={transitions.base}
+    >
       <button
         type="button"
         className="conversation-card"
@@ -116,7 +172,7 @@ function ConversationRow({
       >
         <span aria-hidden="true">×</span>
       </button>
-    </div>
+    </motion.div>
   );
 }
 
@@ -348,35 +404,29 @@ export function AppSidebar({
         </button>
       </div>
 
-      <div className="sidebar-scroll">
+      {/* `layoutScroll` because this pane scrolls: without it the shared nav
+          highlight and the list rows measure against an unscrolled page and
+          jump by the scroll offset when they animate. */}
+      <motion.div className="sidebar-scroll" layoutScroll>
         <nav className="shell-nav" aria-label="Overview">
-          <button
-            type="button"
-            className={"shell-nav-item" + (view === "insights" ? " selected" : "")}
-            aria-current={view === "insights" ? "page" : undefined}
+          <ShellNavItem
+            glyph="◔"
+            label="Insights"
+            selected={view === "insights"}
             onClick={onSelectInsights}
-          >
-            <span aria-hidden="true">◔</span>
-            Insights
-          </button>
-          <button
-            type="button"
-            className={"shell-nav-item" + (view === "traces" ? " selected" : "")}
-            aria-current={view === "traces" ? "page" : undefined}
+          />
+          <ShellNavItem
+            glyph="⋔"
+            label="Traces"
+            selected={view === "traces"}
             onClick={onSelectTraces}
-          >
-            <span aria-hidden="true">⋔</span>
-            Traces
-          </button>
-          <button
-            type="button"
-            className={"shell-nav-item" + (view === "access" ? " selected" : "")}
-            aria-current={view === "access" ? "page" : undefined}
+          />
+          <ShellNavItem
+            glyph="⚙"
+            label="Roles & skills"
+            selected={view === "access"}
             onClick={onSelectAccess}
-          >
-            <span aria-hidden="true">⚙</span>
-            Roles &amp; skills
-          </button>
+          />
         </nav>
 
         <div className="sidebar-label">
@@ -384,6 +434,9 @@ export function AppSidebar({
           <span className="sidebar-count">{activeProjects.length}</span>
         </div>
         <nav className="thread-list" aria-label="Shared workspaces">
+          {/* Archiving or deleting a Workspace closes its row and lets the
+              rest travel up, so the list stays the same list. */}
+          <AnimatePresence initial={false}>
           {activeProjects.map((project) => {
             const projectSessions = orchestration.sessions
               .filter((session) => session.projectId === project.id)
@@ -391,7 +444,16 @@ export function AppSidebar({
             const selected =
               view === "workspace" && project.id === orchestration.selectedWorkspaceId;
             return (
-              <div className={"workspace-nav-branch " + (selected ? "is-selected" : "")} key={project.id}>
+              <motion.div
+                className={"workspace-nav-branch " + (selected ? "is-selected" : "")}
+                key={project.id}
+                layout="position"
+                variants={variants.row}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                transition={transitions.base}
+              >
                 <div className="workspace-nav-row">
                   <button
                     type="button"
@@ -443,8 +505,11 @@ export function AppSidebar({
                         <circle cx="14" cy="2" r="1.6" />
                       </svg>
                     </button>
+                    {/* The menu grows from the button it belongs to, which
+                        says where it came from when it lands over the list. */}
+                    <AnimatePresence>
                     {openWorkspaceMenuId === project.id && (
-                      <div
+                      <motion.div
                         ref={(element) => {
                           workspaceMenuRefs.current[project.id] = element;
                         }}
@@ -452,6 +517,11 @@ export function AppSidebar({
                         className="workspace-nav-menu"
                         role="menu"
                         aria-label={`Actions for ${project.name}`}
+                        initial={{ opacity: 0, scale: 0.96, y: -OFFSET.hair }}
+                        animate={{ opacity: 1, scale: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.96 }}
+                        transition={transitions.fast}
+                        style={{ transformOrigin: "top right" }}
                       >
                         <button
                           type="button"
@@ -487,25 +557,30 @@ export function AppSidebar({
                         >
                           Delete Workspace
                         </button>
-                      </div>
+                      </motion.div>
                     )}
+                    </AnimatePresence>
                   </div>
                 </div>
-                {selected && (
-                  <div className="workspace-conversation-list" aria-label={`Conversations in ${project.name}`}>
-                    {projectSessions.map((session) => {
-                      const conversationSelected = session.id === orchestration.selectedSessionId;
-                      return (
+                {/* Selecting a Workspace opens its conversations underneath
+                    it, so the branch grows rather than the list jumping. */}
+                <Collapse open={selected}>
+                  <div
+                    className="workspace-conversation-list"
+                    aria-label={`Conversations in ${project.name}`}
+                  >
+                    <AnimatePresence initial={false}>
+                      {projectSessions.map((session) => (
                         <ConversationRow
                           key={session.id}
                           session={session}
-                          selected={conversationSelected}
+                          selected={session.id === orchestration.selectedSessionId}
                           busy={orchestration.action !== null}
                           onSelect={onSelectSession}
                           onDelete={onDeleteSession}
                         />
-                      );
-                    })}
+                      ))}
+                    </AnimatePresence>
                     {projectSessions.length === 0 && (
                       <div className="workspace-conversation-empty">No conversations yet.</div>
                     )}
@@ -517,10 +592,11 @@ export function AppSidebar({
                       <span aria-hidden="true">＋</span> New conversation
                     </button>
                   </div>
-                )}
-              </div>
+                </Collapse>
+              </motion.div>
             );
           })}
+          </AnimatePresence>
           {activeProjects.length === 0 && orchestration.sessions.filter((session) => !session.projectId).length === 0 && (
             <div className="empty-sidebar">
               <span aria-hidden="true">◇</span>
@@ -598,7 +674,7 @@ export function AppSidebar({
             </div>
           )}
         </nav>
-      </div>
+      </motion.div>
 
       <button type="button" className="sidebar-tour" onClick={onReplayTutorial}>
         <span aria-hidden="true">◆</span>

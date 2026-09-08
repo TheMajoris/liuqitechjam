@@ -2972,6 +2972,7 @@ textarea:focus {
 }
 
 .orch-run-tab {
+  position: relative;
   border: 0;
   border-radius: 8px;
   padding: 7px 13px;
@@ -2981,7 +2982,7 @@ textarea:focus {
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  transition: color 0.16s ease, background 0.16s ease;
+  transition: color 0.16s ease;
 }
 
 .orch-run-tab:hover {
@@ -2990,7 +2991,18 @@ textarea:focus {
 
 .orch-run-tab.is-active {
   color: var(--orch-ink);
+}
+
+/* The selection itself, as one element that travels between tabs. */
+.orch-run-tab-pill {
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
   background: rgba(120, 120, 128, 0.12);
+}
+
+.orch-run-tab-label {
+  position: relative;
 }
 
 .orch-run-tab-note {
@@ -4408,18 +4420,8 @@ textarea:focus {
   border-color: var(--hairline);
   box-shadow: var(--elevation-1);
   overflow: hidden;
-  animation: settings-dock-in 280ms var(--ease-out);
-}
-
-@keyframes settings-dock-in {
-  from {
-    opacity: 0;
-    transform: translateX(-14px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+  /* Entry and exit are driven by `variants.dockLeft`; a keyframe here would
+     run alongside it and could only animate the half CSS can see. */
 }
 
 .workspace-body > .settings-panel > .settings-title {
@@ -4600,18 +4602,8 @@ textarea:focus {
   background: var(--paper);
   box-shadow: var(--elevation-1);
   overflow: hidden;
-  animation: sidecar-in 280ms var(--ease-out);
-}
-
-@keyframes sidecar-in {
-  from {
-    opacity: 0;
-    transform: translateX(14px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+  /* Entry and exit are driven by `variants.dockRight`; see the note on
+     `.workspace-body > .settings-panel`. */
 }
 
 .sidecar-head {
@@ -4944,12 +4936,8 @@ textarea:focus {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .preview-sidecar,
-  .workspace-body > .settings-panel {
-    animation: none;
-  }
-}
+/* Both panels are animated by Framer Motion now, and `AppMotion` reads the
+   same `prefers-reduced-motion` setting this block used to serve. */
 
 /* ============================================================
    Shared Project: Team identity and canonical preview
@@ -6929,9 +6917,9 @@ textarea:focus {
 }
 
 .shell-nav-item {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
   width: 100%;
   padding: 8px 10px;
   border: 0;
@@ -6950,8 +6938,23 @@ textarea:focus {
 }
 
 .shell-nav-item.selected {
-  background: var(--purple-soft);
   color: var(--purple-dark);
+}
+
+/* The selection, as one element the whole nav shares. */
+.shell-nav-highlight {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-md);
+  background: var(--purple-soft);
+}
+
+/* Positioned so the label paints above the highlight behind it. */
+.shell-nav-label {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 @media (max-width: 900px) {
@@ -9758,14 +9761,7 @@ button.assignment-archive:hover:not(:disabled) {
   border-radius: var(--radius-lg);
   background: var(--paper);
   box-shadow: var(--elevation-2);
-  animation: tutorial-in 220ms var(--ease-out);
-}
-
-@keyframes tutorial-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
+  /* Entry and travel between steps are driven by Framer Motion. */
 }
 
 .tutorial-card.is-centred {

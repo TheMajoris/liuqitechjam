@@ -1,4 +1,6 @@
+import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { transitions, variants } from "../../motion/motion-tokens";
 import { TUTORIAL_STEPS, type TutorialStep } from "./tutorial-steps";
 import type { TutorialController } from "./use-tutorial";
 
@@ -109,13 +111,23 @@ export function TutorialOverlay({ tutorial }: TutorialOverlayProps) {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [tutorial]);
 
-  if (!tutorial.active || !step) return null;
-
-  const position = cardPosition(spot, step.placement);
+  const position = step ? cardPosition(spot, step.placement) : null;
   const last = tutorial.stepIndex === tutorial.stepCount - 1;
 
   return (
-    <div className="tutorial-layer" role="dialog" aria-modal="true" aria-labelledby="tutorial-title">
+    <AnimatePresence>
+    {tutorial.active && step && (
+    <motion.div
+      className="tutorial-layer"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="tutorial-title"
+      variants={variants.fade}
+      initial="initial"
+      animate="animate"
+      exit="exit"
+      transition={transitions.base}
+    >
       {/*
         The scrim is one element with a giant spread shadow rather than four
         panels around the target: one box to animate, and the hole tracks the
@@ -136,9 +148,15 @@ export function TutorialOverlay({ tutorial }: TutorialOverlayProps) {
         onClick={tutorial.finish}
       />
 
-      <div
+      {/* The card travels to the next thing it is pointing at rather than
+          teleporting, which is what ties a step to the one before it. Only
+          `top`/`left` are animated: the centred fallback positions itself with
+          a CSS transform, and writing one here would overwrite it. */}
+      <motion.div
         className={"tutorial-card" + (position ? "" : " is-centred")}
-        style={position ?? undefined}
+        initial={{ opacity: 0, ...(position ?? {}) }}
+        animate={{ opacity: 1, ...(position ?? {}) }}
+        transition={transitions.base}
       >
         <div className="tutorial-progress" aria-hidden="true">
           {TUTORIAL_STEPS.map((item, index) => (
@@ -186,7 +204,9 @@ export function TutorialOverlay({ tutorial }: TutorialOverlayProps) {
             </button>
           </div>
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
+    )}
+    </AnimatePresence>
   );
 }

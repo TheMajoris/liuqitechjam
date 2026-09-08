@@ -14,6 +14,7 @@ import {
   type GraphNode,
   type GraphRow,
 } from "./orchestration-graph";
+import { Collapse } from "../../motion/Collapse";
 import { OrchestrationTurnInspector } from "./OrchestrationTurnInspector";
 import { briefLine } from "./turn-narrative";
 
@@ -432,20 +433,24 @@ export function OrchestrationGraph({
                     </span>
                   </button>
 
+                  {/* Deliberately not height-animated. Growing to `height:
+                      auto` needs the animation to actually run, and when it
+                      does not the wrapper stays at zero height while its
+                      content paints over the turns below. An instant
+                      disclosure is correct; an overlapping one is not. */}
                   {open && (
-                    <div className="orch-log-detail" id={`orch-log-detail-${row.id}`}>
-                      <OrchestrationTurnInspector
-                        node={row}
-                        agents={agents}
-                        participants={detail?.session.participants ?? []}
-                        onRetry={onRetry}
-                        retryPending={retryPending}
-                        retryBlocked={retryBlocked}
-                        retryDisabled={retryDisabled}
-                        onClose={() => toggleRow(row.id)}
-                      />
-                    </div>
-                  )}
+                  <div className="orch-log-detail" id={`orch-log-detail-${row.id}`}>
+                    <OrchestrationTurnInspector
+                      node={row}
+                      agents={agents}
+                      participants={detail?.session.participants ?? []}
+                      onRetry={onRetry}
+                      retryPending={retryPending}
+                      retryBlocked={retryBlocked}
+                      retryDisabled={retryDisabled}
+                      onClose={() => toggleRow(row.id)}
+                    />
+                  </Collapse>
                 </li>
               );
             })}

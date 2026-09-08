@@ -43,6 +43,16 @@ export function NewConversationDialog({
 }: NewConversationDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
 
+  /**
+   * Deliberately not animated, unlike the app's other dialogs.
+   *
+   * This one is a native `<dialog>` driven by `showModal()`/`close()`. Its
+   * content mounts before the element reaches the top layer, and an enter
+   * animation created against a not-yet-rendered subtree never plays: the
+   * dialog then sits open and focus-trapping at `opacity: 0`, invisible. A
+   * modal that can fail to appear is a far worse trade than a modal that
+   * appears without a fade, so this one opens and closes directly.
+   */
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;

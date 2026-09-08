@@ -1,4 +1,6 @@
+import { motion } from "motion/react";
 import type { AgentRole, ModelResourceSnapshot, SkillMetadata } from "../../types";
+import { transitions, variants } from "../../motion/motion-tokens";
 import type { AgentForm } from "../../playground/agent-form";
 import type { ModelCatalogController } from "../../playground/use-model-catalog";
 import { AgentFormFields } from "./AgentFormFields";
@@ -34,11 +36,24 @@ export function CreateAgentModal({
   onClose,
 }: CreateAgentModalProps) {
   return (
-    <div className="modal-backdrop" onMouseDown={onClose}>
-      <form
+    <motion.div
+      className="modal-backdrop"
+      onMouseDown={onClose}
+      variants={variants.fade}
+      initial="initial"
+      animate="animate"
+      exit="exit"
+      transition={transitions.fast}
+    >
+      <motion.form
         className="modal"
         onSubmit={onSubmit}
         onMouseDown={(event) => event.stopPropagation()}
+        variants={variants.modal}
+        initial="initial"
+        animate="animate"
+        exit="exit"
+        transition={transitions.base}
       >
         <div className="modal-heading">
           <div>
@@ -71,7 +86,7 @@ export function CreateAgentModal({
             {disabled ? <Spinner /> : "Create Agent"}
           </button>
         </div>
-      </form>
-    </div>
+      </motion.form>
+    </motion.div>
   );
 }
