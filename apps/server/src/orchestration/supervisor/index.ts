@@ -36,11 +36,18 @@ export {
   DEFAULT_SUPERVISOR_MAX_ERROR_BODY_BYTES,
   DEFAULT_SUPERVISOR_MAX_ERROR_MESSAGE_CHARS,
   DEFAULT_SUPERVISOR_MAX_RESPONSE_BYTES,
+  DEFAULT_SUPERVISOR_MAX_TRANSPORT_ATTEMPTS,
   DEFAULT_SUPERVISOR_TIMEOUT_MS,
+  SUPERVISOR_RETRY_BACKOFF_BASE_MS,
+  SUPERVISOR_RETRY_BACKOFF_CAP_MS,
   type ArkResponsesSupervisorProviderOptions,
   type ArkResponsesSupervisorConfig,
+  type SupervisorClock,
+  type SupervisorRandom,
+  type SupervisorSleep,
 } from "./provider.js";
 export type {
+  SupervisorRequestBudget,
   SupervisorProvider,
   SupervisorProviderOptions,
   SupervisorParticipantProfile,
@@ -48,4 +55,8 @@ export type {
   SupervisorSelection,
   SupervisorSelectionContext,
   SupervisorTurnContext,
+} from "./types.js";
+export {
+  createSupervisorRequestBudget,
+  DEFAULT_SUPERVISOR_MAX_HTTP_CALLS,
 } from "./types.js";

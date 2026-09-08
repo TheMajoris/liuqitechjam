@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -6,6 +7,7 @@ import { z } from "zod";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { agentPrincipal } from "../apps/server/src/access/access-types.js";
+import { DefaultAuthorizationService } from "../apps/server/src/access/default-authorization-service.js";
 import { AgentRuntimePromptComposer } from "../apps/server/src/agent-runtime-prompt.js";
 import {
   buildHandoffPrompt,
@@ -29,7 +31,11 @@ import type {
   ToolMetadata,
 } from "../apps/server/src/tools/tool-types.js";
 import { WebFetchAdapter, type WebFetchResult } from "../apps/server/src/tools/web-fetch-adapter.js";
-import type { McpSessionContext } from "../apps/server/src/tools/mcp-session-service.js";
+import {
+  countToolsListMessages,
+  MCP_TOOLS_LIST_REQUEST_BOUND,
+  type McpSessionContext,
+} from "../apps/server/src/tools/mcp-session-service.js";
 import type { ToolService } from "../apps/server/src/tools/tool-service.js";
 import type { Agent } from "../apps/server/src/types.js";
 import { WorkspaceManager } from "../apps/server/src/workspace.js";
@@ -45,13 +51,25 @@ import {
   REPORT_USAGE_EVENTS,
 } from "./token-context-fixtures.js";
 
-export const TOKEN_CONTEXT_REPORT_VERSION = 1 as const;
+export const TOKEN_CONTEXT_REPORT_VERSION = 2 as const;
 
 export type UsageScope =
   | "last-request"
   | "cumulative-session"
   | "app-run"
+  | "endpoint-window"
   | "unknown";
+
+export type UsageSource =
+  | "runtime-jsonl"
+  | "provider-response"
+  | "provider-management-aggregate"
+  | "unknown";
+
+export type FreshnessState = "fresh" | "resumed" | "unknown";
+export type FallbackStatus = "used" | "not-used" | "unknown";
+export type DiscoveryCountStatus = "bounded" | "overflow" | "unknown";
+export type RunCorrelationStatus = "authenticated" | "synthetic-unverified" | "unknown";
 
 export interface TextMeasurement {
   /** Unicode code-point count; this is not an exact model token count. */
@@ -77,8 +95,50 @@ export interface UsageCounters {
 
 export type UsageAvailability = "available" | "partial" | "unknown";
 
+export type CacheHitRatioStatus =
+  | "valid"
+  | "unknown"
+  | "invalid-cached-input";
+
+export interface ToolSchemaEstimator {
+  identity: string | null;
+  version: string | null;
+  approximate: boolean | null;
+}
+
+export interface TokenContextDiagnostics {
+  runId: string | null;
+  runCorrelationStatus: RunCorrelationStatus;
+  /** Optional normalized counters; null means no trustworthy counter exists. */
+  inputTokens: number | null;
+  cachedInputTokens: number | null;
+  outputTokens: number | null;
+  usageSource: UsageSource;
+  usageScope: UsageScope;
+  configuredCatalogueSize: number | null;
+  numberOfToolsExposed: number | null;
+  toolsListRequestsObserved: number | null;
+  toolsListRequestBound: number;
+  toolsListRequestCountStatus: DiscoveryCountStatus;
+  discoveryObserved: boolean | null;
+  authenticatedDiscoveryObserved: boolean | null;
+  toolSchemaBytes: number | null;
+  toolSchemaEstimatedTokens: number | null;
+  toolSchemaEstimator: ToolSchemaEstimator;
+  stableContextFingerprint: string | null;
+  catalogueFingerprint: string | null;
+  rawTaskBytes: number | null;
+  rawRuntimeEnvelopeBytes: number | null;
+  runtimeVersion: string | null;
+  providerId: string | null;
+  modelId: string | null;
+  freshness: FreshnessState;
+  fallbackStatus: FallbackStatus;
+}
+
 export interface UsageScopeSummary {
   scope: UsageScope;
+  usageSource: UsageSource;
   /** Number of candidate records assigned to this scope. */
   records: number;
   /** Candidate records discarded because they repeated an identified state. */
@@ -92,17 +152,30 @@ export interface UsageScopeSummary {
     | "sum-distinct-requests"
     | "latest-cumulative-state"
     | "ambiguous-multiple-identities"
+    | "ambiguous-missing-identity"
+    | "ambiguous-mixed-sources"
     | "unknown";
   availability: UsageAvailability;
   counters: UsageCounters;
+  cacheHitRatio: number | null;
+  cacheHitRatioStatus: CacheHitRatioStatus;
 }
 
 export interface UsageSummary {
   source: "none" | "synthetic-fixture" | "offline-file" | "invalid-file";
+  usageSource: UsageSource;
   /** Parsed candidate records, excluding arbitrary text and unsupported objects. */
   records: number;
   unsupportedOrAmbiguousRecords: number;
+  rawEvidence: RawRuntimeEvidenceStatus;
   scopes: Record<UsageScope, UsageScopeSummary>;
+}
+
+export interface RawRuntimeEvidenceStatus {
+  /** Raw evidence is intentionally kept outside normalized benchmark output. */
+  status: "not-collected" | "pending-sanitized-capture";
+  path: string | null;
+  records: number | null;
 }
 
 export interface TokenContextScenario {
@@ -134,6 +207,7 @@ export interface OfflineTokenContextReport {
   };
   scenarios: TokenContextScenario[];
   deliveryComparisons: DeliveryComparison[];
+  diagnostics: TokenContextDiagnostics;
   usage: UsageSummary;
 }
 
@@ -160,17 +234,25 @@ const SCOPE_ALIASES: ReadonlyMap<string, UsageScope> = new Map([
   ["run", "app-run"],
   ["per-run", "app-run"],
   ["per_run", "app-run"],
+  ["endpoint-window", "endpoint-window"],
+  ["endpoint_window", "endpoint-window"],
+  ["endpointwindow", "endpoint-window"],
+  ["window", "endpoint-window"],
 ]);
 
 const USAGE_SCOPES: readonly UsageScope[] = [
   "last-request",
   "cumulative-session",
   "app-run",
+  "endpoint-window",
   "unknown",
 ];
 
+export const TOOLS_LIST_REQUEST_BOUND = MCP_TOOLS_LIST_REQUEST_BOUND;
+
 interface UsageCandidate {
   scope: UsageScope;
+  source: UsageSource;
   counters: UsageCounters;
   identity: string | null;
   hasCounter: boolean;
@@ -191,6 +273,9 @@ interface UsageAccumulator {
   availability: UsageAvailability;
   counters: UsageCounters;
   aggregation: UsageScopeSummary["aggregation"];
+  sourceValues: Set<UsageSource>;
+  mixedSources: boolean;
+  ambiguousMissingIdentity: boolean;
   seenRequestIdentities: Set<string>;
   cumulativeStates: Map<string, UsageCounters>;
 }
@@ -203,9 +288,57 @@ function emptyCounters(): UsageCounters {
   };
 }
 
+function emptyToolSchemaEstimator(): ToolSchemaEstimator {
+  return {
+    identity: null,
+    version: null,
+    approximate: null,
+  };
+}
+
+function usageSourceFromValue(value: unknown): UsageSource {
+  if (typeof value !== "string") return "unknown";
+  const normalized = value.trim().toLocaleLowerCase();
+  if (normalized === "runtime-jsonl" || normalized === "runtime_jsonl" || normalized === "jsonl") {
+    return "runtime-jsonl";
+  }
+  if (normalized === "provider-response" || normalized === "provider_response" || normalized === "response") {
+    return "provider-response";
+  }
+  if (
+    normalized === "provider-management-aggregate" ||
+    normalized === "provider_management_aggregate" ||
+    normalized === "management-aggregate" ||
+    normalized === "management_aggregate"
+  ) {
+    return "provider-management-aggregate";
+  }
+  return "unknown";
+}
+
+function usageSourceFromRecord(
+  parent: Record<string, unknown>,
+  payload: Record<string, unknown>,
+  fallback: UsageSource,
+): UsageSource {
+  for (const value of [
+    parent.usageSource,
+    parent.usage_source,
+    parent.source,
+    payload.usageSource,
+    payload.usage_source,
+    payload.source,
+  ]) {
+    const source = usageSourceFromValue(value);
+    if (source !== "unknown") return source;
+  }
+  return fallback;
+}
+
 function emptyScopeSummary(scope: UsageScope): UsageScopeSummary {
   return {
     scope,
+    usageSource: "unknown",
     records: 0,
     duplicateRecords: 0,
     distinctStates: 0,
@@ -213,19 +346,27 @@ function emptyScopeSummary(scope: UsageScope): UsageScopeSummary {
     aggregation:
       scope === "last-request"
         ? "sum-distinct-requests"
-        : scope === "cumulative-session" || scope === "app-run"
+        : scope === "cumulative-session" || scope === "app-run" || scope === "endpoint-window"
           ? "latest-cumulative-state"
           : "unknown",
     availability: "unknown",
     counters: emptyCounters(),
+    cacheHitRatio: null,
+    cacheHitRatioStatus: "unknown",
   };
 }
 
 function emptyUsageSummary(source: UsageSummary["source"] = "none"): UsageSummary {
   return {
     source,
+    usageSource: "unknown",
     records: 0,
     unsupportedOrAmbiguousRecords: 0,
+    rawEvidence: {
+      status: source === "offline-file" ? "pending-sanitized-capture" : "not-collected",
+      path: null,
+      records: null,
+    },
     scopes: Object.fromEntries(
       USAGE_SCOPES.map((scope) => [scope, emptyScopeSummary(scope)]),
     ) as Record<UsageScope, UsageScopeSummary>,
@@ -317,9 +458,6 @@ function inferScope(
     scopeFromValue(payload.usage_scope) ??
     scopeFromValue(payload.usageScope);
   if (explicit) return explicit;
-  if (parent.type === "turn.completed") return "last-request";
-  if (parent.type === "turn.failed") return "last-request";
-  if (parent.type === "model_turn") return "app-run";
   return "unknown";
 }
 
@@ -334,6 +472,10 @@ function identityFrom(
     parent.sessionId,
     parent.run_id,
     parent.runId,
+    parent.window_id,
+    parent.windowId,
+    parent.endpoint_id,
+    parent.endpointId,
     parent.event_id,
     parent.eventId,
     parent.id,
@@ -343,6 +485,10 @@ function identityFrom(
     payload.sessionId,
     payload.run_id,
     payload.runId,
+    payload.window_id,
+    payload.windowId,
+    payload.endpoint_id,
+    payload.endpointId,
     payload.event_id,
     payload.eventId,
     payload.id,
@@ -395,11 +541,13 @@ function candidateFor(
   parent: Record<string, unknown>,
   payload: Record<string, unknown>,
   eventIndex: number,
+  fallbackSource: UsageSource,
 ): UsageCandidate | null {
   const counters = readCounters(payload);
   if (!counters.hasCounter) return null;
   return {
     scope: inferScope(parent, payload),
+    source: usageSourceFromRecord(parent, payload, fallbackSource),
     counters: counters.counters,
     identity: identityFrom(parent, payload),
     hasCounter: counters.hasCounter && counters.valid,
@@ -411,7 +559,10 @@ function candidateFor(
  * Find only explicit usage objects. Arbitrary strings and ordinary metadata
  * that happen to contain the word "input" are never interpreted as counters.
  */
-function collectUsageCandidates(value: unknown): CandidateCollection {
+function collectUsageCandidates(
+  value: unknown,
+  fallbackSource: UsageSource,
+): CandidateCollection {
   const candidates: UsageCandidate[] = [];
   let unsupportedOrAmbiguousRecords = 0;
   let eventIndex = 0;
@@ -429,7 +580,7 @@ function collectUsageCandidates(value: unknown): CandidateCollection {
     if (Object.prototype.hasOwnProperty.call(parent, "usage")) {
       const usage = parent.usage;
       if (isRecord(usage)) {
-        const candidate = candidateFor(parent, usage, eventIndex++);
+        const candidate = candidateFor(parent, usage, eventIndex++, fallbackSource);
         if (candidate && candidate.hasCounter) candidates.push(candidate);
         else unsupportedOrAmbiguousRecords += 1;
       } else {
@@ -444,6 +595,7 @@ function collectUsageCandidates(value: unknown): CandidateCollection {
           { ...parent, scope: nestedScope },
           nested,
           eventIndex++,
+          fallbackSource,
         );
         if (candidate && candidate.hasCounter) candidates.push(candidate);
         else unsupportedOrAmbiguousRecords += 1;
@@ -454,7 +606,7 @@ function collectUsageCandidates(value: unknown): CandidateCollection {
     }
 
     // Support a saved event represented directly as {scope, input_tokens, ...}.
-    const direct = candidateFor(parent, parent, eventIndex++);
+    const direct = candidateFor(parent, parent, eventIndex++, fallbackSource);
     if (direct && direct.hasCounter) candidates.push(direct);
     else if (readCounters(parent).hasCounter) unsupportedOrAmbiguousRecords += 1;
   }
@@ -467,19 +619,16 @@ function addCounterValues(
   left: UsageCounters,
   right: UsageCounters,
 ): UsageCounters {
+  const add = (leftValue: number | null, rightValue: number | null): number | null => {
+    if (leftValue === null) return rightValue;
+    if (rightValue === null) return leftValue;
+    const value = leftValue + rightValue;
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  };
   return {
-    inputTokens:
-      left.inputTokens === null || right.inputTokens === null
-        ? left.inputTokens ?? right.inputTokens
-        : left.inputTokens + right.inputTokens,
-    cachedInputTokens:
-      left.cachedInputTokens === null || right.cachedInputTokens === null
-        ? left.cachedInputTokens ?? right.cachedInputTokens
-        : left.cachedInputTokens + right.cachedInputTokens,
-    outputTokens:
-      left.outputTokens === null || right.outputTokens === null
-        ? left.outputTokens ?? right.outputTokens
-        : left.outputTokens + right.outputTokens,
+    inputTokens: add(left.inputTokens, right.inputTokens),
+    cachedInputTokens: add(left.cachedInputTokens, right.cachedInputTokens),
+    outputTokens: add(left.outputTokens, right.outputTokens),
   };
 }
 
@@ -494,6 +643,150 @@ function countersEqual(left: UsageCounters, right: UsageCounters): boolean {
     left.cachedInputTokens === right.cachedInputTokens &&
     left.outputTokens === right.outputTokens
   );
+}
+
+export function computeCacheHitRatio(
+  counters: UsageCounters,
+): { ratio: number | null; status: CacheHitRatioStatus } {
+  const { inputTokens, cachedInputTokens } = counters;
+  if (inputTokens === null || cachedInputTokens === null || inputTokens <= 0) {
+    return { ratio: null, status: "unknown" };
+  }
+  if (cachedInputTokens < 0 || cachedInputTokens > inputTokens) {
+    return { ratio: null, status: "invalid-cached-input" };
+  }
+  return {
+    ratio: cachedInputTokens / inputTokens,
+    status: "valid",
+  };
+}
+
+export interface UsageSnapshotDifference {
+  valid: boolean;
+  reason:
+    | "valid"
+    | "missing-counter"
+    | "counter-reset"
+    | "invalid-counter"
+    | "invalid-cached-input"
+    | "incompatible-evidence";
+  counters: UsageCounters;
+}
+
+export interface UsageSnapshotEvidence {
+  counters: UsageCounters;
+  source: UsageSource;
+  scope: UsageScope;
+  /** Stable session/thread identity shared by the before and after snapshots. */
+  identity: string | null;
+}
+
+/**
+ * Subtract only verified compatible snapshots. A missing field, reset, or
+ * impossible cached-input relationship keeps the difference unknown.
+ */
+export function subtractUsageSnapshots(
+  before: UsageSnapshotEvidence,
+  after: UsageSnapshotEvidence,
+): UsageSnapshotDifference {
+  if (
+    before.source === "unknown" ||
+    after.source === "unknown" ||
+    before.source !== after.source ||
+    before.scope === "unknown" ||
+    after.scope === "unknown" ||
+    before.scope !== after.scope ||
+    (before.scope !== "cumulative-session" &&
+      before.scope !== "app-run") ||
+    before.identity === null ||
+    after.identity === null ||
+    before.identity !== after.identity
+  ) {
+    return { valid: false, reason: "incompatible-evidence", counters: emptyCounters() };
+  }
+  const beforeCounters = before.counters;
+  const afterCounters = after.counters;
+  if (Object.values(beforeCounters).some((value) => value === null) || Object.values(afterCounters).some((value) => value === null)) {
+    return { valid: false, reason: "missing-counter", counters: emptyCounters() };
+  }
+  if (
+    Object.values(beforeCounters).some(
+      (value) => !Number.isSafeInteger(value) || value < 0,
+    ) ||
+    Object.values(afterCounters).some(
+      (value) => !Number.isSafeInteger(value) || value < 0,
+    )
+  ) {
+    return { valid: false, reason: "invalid-counter", counters: emptyCounters() };
+  }
+  const beforeRatio = computeCacheHitRatio(beforeCounters);
+  const afterRatio = computeCacheHitRatio(afterCounters);
+  if (
+    beforeRatio.status === "invalid-cached-input" ||
+    afterRatio.status === "invalid-cached-input"
+  ) {
+    return { valid: false, reason: "invalid-cached-input", counters: emptyCounters() };
+  }
+  const counters = {
+    inputTokens: afterCounters.inputTokens! - beforeCounters.inputTokens!,
+    cachedInputTokens: afterCounters.cachedInputTokens! - beforeCounters.cachedInputTokens!,
+    outputTokens: afterCounters.outputTokens! - beforeCounters.outputTokens!,
+  };
+  if (Object.values(counters).some((value) => value < 0)) {
+    return { valid: false, reason: "counter-reset", counters: emptyCounters() };
+  }
+  if (computeCacheHitRatio(counters).status === "invalid-cached-input") {
+    return { valid: false, reason: "invalid-cached-input", counters: emptyCounters() };
+  }
+  return { valid: true, reason: "valid", counters };
+}
+
+/** Stable JSON used only for private comparison fingerprints. */
+export function stableSerialize(value: unknown): string {
+  if (value === undefined) return "null";
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => stableSerialize(item)).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([key, item]) => `${JSON.stringify(key)}:${stableSerialize(item)}`);
+  return `{${entries.join(",")}}`;
+}
+
+export function fingerprint(value: unknown): string {
+  return createHash("sha256").update(stableSerialize(value), "utf8").digest("hex");
+}
+
+/** Fingerprint only the stable prefix before mutable runtime state begins. */
+export function stableRuntimeContextFingerprint(prompt: string): string | null {
+  const mutableStateMarker = "\npreview.status = ";
+  const stateIndex = prompt.indexOf(mutableStateMarker);
+  if (stateIndex < 0) return null;
+  return fingerprint(prompt.slice(0, stateIndex));
+}
+
+export interface ToolsListRequestObservation {
+  count: number | null;
+  status: DiscoveryCountStatus;
+}
+
+/** Count tools/list requests with a bounded, explicit observation contract. */
+export function observeToolsListRequests(
+  message: unknown,
+  priorCount = 0,
+  bound = TOOLS_LIST_REQUEST_BOUND,
+): ToolsListRequestObservation {
+  if (!Number.isSafeInteger(priorCount) || priorCount < 0 || priorCount > bound) {
+    return { count: null, status: "unknown" };
+  }
+  const observed = countToolsListMessages(message);
+  if (observed === null) return { count: null, status: "unknown" };
+  if (priorCount + observed > bound) return { count: null, status: "overflow" };
+  return { count: priorCount + observed, status: "bounded" };
+}
+
+/** Compatibility helper for callers that only need a bounded count. */
+export function countToolsListRequests(message: unknown): number | null {
+  return observeToolsListRequests(message).count;
 }
 
 function createUsageAccumulators(): Record<UsageScope, UsageAccumulator> {
@@ -511,6 +804,9 @@ function createUsageAccumulators(): Record<UsageScope, UsageAccumulator> {
           availability: summary.availability,
           counters: emptyCounters(),
           aggregation: summary.aggregation,
+          sourceValues: new Set<UsageSource>(),
+          mixedSources: false,
+          ambiguousMissingIdentity: false,
           seenRequestIdentities: new Set<string>(),
           cumulativeStates: new Map(),
         } satisfies UsageAccumulator,
@@ -527,8 +823,9 @@ function createUsageAccumulators(): Record<UsageScope, UsageAccumulator> {
 export function summarizeUsageValue(
   value: unknown,
   source: UsageSummary["source"] = "synthetic-fixture",
+  fallbackUsageSource: UsageSource = "unknown",
 ): UsageSummary {
-  const collected = collectUsageCandidates(value);
+  const collected = collectUsageCandidates(value, fallbackUsageSource);
   const summary = emptyUsageSummary(source);
   summary.records = collected.candidates.length;
   summary.unsupportedOrAmbiguousRecords = collected.unsupportedOrAmbiguousRecords;
@@ -537,26 +834,48 @@ export function summarizeUsageValue(
   for (const candidate of collected.candidates) {
     const accumulator = accumulators[candidate.scope];
     accumulator.records += 1;
+    if (
+      accumulator.sourceValues.size > 0 &&
+      !accumulator.sourceValues.has(candidate.source)
+    ) {
+      accumulator.mixedSources = true;
+      summary.unsupportedOrAmbiguousRecords += 1;
+    }
+    accumulator.sourceValues.add(candidate.source);
     const identity = candidate.identity;
     const identityKey = identity === null ? null : `${candidate.scope}:${identity}`;
 
     if (candidate.scope === "last-request") {
-      if (identityKey !== null && accumulator.seenRequestIdentities.has(identityKey)) {
+      if (identityKey === null) {
+        accumulator.ambiguousMissingIdentity = true;
+        summary.unsupportedOrAmbiguousRecords += 1;
+        accumulator.distinctStates += 1;
+        continue;
+      }
+      if (accumulator.seenRequestIdentities.has(identityKey)) {
         accumulator.duplicateRecords += 1;
         continue;
       }
-      if (identityKey !== null) {
-        accumulator.seenRequestIdentities.add(identityKey);
-        accumulator.distinctIdentities += 1;
-      }
+      accumulator.seenRequestIdentities.add(identityKey);
+      accumulator.distinctIdentities += 1;
       accumulator.distinctStates += 1;
       accumulator.counters = addCounterValues(accumulator.counters, candidate.counters);
       accumulator.availability = counterAvailability(accumulator.counters);
       continue;
     }
 
-    if (candidate.scope === "cumulative-session" || candidate.scope === "app-run") {
-      const stateKey = identityKey ?? `${candidate.scope}:unidentified`;
+    if (
+      candidate.scope === "cumulative-session" ||
+      candidate.scope === "app-run" ||
+      candidate.scope === "endpoint-window"
+    ) {
+      if (identityKey === null) {
+        accumulator.ambiguousMissingIdentity = true;
+        summary.unsupportedOrAmbiguousRecords += 1;
+        accumulator.distinctStates += 1;
+        continue;
+      }
+      const stateKey = identityKey;
       const prior = accumulator.cumulativeStates.get(stateKey);
       if (prior !== undefined && countersEqual(prior, candidate.counters)) {
         accumulator.duplicateRecords += 1;
@@ -577,9 +896,28 @@ export function summarizeUsageValue(
 
   for (const scope of USAGE_SCOPES) {
     const accumulator = accumulators[scope];
-    if (scope === "cumulative-session" || scope === "app-run") {
+    if (accumulator.mixedSources) {
+      accumulator.counters = emptyCounters();
+      accumulator.availability = "unknown";
+      accumulator.aggregation = "ambiguous-mixed-sources";
+    }
+    if (!accumulator.mixedSources && scope === "last-request" && accumulator.ambiguousMissingIdentity) {
+      accumulator.counters = emptyCounters();
+      accumulator.availability = "unknown";
+      accumulator.aggregation = "ambiguous-missing-identity";
+    }
+    if (
+      !accumulator.mixedSources &&
+      (scope === "cumulative-session" ||
+        scope === "app-run" ||
+        scope === "endpoint-window")
+    ) {
       const states = [...accumulator.cumulativeStates.values()];
-      if (states.length === 1) {
+      if (accumulator.ambiguousMissingIdentity) {
+        accumulator.counters = emptyCounters();
+        accumulator.availability = "unknown";
+        accumulator.aggregation = "ambiguous-missing-identity";
+      } else if (states.length === 1) {
         accumulator.counters = { ...states[0]! };
         accumulator.availability = counterAvailability(accumulator.counters);
       } else if (states.length > 1) {
@@ -591,8 +929,20 @@ export function summarizeUsageValue(
         accumulator.aggregation = "ambiguous-multiple-identities";
       }
     }
+    const usageSource =
+      accumulator.sourceValues.size === 1 && !accumulator.sourceValues.has("unknown")
+        ? [...accumulator.sourceValues][0]!
+        : "unknown";
+    const computedCacheHitRatio = computeCacheHitRatio(accumulator.counters);
+    const cacheHitRatio =
+      computedCacheHitRatio.status === "invalid-cached-input"
+        ? computedCacheHitRatio
+        : usageSource === "unknown"
+          ? { ratio: null, status: "unknown" as const }
+          : computedCacheHitRatio;
     summary.scopes[scope] = {
       scope,
+      usageSource,
       records: accumulator.records,
       duplicateRecords: accumulator.duplicateRecords,
       distinctStates: accumulator.distinctStates,
@@ -600,8 +950,17 @@ export function summarizeUsageValue(
       aggregation: accumulator.aggregation,
       availability: accumulator.availability,
       counters: { ...accumulator.counters },
+      cacheHitRatio: cacheHitRatio.ratio,
+      cacheHitRatioStatus: cacheHitRatio.status,
     };
   }
+  const allSources = new Set(
+    Object.values(accumulators).flatMap((accumulator) => [...accumulator.sourceValues]),
+  );
+  summary.usageSource =
+    allSources.size === 1 && !allSources.has("unknown")
+      ? [...allSources][0]!
+      : "unknown";
   return summary;
 }
 
@@ -609,7 +968,9 @@ export async function summarizeUsageFile(filePath: string): Promise<UsageSummary
   try {
     const text = await readFile(filePath, "utf8");
     try {
-      return summarizeUsageValue(JSON.parse(text), "offline-file");
+      const summary = summarizeUsageValue(JSON.parse(text), "offline-file");
+      summary.rawEvidence.records = summary.records;
+      return summary;
     } catch {
       const records: unknown[] = [];
       let parseFailures = 0;
@@ -623,6 +984,7 @@ export async function summarizeUsageFile(filePath: string): Promise<UsageSummary
       }
       const summary = summarizeUsageValue(records, "offline-file");
       summary.unsupportedOrAmbiguousRecords += parseFailures;
+      summary.rawEvidence.records = summary.records;
       return summary;
     }
   } catch {
@@ -659,7 +1021,11 @@ function createOfflineSkillService(): SkillService {
       })),
     }),
   };
-  return new SkillService(createBuiltInSkillRegistry(), resolver);
+  return new SkillService(
+    createBuiltInSkillRegistry(),
+    resolver,
+    new DefaultAuthorizationService(),
+  );
 }
 
 function runtimeComposer(skillService: SkillService): AgentRuntimePromptComposer {
@@ -717,11 +1083,29 @@ async function runOfflineFetch(): Promise<WebFetchResult> {
   return fetcher.fetch(REPORT_FETCH_URL);
 }
 
-async function runMcpFixture(output: WebFetchResult): Promise<{
+interface McpFixtureResult {
   structured: string;
   compatibility: string;
   wire: string;
-}> {
+  catalogue: Pick<
+    TokenContextDiagnostics,
+    | "configuredCatalogueSize"
+    | "numberOfToolsExposed"
+    | "toolsListRequestsObserved"
+    | "toolsListRequestBound"
+    | "toolsListRequestCountStatus"
+    | "discoveryObserved"
+    | "authenticatedDiscoveryObserved"
+    | "toolSchemaBytes"
+    | "toolSchemaEstimatedTokens"
+    | "toolSchemaEstimator"
+    | "catalogueFingerprint"
+  >;
+  runId: string;
+  runCorrelationStatus: RunCorrelationStatus;
+}
+
+async function runMcpFixture(output: WebFetchResult): Promise<McpFixtureResult> {
   const outputDefinition: ToolDefinition = {
     id: "report.fixture.fetch",
     title: "Synthetic fetch fixture",
@@ -752,19 +1136,56 @@ async function runMcpFixture(output: WebFetchResult): Promise<{
   const server = createMcpServer(context, toolService);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "token-context-report", version: "1.0.0" });
+  let toolsListObservation: ToolsListRequestObservation = {
+    count: 0,
+    status: "bounded",
+  };
+  const originalSend = clientTransport.send.bind(clientTransport);
+  clientTransport.send = async (message, options) => {
+    if (toolsListObservation.status === "bounded") {
+      toolsListObservation = observeToolsListRequests(
+        message,
+        toolsListObservation.count ?? 0,
+        TOOLS_LIST_REQUEST_BOUND,
+      );
+    }
+    await originalSend(message, options);
+  };
   try {
     await server.connect(serverTransport);
     await client.connect(clientTransport);
+    const toolsList = await client.listTools();
     const wireResult = await client.callTool({
       name: outputDefinition.id,
       arguments: {},
     });
     const structured = JSON.stringify(output);
     const compatibility = JSON.stringify(output);
+    const serializedToolsList = JSON.stringify(toolsList);
     return {
       structured,
       compatibility,
       wire: JSON.stringify(wireResult),
+      runId: context.runId,
+      runCorrelationStatus: "synthetic-unverified",
+      catalogue: {
+        configuredCatalogueSize: registry.list().length,
+        numberOfToolsExposed: Array.isArray(toolsList.tools)
+          ? toolsList.tools.length
+          : null,
+        toolsListRequestsObserved: toolsListObservation.count,
+        toolsListRequestBound: TOOLS_LIST_REQUEST_BOUND,
+        toolsListRequestCountStatus: toolsListObservation.status,
+        discoveryObserved:
+          toolsListObservation.status === "bounded"
+            ? toolsListObservation.count! > 0
+            : null,
+        authenticatedDiscoveryObserved: null,
+        toolSchemaBytes: Buffer.byteLength(serializedToolsList, "utf8"),
+        toolSchemaEstimatedTokens: null,
+        toolSchemaEstimator: emptyToolSchemaEstimator(),
+        catalogueFingerprint: fingerprint(toolsList),
+      },
     };
   } finally {
     await client.close().catch(() => undefined);
@@ -825,6 +1246,38 @@ function supervisorContextWithTurn(
         outputTruncated: turn.outputTruncated,
       },
     ],
+  };
+}
+
+function runtimeEnvelopeBytes(prompt: string, task: string): number {
+  const taskIndex = prompt.indexOf(task);
+  if (taskIndex < 0) return measureText(prompt).utf8Bytes;
+  return measureText(prompt.slice(0, taskIndex) + prompt.slice(taskIndex + task.length)).utf8Bytes;
+}
+
+function buildOfflineDiagnostics(
+  freshPrompt: string,
+  catalogue: McpFixtureResult["catalogue"],
+  runId: string,
+  runCorrelationStatus: RunCorrelationStatus,
+): TokenContextDiagnostics {
+  return {
+    runId,
+    runCorrelationStatus,
+    inputTokens: null,
+    cachedInputTokens: null,
+    outputTokens: null,
+    usageSource: "unknown",
+    usageScope: "unknown",
+    ...catalogue,
+    rawTaskBytes: measureText(REPORT_PROMPTS.fresh).utf8Bytes,
+    rawRuntimeEnvelopeBytes: runtimeEnvelopeBytes(freshPrompt, REPORT_PROMPTS.fresh),
+    stableContextFingerprint: stableRuntimeContextFingerprint(freshPrompt),
+    runtimeVersion: null,
+    providerId: null,
+    modelId: null,
+    freshness: "fresh",
+    fallbackStatus: "not-used",
   };
 }
 
@@ -1136,21 +1589,28 @@ export async function buildOfflineTokenContextReport(): Promise<OfflineTokenCont
       "MCP Client/InMemoryTransport fixture measures the actual SDK wire result without a network call.",
     );
     scenarios.push(htmlFetch);
+
+    const diagnostics = buildOfflineDiagnostics(
+      freshPrompt,
+      mcp.catalogue,
+      mcp.runId,
+      mcp.runCorrelationStatus,
+    );
+    return {
+      version: TOKEN_CONTEXT_REPORT_VERSION,
+      units: {
+        characters: "unicode-code-points",
+        utf8Bytes: "utf8-byte-count",
+        tokenCounts: "reported-counters-only",
+      },
+      scenarios,
+      deliveryComparisons,
+      diagnostics,
+      usage: summarizeUsageValue(REPORT_USAGE_EVENTS),
+    };
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
-
-  return {
-    version: TOKEN_CONTEXT_REPORT_VERSION,
-    units: {
-      characters: "unicode-code-points",
-      utf8Bytes: "utf8-byte-count",
-      tokenCounts: "reported-counters-only",
-    },
-    scenarios,
-    deliveryComparisons,
-    usage: summarizeUsageValue(REPORT_USAGE_EVENTS),
-  };
 }
 
 function markdownCell(value: number | string): string {
@@ -1164,6 +1624,16 @@ export function formatTokenContextReportMarkdown(
     "# Offline token-context baseline",
     "",
     "This report measures app-owned payload sizes from deterministic synthetic fixtures. Character and UTF-8 byte counts are payload measurements, not exact model tokens or billing values.",
+    "",
+    "## Diagnostics",
+    "",
+    `Fixture run: ${report.diagnostics.runId ?? "unknown"}; correlation: ${report.diagnostics.runCorrelationStatus}; authenticated discovery: ${report.diagnostics.authenticatedDiscoveryObserved === null ? "pending" : report.diagnostics.authenticatedDiscoveryObserved}; usage source/scope: ${report.diagnostics.usageSource} / ${report.diagnostics.usageScope}; runtime/provider/model: ${report.diagnostics.runtimeVersion ?? "unknown"} / ${report.diagnostics.providerId ?? "unknown"} / ${report.diagnostics.modelId ?? "unknown"}; freshness: ${report.diagnostics.freshness}; fallback: ${report.diagnostics.fallbackStatus}.`,
+    "",
+    `Catalogue: configured ${report.diagnostics.configuredCatalogueSize ?? "unknown"}; exposed ${report.diagnostics.numberOfToolsExposed ?? "unknown"}; observed tools/list requests ${report.diagnostics.toolsListRequestsObserved ?? "unknown"}/${report.diagnostics.toolsListRequestBound} (${report.diagnostics.toolsListRequestCountStatus}); local discovery observed ${report.diagnostics.discoveryObserved === null ? "unknown" : report.diagnostics.discoveryObserved}; schema UTF-8 bytes ${report.diagnostics.toolSchemaBytes ?? "unknown"}; estimated tokens ${report.diagnostics.toolSchemaEstimatedTokens ?? "unknown"}.`,
+    "",
+    `Estimator: ${report.diagnostics.toolSchemaEstimator.identity ?? "unknown"} ${report.diagnostics.toolSchemaEstimator.version ?? ""}`.trim() + `; approximate: ${report.diagnostics.toolSchemaEstimator.approximate === null ? "unknown" : report.diagnostics.toolSchemaEstimator.approximate}.`,
+    "",
+    `Raw task UTF-8 bytes: ${report.diagnostics.rawTaskBytes ?? "unknown"}; raw runtime-envelope UTF-8 bytes: ${report.diagnostics.rawRuntimeEnvelopeBytes ?? "unknown"}; stable-context fingerprint: ${report.diagnostics.stableContextFingerprint ?? "unknown"}; catalogue fingerprint: ${report.diagnostics.catalogueFingerprint ?? "unknown"}.`,
     "",
     "## Before/after payload table",
     "",
@@ -1203,15 +1673,15 @@ export function formatTokenContextReportMarkdown(
     "",
     "## Usage input contract",
     "",
-    `Source: ${report.usage.source}; parsed candidate records: ${report.usage.records}; unsupported/ambiguous records: ${report.usage.unsupportedOrAmbiguousRecords}.`,
+    `Source: ${report.usage.source}; usage source: ${report.usage.usageSource}; parsed candidate records: ${report.usage.records}; unsupported/ambiguous records: ${report.usage.unsupportedOrAmbiguousRecords}; raw runtime evidence: ${report.usage.rawEvidence.status} (${report.usage.rawEvidence.records ?? "unknown"} records, path ${report.usage.rawEvidence.path ?? "pending"}).`,
     "",
-    "| Scope | Records | Duplicate records | Distinct states | Distinct identities | Aggregation | Availability | Input | Cached input | Output |",
-    "| --- | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: |",
+    "| Scope | Usage source | Records | Duplicate records | Distinct states | Distinct identities | Aggregation | Availability | Input | Cached input | Output | Cache-hit ratio | Ratio status |",
+    "| --- | --- | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | --- |",
   );
   for (const scope of USAGE_SCOPES) {
     const item = report.usage.scopes[scope];
     lines.push(
-      `| ${scope} | ${item.records} | ${item.duplicateRecords} | ${item.distinctStates} | ${item.distinctIdentities} | ${item.aggregation} | ${item.availability} | ${item.counters.inputTokens ?? "unknown"} | ${item.counters.cachedInputTokens ?? "unknown"} | ${item.counters.outputTokens ?? "unknown"} |`,
+      `| ${scope} | ${item.usageSource} | ${item.records} | ${item.duplicateRecords} | ${item.distinctStates} | ${item.distinctIdentities} | ${item.aggregation} | ${item.availability} | ${item.counters.inputTokens ?? "unknown"} | ${item.counters.cachedInputTokens ?? "unknown"} | ${item.counters.outputTokens ?? "unknown"} | ${item.cacheHitRatio ?? "unknown"} | ${item.cacheHitRatioStatus} |`,
     );
   }
   lines.push(
@@ -1220,8 +1690,12 @@ export function formatTokenContextReportMarkdown(
     "",
     "- Cached input is reported as its own counter and is not added to input tokens.",
     "- Repeated cumulative session/app-run snapshots are deduplicated per identity and never summed; files with multiple identity streams remain explicitly unknown.",
+    "- Scope is not inferred from event names. Missing identity or provenance leaves the affected accounting and cache-hit ratio unknown; endpoint-window totals are cross-checks, not per-run usage.",
+    "- Tool schema bytes are the actual SDK tools/list JSON serialization including advertised metadata. No documented token estimator is available in this offline fixture, so estimated tokens remain unknown.",
+    "- The MCP fixture uses a direct in-memory server context; it is not an authenticated MCP route exercise. Authenticated discovery correlation and sanitized raw runtime evidence capture remain pending.",
     "- Comparable reductions demonstrate duplicate-delivery payload changes only; they do not prove equivalent model behavior, provider billing, or a percentage saving.",
     "- Codex base instructions, cache conditions, resumed history, and provider-side tokenization are outside this offline measurement.",
+    "- Live BytePlus token/cache validation is pending; no paid or live provider call is made by this report.",
     "",
   );
   return lines.join("\n");

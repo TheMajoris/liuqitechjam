@@ -10,6 +10,7 @@ export const ProjectErrorCodeSchema = z.enum([
   "PROJECT_TEAM_ALREADY_ATTACHED",
   "PROJECT_TEAM_NOT_ATTACHED",
   "PROJECT_BUSY",
+  "PROJECT_RECOVERY_REQUIRED",
   "PROJECT_WORKSPACE_INVALID",
   "PROJECT_PERMISSION_DENIED",
 ]);
@@ -39,6 +40,7 @@ export function projectErrorStatus(code: ProjectErrorCode): number {
     case "PROJECT_TEAM_ALREADY_ATTACHED":
     case "PROJECT_TEAM_NOT_ATTACHED":
     case "PROJECT_BUSY":
+    case "PROJECT_RECOVERY_REQUIRED":
       return 409;
     case "PROJECT_INVALID_INPUT":
     case "PROJECT_AGENT_NOT_ATTACHED":

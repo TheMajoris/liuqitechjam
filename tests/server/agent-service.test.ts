@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentService } from "../../apps/server/src/agent-service.js";
 import { loadConfig } from "../../apps/server/src/config.js";
 import { RetryableModelError, RunCancelledError } from "../../apps/server/src/errors.js";
@@ -11,11 +11,16 @@ import type {
   AuditRecorder,
 } from "../../apps/server/src/audit/audit-types.js";
 import { JsonStore } from "../../apps/server/src/store.js";
-import type { AgentRunner, RunnerRequest, RunnerResult } from "../../apps/server/src/types.js";
+import type { Database, AgentRunner, RunnerRequest, RunnerResult } from "../../apps/server/src/types.js";
+import type { Storage, StorageFatalHandler } from "../../apps/server/src/store.js";
 import {
   PLATFORM_INSTRUCTIONS_MARKER,
   WorkspaceManager,
 } from "../../apps/server/src/workspace.js";
+import {
+  McpSessionService,
+  type McpSessionContext,
+} from "../../apps/server/src/tools/mcp-session-service.js";
 
 class FakeRunner implements AgentRunner {
   async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -85,6 +90,72 @@ class DeferredRunner implements AgentRunner {
   }
 }
 
+/** Fails exactly the coordinator's first queued -> running persistence. */
+class FailingRunningWriteStore implements Storage {
+  private failed = false;
+
+  constructor(private readonly inner: Storage) {}
+
+  async initialize(): Promise<void> {
+    await this.inner.initialize();
+  }
+
+  snapshot(): Database {
+    return this.inner.snapshot();
+  }
+
+  async mutate<T>(mutation: (database: Database) => T | Promise<T>): Promise<T> {
+    return this.inner.mutate(async (database) => {
+      if (!this.failed && database.runs.some((run) => run.status === "queued")) {
+        this.failed = true;
+        throw new Error("running state write rejected");
+      }
+      return mutation(database);
+    });
+  }
+
+  async close(): Promise<void> {
+    await this.inner.close();
+  }
+
+  setFatalHandler(handler: StorageFatalHandler | undefined): void {
+    this.inner.setFatalHandler?.(handler);
+  }
+}
+
+/** Switches to an unreadable store after an accepted worker is running. */
+class FatalSwitchStore implements Storage {
+  fatal = false;
+  snapshotCallsAfterFatal = 0;
+
+  constructor(private readonly inner: Storage) {}
+
+  async initialize(): Promise<void> {
+    await this.inner.initialize();
+  }
+
+  snapshot(): Database {
+    if (this.fatal) {
+      this.snapshotCallsAfterFatal += 1;
+      throw new Error("storage is unavailable");
+    }
+    return this.inner.snapshot();
+  }
+
+  async mutate<T>(mutation: (database: Database) => T | Promise<T>): Promise<T> {
+    if (this.fatal) throw new Error("storage is unavailable");
+    return this.inner.mutate(mutation);
+  }
+
+  async close(): Promise<void> {
+    await this.inner.close();
+  }
+
+  setFatalHandler(handler: StorageFatalHandler | undefined): void {
+    this.inner.setFatalHandler?.(handler);
+  }
+}
+
 /** Records audit inputs verbatim so span/metadata shape can be asserted. */
 class RecordingAudit implements AuditRecorder {
   readonly inputs: AuditEventInput[] = [];
@@ -115,6 +186,8 @@ async function makeService(
   options: {
     curatedModels?: string;
     audit?: AuditRecorder;
+    storeFactory?: (filePath: string) => Storage;
+    mcpScopedAdvertisement?: boolean;
   } = {},
 ): Promise<AgentService> {
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
@@ -126,8 +199,10 @@ async function makeService(
     CODEX_HOME: path.join(root, "codex"),
     ARK_API_KEY: "test-key",
     WORKER_CURATED_MODELS: ["ep-test", options.curatedModels].filter(Boolean).join(","),
+    ...(options.mcpScopedAdvertisement ? { MCP_SCOPED_ADVERTISEMENT: "true" } : {}),
   });
-  const store = new JsonStore(path.join(root, "data", "db.json"));
+  const storePath = path.join(root, "data", "db.json");
+  const store = options.storeFactory?.(storePath) ?? new JsonStore(storePath);
   const service = new AgentService(
     config,
     store,
@@ -140,6 +215,92 @@ async function makeService(
 }
 
 describe("Agent lifecycle", () => {
+  it("snapshots the effective MCP catalogue before dispatching a run", async () => {
+    let sessions!: McpSessionService;
+    let observedContext: McpSessionContext | null = null;
+    const runner: AgentRunner = {
+      async run(request) {
+        if (!request.mcp) throw new Error("Expected an MCP session");
+        observedContext = sessions.resolve(request.mcp.token);
+        return { output: "done", threadId: "scoped-thread", usage: null };
+      },
+      async cancel() {
+        return false;
+      },
+      async isAvailable() {
+        return true;
+      },
+    };
+    const service = await makeService(runner);
+    sessions = new McpSessionService();
+    service.setMcpSessionService(sessions);
+    service.setEffectiveToolResolution(() => ({
+      ok: true,
+      advertisedToolIds: ["web.search"],
+      diagnostics: {
+        status: "scoped",
+        configuredCatalogueSize: 4,
+        advertisedToolCount: 1,
+      },
+    }));
+    const agent = await service.createAgent({
+      name: "Scoped",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
+
+    const { run } = await service.sendMessage(agent.id, "use scoped discovery");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    expect(observedContext).toMatchObject({
+      agentId: agent.id,
+      runId: run.id,
+      advertisedToolIds: ["web.search"],
+      diagnostics: {
+        resolutionStatus: "scoped",
+        configuredCatalogueSize: 4,
+        advertisedToolCount: 1,
+      },
+    });
+    expect(sessions.size()).toBe(0);
+  });
+
+  it("records a fail-closed snapshot when scoped discovery has no resolver", async () => {
+    let sessions!: McpSessionService;
+    let observedContext: McpSessionContext | null = null;
+    const runner: AgentRunner = {
+      async run(request) {
+        if (!request.mcp) throw new Error("Expected an MCP session");
+        observedContext = sessions.resolve(request.mcp.token);
+        return { output: "done", threadId: "scoped-thread", usage: null };
+      },
+      async cancel() {
+        return false;
+      },
+      async isAvailable() {
+        return true;
+      },
+    };
+    const service = await makeService(runner, { mcpScopedAdvertisement: true });
+    sessions = new McpSessionService();
+    service.setMcpSessionService(sessions);
+    const agent = await service.createAgent({
+      name: "Fail closed",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
+
+    const { run } = await service.sendMessage(agent.id, "use scoped discovery");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    expect(observedContext).toMatchObject({
+      advertisedToolIds: [],
+      diagnostics: {
+        resolutionStatus: "failed",
+        configuredCatalogueSize: 0,
+        advertisedToolCount: 0,
+      },
+    });
+  });
+
   it("persists an explicit model assignment and forwards it per run", async () => {
     const runner = new CapturingRunner();
     const service = await makeService(runner, { curatedModels: "ep-worker-b" });
@@ -241,6 +402,28 @@ describe("Agent lifecycle", () => {
     expect(() => service.getAgent(agent.id)).toThrow(/Agent not found/);
   });
 
+  it("retains an Agent whose previous local runtime needs operator recovery", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({
+      name: "Unresolved runtime",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
+    service.setStartupReconciliation({
+      provider: "local-process",
+      confirmedAgentIds: [],
+      confirmedPreviewIds: [],
+      unresolvedAgentIds: [agent.id],
+      unresolvedPreviewIds: [],
+    });
+    await service.initialize();
+
+    await expect(service.deleteAgent(agent.id)).rejects.toMatchObject({
+      statusCode: 409,
+      message: expect.stringContaining("operator recovery"),
+    });
+    expect(service.getAgent(agent.id).status).toBe("error");
+  });
+
   it("persists a playground conversation", async () => {
     const service = await makeService();
     const agent = await service.createAgent({
@@ -305,6 +488,48 @@ describe("Agent lifecycle", () => {
     const repeated = await service.cancelRun(run.id);
     expect(repeated).toMatchObject({ id: run.id, status: "cancelled" });
     expect(runner.cancelCalls).toBe(1);
+  });
+
+  it("does not dispatch when the initial running-state write is rejected", async () => {
+    const runner = new CapturingRunner();
+    const service = await makeService(runner, {
+      storeFactory: (filePath) =>
+        new FailingRunningWriteStore(new JsonStore(filePath)),
+    });
+    const agent = await service.createAgent({
+      name: "Setup failure",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
+
+    const { run } = await service.sendMessage(agent.id, "must not run");
+
+    await vi.waitFor(() => expect(service.getRun(run.id).status).toBe("failed"));
+    expect(runner.requests).toHaveLength(0);
+    expect(service.getAgent(agent.id).status).not.toBe("busy");
+  });
+
+  it("cancels through the in-memory handle after storage becomes unavailable", async () => {
+    const runner = new DeferredRunner();
+    let storage!: FatalSwitchStore;
+    const service = await makeService(runner, {
+      storeFactory: (filePath) => {
+        storage = new FatalSwitchStore(new JsonStore(filePath));
+        return storage;
+      },
+    });
+    const agent = await service.createAgent({
+      name: "Storage outage",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
+
+    const { run } = await service.sendMessage(agent.id, "cancel physically");
+    await vi.waitFor(() => expect(service.getRun(run.id).status).toBe("running"));
+    storage.fatal = true;
+
+    await service.quiesceForStorageFailure({ timeoutMs: 1_000 });
+
+    expect(runner.cancelCalls).toBe(1);
+    expect(storage.snapshotCallsAfterFatal).toBe(0);
   });
 });
 

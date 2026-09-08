@@ -14,9 +14,12 @@ import { MCP_BEARER_TOKEN_ENV } from "./tools/mcp-session-service.js";
 import type {
   AgentRunner,
   RunUsage,
+  RuntimeReconciliationInput,
+  RuntimeReconciliationResult,
   RunnerRequest,
   RunnerResult,
 } from "./types.js";
+import { reconcileLocalProcessStartup } from "./runtime-reconciliation.js";
 import type { RuntimeActionObserver } from "./audit/runtime-action-audit.js";
 
 const execFileAsync = promisify(execFile);
@@ -33,12 +36,23 @@ export interface ParsedEvents {
   modelInferenceLimitExceeded?: boolean;
   /** A completed turn suppresses a transient diagnostic error event. */
   turnCompleted?: boolean;
+  /** Set when Codex reports an explicit terminal `turn.failed` event. */
+  terminalFailure?: boolean;
+  /** Ordered terminal evidence; later valid completion can supersede failure. */
+  lastTerminalEvent?: "failed" | "completed";
 }
 
 type JsonRecord = Record<string, unknown>;
 
 function isJsonRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isControlError(error: unknown): error is Error {
+  return (
+    error instanceof Error &&
+    (error.name === "AbortError" || error.name === "TimeoutError")
+  );
 }
 
 /**
@@ -105,8 +119,10 @@ export interface CodexTerminalMessages {
 /**
  * Apply the same terminal-outcome precedence to local and container runners.
  * Cancellation and timeout are control-plane outcomes, so they win over any
- * diagnostic event. A successful terminal turn wins over an earlier error
- * event; provider-limit evidence is considered only for a failed turn.
+ * diagnostic event. A successful terminal turn wins over earlier diagnostic
+ * or failed-turn evidence when it is the later terminal event. A stream
+ * without an explicit terminal event retains legacy message-plus-exit-0
+ * compatibility.
  */
 export function finalizeCodexRun(
   parsed: ParsedEvents,
@@ -126,6 +142,16 @@ export function finalizeCodexRun(
       throw new ModelInferenceLimitExceededError();
     }
     throw new Error(messages.exit);
+  }
+
+  if (
+    parsed.lastTerminalEvent === "failed" ||
+    (parsed.terminalFailure === true && parsed.turnCompleted !== true)
+  ) {
+    if (parsed.modelInferenceLimitExceeded) {
+      throw new ModelInferenceLimitExceededError();
+    }
+    throw new Error("Codex reported a failed turn");
   }
 
   // A successful terminal response is authoritative. Codex can emit a
@@ -182,6 +208,46 @@ export function buildCodexArgs(
   return args;
 }
 
+/** A provider counter is trusted only when it is a real non-negative count. */
+function numericCounter(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+/**
+ * Sum one turn's counters into the run's running totals.
+ *
+ * A counter absent from every turn stays absent, so "the provider never
+ * reported this" remains distinguishable from "the provider reported zero".
+ */
+function addTurnUsage(
+  into: RunUsage | null,
+  turn: {
+    inputTokens: number | undefined;
+    cachedInputTokens: number | undefined;
+    cacheWriteInputTokens: number | undefined;
+    outputTokens: number | undefined;
+    reasoningOutputTokens: number | undefined;
+  },
+): RunUsage | null {
+  const fields = [
+    "inputTokens",
+    "cachedInputTokens",
+    "cacheWriteInputTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+  ] as const;
+  let total: RunUsage | null = into;
+  for (const field of fields) {
+    const value = turn[field];
+    if (value === undefined) continue;
+    total ??= {};
+    total[field] = (total[field] ?? 0) + value;
+  }
+  return total;
+}
+
 export function parseCodexEventLine(
   line: string,
   parsed: ParsedEvents,
@@ -217,21 +283,27 @@ export function parseCodexEventLine(
 
   if (event.type === "turn.completed" && event.usage && typeof event.usage === "object") {
     const usage = event.usage as Record<string, unknown>;
-    parsed.usage = {
-      ...(typeof usage.input_tokens === "number"
-        ? { inputTokens: usage.input_tokens }
-        : {}),
-      ...(typeof usage.cached_input_tokens === "number"
-        ? { cachedInputTokens: usage.cached_input_tokens }
-        : {}),
-      ...(typeof usage.output_tokens === "number"
-        ? { outputTokens: usage.output_tokens }
-        : {}),
-    };
+    // Codex reports each turn.completed independently rather than as a running
+    // total: on a resumed thread turn N carries that turn's own prompt, not the
+    // sum of the turns before it. A single `codex exec` is normally one turn,
+    // but when a run does produce several, the run's usage is their sum.
+    parsed.usage = addTurnUsage(parsed.usage, {
+      inputTokens: numericCounter(usage.input_tokens),
+      cachedInputTokens: numericCounter(usage.cached_input_tokens),
+      cacheWriteInputTokens: numericCounter(usage.cache_write_input_tokens),
+      outputTokens: numericCounter(usage.output_tokens),
+      reasoningOutputTokens: numericCounter(usage.reasoning_output_tokens),
+    });
   }
 
   if (event.type === "turn.completed") {
     parsed.turnCompleted = true;
+    parsed.lastTerminalEvent = "completed";
+  }
+
+  if (event.type === "turn.failed") {
+    parsed.terminalFailure = true;
+    parsed.lastTerminalEvent = "failed";
   }
 
   if (event.type === "error") {
@@ -266,6 +338,17 @@ export class CodexRunner implements AgentRunner {
     }
   }
 
+  /**
+   * Local processes do not expose a durable identity that can be adopted on
+   * restart. Persisted active work therefore stays behind the startup safety
+   * gate until an operator verifies it explicitly.
+   */
+  async reconcileStartup(
+    input: RuntimeReconciliationInput,
+  ): Promise<RuntimeReconciliationResult> {
+    return reconcileLocalProcessStartup(input);
+  }
+
   async cancel(agentId: string): Promise<boolean> {
     const active = this.active.get(agentId);
     if (!active) {
@@ -296,6 +379,8 @@ export class CodexRunner implements AgentRunner {
         cwd: request.workspacePath,
         env: this.childEnvironment(request),
         timeoutMs: this.config.codexTimeoutMs,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+        ...(request.deadlineAt === undefined ? {} : { deadlineAt: request.deadlineAt }),
         maxOutputBytes: this.config.codexMaxOutputBytes,
         startErrorMessage: "Codex could not start",
         onLine: (line) => parseCodexEventLine(line, parsed, request.observer),
@@ -311,6 +396,7 @@ export class CodexRunner implements AgentRunner {
     } catch (error) {
       // spawn() can fail before a child exists. This is the only runner-level
       // startup condition classified as safe for a model fallback.
+      if (isControlError(error)) throw error;
       throw new RetryableModelError("Codex could not start", { cause: error });
     }
     this.active.set(request.agentId, execution);
@@ -323,6 +409,7 @@ export class CodexRunner implements AgentRunner {
         // non-zero exits below remain non-retryable.
         result = await execution.completed;
       } catch (error) {
+        if (isControlError(error)) throw error;
         throw new RetryableModelError("Codex could not start", { cause: error });
       }
       return finalizeCodexRun(parsed, result, {

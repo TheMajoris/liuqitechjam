@@ -4,12 +4,17 @@ import {
   type AuthorizationService,
 } from "../access/authorization-service.js";
 import type { Principal, ProjectRole } from "../access/access-types.js";
+import type { ApplicationLifecycleFailureSink } from "../application-health.js";
+import type { RuntimeReconciliationResult } from "../types.js";
 import type { Storage } from "../store.js";
-import type { Agent, Database } from "../types.js";
+import type { Agent, Database, OperationOptions } from "../types.js";
 import type { SkillService } from "../skills/skill-service.js";
 import { ProjectError } from "./project-errors.js";
 import { ProjectWorkspaceManager } from "./project-workspace.js";
-import { ProjectWriteLeaseCoordinator } from "./project-write-lease-coordinator.js";
+import {
+  ProjectWriteLeaseCoordinator,
+  type ProjectWriteLeaseOptions,
+} from "./project-write-lease-coordinator.js";
 import {
   PROJECT_LIMITS,
   type CreateProjectInput,
@@ -26,6 +31,27 @@ const activeConversationStatuses = new Set(["queued", "running", "stopping"]);
 
 function statusIsActiveSession(status: string): boolean {
   return activeConversationStatuses.has(status);
+}
+
+function assertOperationActive(operation: OperationOptions): void {
+  if (operation.signal?.aborted) {
+    const reason = operation.signal.reason;
+    if (reason instanceof Error && (reason.name === "AbortError" || reason.name === "TimeoutError")) {
+      throw reason;
+    }
+    const error = new Error("Project preparation was aborted");
+    error.name = "AbortError";
+    throw error;
+  }
+  if (
+    operation.deadlineAt !== undefined &&
+    Number.isFinite(operation.deadlineAt) &&
+    Date.now() >= operation.deadlineAt
+  ) {
+    const error = new Error("Project preparation timed out");
+    error.name = "TimeoutError";
+    throw error;
+  }
 }
 
 /** Minimal Agent lookup seam; ProjectService never depends on AgentService. */
@@ -61,6 +87,7 @@ export interface ProjectConversationLifecycleCleanup {
 export function publicProject(
   project: Project,
   membershipsOrAgentIds: readonly ProjectAgentAttachment[] | readonly string[] | readonly ProjectMembershipView[],
+  options: { recoveryRequired?: boolean } = {},
 ): ProjectView {
   const memberships: ProjectMembershipView[] = (
     project.status === "archived" ? [] : membershipsOrAgentIds
@@ -80,6 +107,7 @@ export function publicProject(
     agentIds: memberships.map((membership) => membership.agentId),
     memberships,
     status: project.status,
+    ...(options.recoveryRequired === true ? { recoveryRequired: true as const } : {}),
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
   };
@@ -116,6 +144,8 @@ export class ProjectService {
   private readonly leaseCoordinator: ProjectWriteLeaseCoordinator;
   private skillService: SkillService | undefined;
   private conversationLifecycle: ProjectConversationLifecycleCleanup | undefined;
+  private lifecycleFailureSink: ApplicationLifecycleFailureSink | undefined;
+  private startupReconciliation: RuntimeReconciliationResult | undefined;
 
   constructor(
     private readonly store: Storage,
@@ -131,6 +161,7 @@ export class ProjectService {
       (projectId, agentId, principal) =>
         this.authorizeAgentExecution(projectId, agentId, principal),
       onEvent,
+      (failure) => this.lifecycleFailureSink?.reportLifecycleFailure(failure),
     );
     this.skillService = skillService;
   }
@@ -154,15 +185,69 @@ export class ProjectService {
     this.skillService = skillService;
   }
 
+  /** Attach the application-owned lifecycle failure sink after app assembly. */
+  setLifecycleFailureSink(sink: ApplicationLifecycleFailureSink): void {
+    this.lifecycleFailureSink = sink;
+  }
+
+  /** Supply the verified runtime evidence before stale leases are considered. */
+  setStartupReconciliation(result: RuntimeReconciliationResult): void {
+    this.startupReconciliation = {
+      provider: result.provider,
+      confirmedAgentIds: [...result.confirmedAgentIds],
+      confirmedPreviewIds: [...result.confirmedPreviewIds],
+      unresolvedAgentIds: [...result.unresolvedAgentIds],
+      unresolvedPreviewIds: [...result.unresolvedPreviewIds],
+    };
+  }
+
   /**
-   * Releases leases orphaned by a server restart.
-   *
-   * A lease only ever guards a live run; nothing in-flight survives a restart,
-   * so any persisted lease at boot is stale by definition.
+   * Reconciles leases orphaned by a restart using the runtime evidence
+   * collected before Agent status reset. Uncertain ownership remains gated.
    */
-  async initialize(): Promise<void> {
+  async initialize(reconciliation = this.startupReconciliation): Promise<void> {
     await this.workspaces.initialize();
-    await this.leaseCoordinator.initialize();
+    await this.leaseCoordinator.initialize(reconciliation);
+  }
+
+  /**
+   * Reserve all Projects that still contain Agent-owned membership or lease
+   * evidence. Agent deletion holds this reservation through its database
+   * mutation and rollback so archive compensation cannot overwrite it.
+   */
+  beginAgentDeletion(agentId: string): () => void {
+    const database = this.store.snapshot();
+    const projectIds = [
+      ...new Set([
+        ...database.projectAgents
+          .filter((item) => item.agentId === agentId)
+          .map((item) => item.projectId),
+        ...database.projectLeases
+          .filter((item) => item.agentId === agentId)
+          .map((item) => item.projectId),
+      ]),
+    ].sort();
+    const acquired: string[] = [];
+    try {
+      for (const projectId of projectIds) {
+        this.leaseCoordinator.beginProjectMutation(projectId);
+        acquired.push(projectId);
+      }
+    } catch (error) {
+      for (const projectId of acquired) {
+        this.leaseCoordinator.endProjectMutation(projectId);
+      }
+      throw error;
+    }
+
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      for (const projectId of acquired) {
+        this.leaseCoordinator.endProjectMutation(projectId);
+      }
+    };
   }
 
   // ---------------------------------------------------------------- lifecycle
@@ -202,7 +287,7 @@ export class ProjectService {
       });
       persisted = true;
       this.onEvent({ type: "project_created", projectId: id, status: "active" });
-      return publicProject(project, []);
+      return this.projectView(project, []);
     } catch (error) {
       // Keep a Project out of the repository when local creation fails so the
       // caller can retry the privileged action.
@@ -223,7 +308,7 @@ export class ProjectService {
     return database.projects
       .filter((project) => project.status !== "archived")
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-      .map((project) => publicProject(project, this.attachedMemberships(project.id)));
+      .map((project) => this.projectView(project, this.attachedMemberships(project.id)));
   }
 
   async get(
@@ -237,7 +322,7 @@ export class ProjectService {
       resource: { kind: "project", id: projectId },
     });
     const project = this.requireProject(projectId);
-    return publicProject(project, this.attachedMemberships(projectId));
+    return this.projectView(project, this.attachedMemberships(projectId));
   }
 
   async update(
@@ -252,6 +337,7 @@ export class ProjectService {
       resource: { kind: "project", id: projectId },
     });
     this.requireActiveProject(projectId);
+    this.leaseCoordinator.assertProjectMutationAllowed(projectId);
     const name =
       input.name === undefined
         ? undefined
@@ -268,6 +354,7 @@ export class ProjectService {
     const before = this.store.snapshot().projects.find((item) => item.id === projectId);
     if (!before) throw new ProjectError("PROJECT_NOT_FOUND", 404, "Project not found");
     const updated = await this.store.mutate((database) => {
+      this.leaseCoordinator.assertProjectMutationAllowed(projectId);
       const stored = database.projects.find((item) => item.id === projectId);
       if (!stored) throw new ProjectError("PROJECT_NOT_FOUND", 404, "Project not found");
       if (name !== undefined) stored.name = name;
@@ -276,9 +363,10 @@ export class ProjectService {
       return structuredClone(stored);
     });
     try {
-      return publicProject(updated, this.attachedMemberships(projectId));
+      return this.projectView(updated, this.attachedMemberships(projectId));
     } catch (error) {
       await this.store.mutate((database) => {
+        this.leaseCoordinator.assertProjectMutationAllowed(projectId);
         const stored = database.projects.find((item) => item.id === projectId);
         if (stored) Object.assign(stored, structuredClone(before));
       });
@@ -492,6 +580,7 @@ export class ProjectService {
       resource: { kind: "project", id: projectId },
     });
     const project = this.requireActiveProject(projectId);
+    this.leaseCoordinator.assertProjectMutationAllowed(projectId);
     this.agents.getAgent(agentId);
     if (this.attachedAgentIds(projectId).includes(agentId)) {
       throw new ProjectError(
@@ -509,23 +598,29 @@ export class ProjectService {
       toolGrants: [],
       updatedAt: attachedAt,
     };
+    let persisted = false;
     try {
       await this.store.mutate((database) => {
+        this.leaseCoordinator.assertProjectMutationAllowed(projectId);
         database.projectAgents.push(attachment);
       });
+      persisted = true;
       this.onEvent({
         type: "project_agent_attached",
         projectId,
         agentId,
         status: "attached",
       });
-      return publicProject(project, this.attachedMemberships(projectId));
+      return this.projectView(project, this.attachedMemberships(projectId));
     } catch (error) {
-      await this.store.mutate((database) => {
-        database.projectAgents = database.projectAgents.filter(
-          (item) => !(item.projectId === projectId && item.agentId === agentId && item.attachedAt === attachedAt),
-        );
-      });
+      if (persisted) {
+        await this.store.mutate((database) => {
+          this.leaseCoordinator.assertProjectMutationAllowed(projectId);
+          database.projectAgents = database.projectAgents.filter(
+            (item) => !(item.projectId === projectId && item.agentId === agentId && item.attachedAt === attachedAt),
+          );
+        });
+      }
       throw error;
     }
   }
@@ -544,6 +639,7 @@ export class ProjectService {
       resource: { kind: "project", id: projectId },
     });
     const project = this.requireProject(projectId);
+    this.leaseCoordinator.assertProjectMutationAllowed(projectId);
     const existing = this.store
       .snapshot()
       .projectAgents.find(
@@ -557,8 +653,10 @@ export class ProjectService {
     // the whole Conversation is deleted. Started and finished Conversations
     // keep their roster verbatim: those records explain runs that happened.
     const removedFromDrafts: string[] = [];
+    let persisted = false;
     try {
       await this.store.mutate((database) => {
+        this.leaseCoordinator.assertProjectMutationAllowed(projectId);
         database.projectAgents = database.projectAgents.filter(
           (item) => !(item.projectId === projectId && item.agentId === agentId),
         );
@@ -572,6 +670,7 @@ export class ProjectService {
           removedFromDrafts.push(session.id);
         }
       });
+      persisted = true;
       this.onEvent({
         type: "project_agent_detached",
         projectId,
@@ -581,10 +680,11 @@ export class ProjectService {
           ? { detail: `Removed from ${removedFromDrafts.length} draft conversation(s)` }
           : {}),
       });
-      return publicProject(project, this.attachedMemberships(projectId));
+      return this.projectView(project, this.attachedMemberships(projectId));
     } catch (error) {
-      if (existing) {
+      if (persisted && existing) {
         await this.store.mutate((database) => {
+          this.leaseCoordinator.assertProjectMutationAllowed(projectId);
           if (!database.projectAgents.some(
             (item) => item.projectId === projectId && item.agentId === agentId,
           )) {
@@ -616,11 +716,13 @@ export class ProjectService {
       resource: { kind: "project", id: projectId },
     });
     this.requireActiveProject(projectId);
+    this.leaseCoordinator.assertProjectMutationAllowed(projectId);
     const uniqueAgentIds = [...new Set(agentIds)];
     for (const agentId of uniqueAgentIds) this.agents.getAgent(agentId);
 
     const before = this.store.snapshot();
     const updated = await this.store.mutate((database) => {
+      this.leaseCoordinator.assertProjectMutationAllowed(projectId);
       const stored = database.projects.find((item) => item.id === projectId);
       if (!stored) throw new ProjectError("PROJECT_NOT_FOUND", 404, "Project not found");
       if (stored.status !== "active") {
@@ -679,9 +781,10 @@ export class ProjectService {
         teamId: conversationId,
         status: "attached",
       });
-      return publicProject(updated, this.attachedMemberships(projectId));
+      return this.projectView(updated, this.attachedMemberships(projectId));
     } catch (error) {
       await this.store.mutate((database) => {
+        this.leaseCoordinator.assertProjectMutationAllowed(projectId);
         const previousProject = before.projects.find((item) => item.id === projectId);
         const stored = database.projects.find((item) => item.id === projectId);
         if (previousProject && stored) Object.assign(stored, structuredClone(previousProject));
@@ -710,8 +813,10 @@ export class ProjectService {
       resource: { kind: "project", id: projectId },
     });
     this.requireActiveProject(projectId);
+    this.leaseCoordinator.assertProjectMutationAllowed(projectId);
     const before = this.store.snapshot().projects.find((item) => item.id === projectId);
     const updated = await this.store.mutate((database) => {
+      this.leaseCoordinator.assertProjectMutationAllowed(projectId);
       const stored = database.projects.find((item) => item.id === projectId);
       if (!stored) throw new ProjectError("PROJECT_NOT_FOUND", 404, "Project not found");
       if (stored.teamId && stored.teamId !== teamId) {
@@ -732,10 +837,11 @@ export class ProjectService {
         teamId,
         status: "attached",
       });
-      return publicProject(updated, this.attachedMemberships(projectId));
+      return this.projectView(updated, this.attachedMemberships(projectId));
     } catch (error) {
       if (before) {
         await this.store.mutate((database) => {
+          this.leaseCoordinator.assertProjectMutationAllowed(projectId);
           const stored = database.projects.find((item) => item.id === projectId);
           if (stored) Object.assign(stored, structuredClone(before));
         });
@@ -754,8 +860,10 @@ export class ProjectService {
       projectId,
       resource: { kind: "project", id: projectId },
     });
+    this.leaseCoordinator.assertProjectMutationAllowed(projectId);
     const before = this.store.snapshot().projects.find((item) => item.id === projectId);
     const updated = await this.store.mutate((database) => {
+      this.leaseCoordinator.assertProjectMutationAllowed(projectId);
       const stored = database.projects.find((item) => item.id === projectId);
       if (!stored) throw new ProjectError("PROJECT_NOT_FOUND", 404, "Project not found");
       stored.teamId = null;
@@ -763,10 +871,11 @@ export class ProjectService {
       return structuredClone(stored);
     });
     try {
-      return publicProject(updated, this.attachedMemberships(projectId));
+      return this.projectView(updated, this.attachedMemberships(projectId));
     } catch (error) {
       if (before) {
         await this.store.mutate((database) => {
+          this.leaseCoordinator.assertProjectMutationAllowed(projectId);
           const stored = database.projects.find((item) => item.id === projectId);
           if (stored) Object.assign(stored, structuredClone(before));
         });
@@ -794,8 +903,10 @@ export class ProjectService {
       resource: { kind: "project", id: projectId },
     });
     this.requireActiveProject(projectId);
+    this.leaseCoordinator.assertProjectMutationAllowed(projectId);
     const before = this.store.snapshot();
     const updated = await this.store.mutate((database) => {
+      this.leaseCoordinator.assertProjectMutationAllowed(projectId);
       const attachment = database.projectAgents.find(
         (item) => item.projectId === projectId && item.agentId === agentId,
       );
@@ -821,9 +932,10 @@ export class ProjectService {
         agentId,
         status: parsedRole.data,
       });
-      return publicProject(updated, this.attachedMemberships(projectId));
+      return this.projectView(updated, this.attachedMemberships(projectId));
     } catch (error) {
       await this.store.mutate((database) => {
+        this.leaseCoordinator.assertProjectMutationAllowed(projectId);
         const previousProject = before.projects.find((item) => item.id === projectId);
         if (previousProject) {
           const stored = database.projects.find((item) => item.id === projectId);
@@ -853,7 +965,8 @@ export class ProjectService {
     agentId: string,
     principal: Principal = { kind: "agent", id: agentId },
   ): Promise<void> {
-    this.projectRunScope(projectId, agentId);
+    this.leaseCoordinator.assertProjectRecoveryClear(projectId);
+    const scope = this.projectRunScope(projectId, agentId);
     const resource = { kind: "project", id: projectId } as const;
     await this.authorization.require({
       principal,
@@ -869,6 +982,9 @@ export class ProjectService {
       agentId,
       resource,
     });
+    if (!(await this.workspaces.hasWorkspaceDirectory(scope.project))) {
+      throw this.workspaceRecoveryRequired();
+    }
   }
 
   // ------------------------------------------------------------- run scoping
@@ -909,7 +1025,9 @@ export class ProjectService {
     agentId: string,
     codexThreadId: string | null,
   ): Promise<void> {
+    this.leaseCoordinator.assertProjectMutationAllowed(projectId);
     await this.store.mutate((database) => {
+      this.leaseCoordinator.assertProjectMutationAllowed(projectId);
       const attachment = database.projectAgents.find(
         (item) => item.projectId === projectId && item.agentId === agentId,
       );
@@ -928,7 +1046,12 @@ export class ProjectService {
    * wraps this call because the turn that follows edits shared files, and
    * because a migrating write must not race another turn.
    */
-  async prepareTurn(project: Project, agent: Agent): Promise<void> {
+  async prepareTurn(
+    project: Project,
+    agent: Agent,
+    operation: OperationOptions = {},
+  ): Promise<void> {
+    assertOperationActive(operation);
     await this.authorization.require({
       principal: { kind: "agent", id: agent.id },
       permission: "project.write",
@@ -936,10 +1059,17 @@ export class ProjectService {
       agentId: agent.id,
       resource: { kind: "project", id: project.id },
     });
+    assertOperationActive(operation);
     // Identity, skills, and capability state are all composed by
     // AgentRuntimePromptComposer immediately before execution, so this file
     // depends on nothing about the acting Agent and is usually left untouched.
-    await this.workspaces.ensureWorkspaceContract(project);
+    if (!(await this.workspaces.hasWorkspaceDirectory(project))) {
+      throw this.workspaceRecoveryRequired();
+    }
+    const contractResult = await this.workspaces.ensureWorkspaceContract(project, operation);
+    if (contractResult === "workspace_missing") {
+      throw this.workspaceRecoveryRequired();
+    }
   }
 
   // ------------------------------------------------------------ write leases
@@ -955,21 +1085,56 @@ export class ProjectService {
     projectId: string,
     agentId: string,
     runId: string,
-    options: { waitMs?: number; principal?: Principal } = {},
+    options: ProjectWriteLeaseOptions = {},
   ): Promise<void> {
     await this.leaseCoordinator.acquire(projectId, agentId, runId, options);
   }
 
-  /** Idempotent; safe to call from a `finally` on any completion path. */
-  async releaseWriteLease(projectId: string, runId: string): Promise<void> {
-    await this.leaseCoordinator.release(projectId, runId);
+  /** Idempotent; safe to call from a `finally` on a known-settled path. */
+  async releaseWriteLease(
+    projectId: string,
+    runId: string,
+    options: { settled?: boolean } = {},
+  ): Promise<void> {
+    await this.leaseCoordinator.release(projectId, runId, options);
   }
 
   writeLeaseHolder(projectId: string): { agentId: string; runId: string } | null {
     return this.leaseCoordinator.writeLeaseHolder(projectId);
   }
 
+  /** Guard Project-owned mutations during archive or compensation. */
+  assertProjectMutationAllowed(projectId: string): void {
+    this.leaseCoordinator.assertProjectMutationAllowed(projectId);
+  }
+
+  /** Operator-facing status for a Project whose settled lease needs repair. */
+  recoveryRequired(projectId: string): boolean {
+    return this.leaseCoordinator.isRecoveryRequired(projectId);
+  }
+
+  recoveryStatus(projectId: string) {
+    return this.leaseCoordinator.recoveryStatus(projectId);
+  }
+
   // ---------------------------------------------------------------- internals
+
+  private projectView(
+    project: Project,
+    memberships: readonly ProjectAgentAttachment[] | readonly string[] | readonly ProjectMembershipView[],
+  ): ProjectView {
+    return publicProject(project, memberships, {
+      recoveryRequired: this.leaseCoordinator.isRecoveryRequired(project.id),
+    });
+  }
+
+  private workspaceRecoveryRequired(): ProjectError {
+    return new ProjectError(
+      "PROJECT_WORKSPACE_INVALID",
+      422,
+      "The active Project workspace is missing; operator recovery is required before another Agent can write",
+    );
+  }
 
   private assertNoActiveProjectConversations(projectId: string): void {
     const active = this.store.snapshot().orchestrations.some(

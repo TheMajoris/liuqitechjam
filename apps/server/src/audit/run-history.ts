@@ -1,4 +1,5 @@
 import type { RunStatus } from "../types.js";
+import { runContextWindow, type RunContextWindow } from "../telemetry/context-window.js";
 import {
   summarizeRunTokens,
   type RunTokenTotals,
@@ -40,9 +41,19 @@ export interface RunHistoryEntry {
    * explicit so a Run that reported nothing is never shown as zero tokens.
    */
   tokens: RunTokenTotals;
+  /**
+   * What the Run left occupied in its model's context window.
+   *
+   * Null when the model has no configured window or the provider reported no
+   * counters — headroom is never guessed at.
+   */
+  context: RunContextWindow | null;
   failed: boolean;
   error: string | null;
 }
+
+/** Looks up the configured context window for a model id. */
+export type ContextWindowLookup = (modelId: string) => number | undefined;
 
 export interface RunHistoryQuery {
   agentId?: string | undefined;
@@ -90,7 +101,11 @@ function evidenceByRun(events: readonly AuditEvent[]): Map<string, RunEvidence> 
   return byRun;
 }
 
-function toEntry(run: AuditRunSnapshot, evidence: RunEvidence | undefined): RunHistoryEntry {
+function toEntry(
+  run: AuditRunSnapshot,
+  evidence: RunEvidence | undefined,
+  contextWindow: ContextWindowLookup | undefined,
+): RunHistoryEntry {
   const status = run.status ?? "completed";
   const startedAt = run.startedAt ?? null;
   const completedAt = run.completedAt ?? null;
@@ -112,6 +127,10 @@ function toEntry(run: AuditRunSnapshot, evidence: RunEvidence | undefined): RunH
     eventCount: evidence?.eventCount ?? 0,
     errorCount: evidence?.errorCount ?? 0,
     tokens: summarizeRunTokens([run.usage]),
+    context: runContextWindow(
+      run.usage,
+      run.modelUsed === undefined ? undefined : contextWindow?.(run.modelUsed.modelId),
+    ),
     failed: status === "failed",
     error: run.error ?? null,
   };
@@ -127,6 +146,7 @@ export function listRunHistory(
   runs: readonly AuditRunSnapshot[],
   events: readonly AuditEvent[],
   filter: RunHistoryQuery = {},
+  contextWindow?: ContextWindowLookup,
 ): RunHistoryEntry[] {
   const evidence = evidenceByRun(events);
   const matched = runs.filter(
@@ -134,7 +154,9 @@ export function listRunHistory(
       (filter.agentId === undefined || run.agentId === filter.agentId) &&
       (filter.status === undefined || (run.status ?? "completed") === filter.status),
   );
-  const entries = matched.map((run) => toEntry(run, evidence.get(run.id)));
+  const entries = matched.map((run) =>
+    toEntry(run, evidence.get(run.id), contextWindow),
+  );
   entries.sort((left, right) => {
     if (left.createdAt === right.createdAt) return 0;
     return left.createdAt < right.createdAt ? 1 : -1;
@@ -148,8 +170,9 @@ export function findRunHistory(
   runs: readonly AuditRunSnapshot[],
   events: readonly AuditEvent[],
   runId: string,
+  contextWindow?: ContextWindowLookup,
 ): RunHistoryEntry | null {
   const run = runs.find((item) => item.id === runId);
   if (run === undefined) return null;
-  return toEntry(run, evidenceByRun(events).get(runId));
+  return toEntry(run, evidenceByRun(events).get(runId), contextWindow);
 }

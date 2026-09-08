@@ -1,9 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { loadConfig } from "../../apps/server/src/config.js";
 import {
+  CodexRunner,
   finalizeCodexRun,
   parseCodexEventLine,
   type ParsedEvents,
 } from "../../apps/server/src/codex-runner.js";
+
+const childProcessMock = vi.hoisted(() => ({ next: [] as unknown[] }));
+
+vi.mock("../../apps/server/src/child-process-execution.js", () => ({
+  startChildProcessExecution: () => {
+    const next = childProcessMock.next.shift();
+    if (next instanceof Error) throw next;
+    return next;
+  },
+}));
 
 function emptyParsed(): ParsedEvents {
   return { messages: [], threadId: null, usage: null, errors: [] };
@@ -66,7 +78,45 @@ const terminalMessages = {
   missingTruncated: "missing output after truncation",
 };
 
+function controlError(name: "AbortError" | "TimeoutError"): Error {
+  const error = new Error(name);
+  error.name = name;
+  return error;
+}
+
 describe("Codex terminal failure classification", () => {
+  it("preserves runner cancellation and deadline errors before model fallback", async () => {
+    childProcessMock.next.length = 0;
+    const config = loadConfig({
+      NODE_ENV: "test",
+      CODEX_HOME: "/tmp/codex-home",
+    });
+    const request = {
+      agentId: "agent",
+      workspacePath: "/tmp/workspace",
+      prompt: "count from 1 to 10",
+      threadId: null,
+    };
+    const startupTimeout = controlError("TimeoutError");
+    childProcessMock.next.push(startupTimeout);
+
+    await expect(new CodexRunner(config).run(request)).rejects.toBe(startupTimeout);
+
+    let rejectCompleted!: (error: unknown) => void;
+    childProcessMock.next.push({
+      completed: new Promise<never>((_resolve, reject) => {
+        rejectCompleted = reject;
+      }),
+      settled: Promise.resolve(),
+      cancel: async () => {},
+    });
+    const completion = new CodexRunner(config).run(request);
+    const cancellation = controlError("AbortError");
+    rejectCompleted(cancellation);
+
+    await expect(completion).rejects.toBe(cancellation);
+  });
+
   it("classifies the exact provider code from an error event", () => {
     const parsed = emptyParsed();
     parseCodexEventLine(
@@ -133,6 +183,47 @@ describe("Codex terminal failure classification", () => {
     ).toEqual({ output: "done", threadId: null, usage: null });
   });
 
+  it("rejects a partial message when Codex reports turn.failed on exit 0", () => {
+    const parsed = emptyParsed();
+    parseCodexEventLine(
+      '{"type":"item.completed","item":{"type":"agent_message","text":"partial"}}',
+      parsed,
+    );
+    parseCodexEventLine(
+      '{"type":"turn.failed","error":{"message":"provider unavailable"}}',
+      parsed,
+    );
+
+    expect(() =>
+      finalizeCodexRun(
+        parsed,
+        { exitCode: 0, cancelled: false, timedOut: false, outputTruncated: false },
+        terminalMessages,
+      ),
+    ).toThrow("failed turn");
+  });
+
+  it("allows a diagnostic followed by a completed turn on exit 0", () => {
+    const parsed = emptyParsed();
+    parseCodexEventLine(
+      '{"type":"error","message":"transient diagnostic"}',
+      parsed,
+    );
+    parseCodexEventLine(
+      '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}',
+      parsed,
+    );
+    parseCodexEventLine('{"type":"turn.completed"}', parsed);
+
+    expect(
+      finalizeCodexRun(
+        parsed,
+        { exitCode: 0, cancelled: false, timedOut: false, outputTruncated: false },
+        terminalMessages,
+      ),
+    ).toEqual({ output: "done", threadId: null, usage: null });
+  });
+
   it("keeps cancellation and timeout ahead of provider failure evidence", () => {
     const parsed = emptyParsed();
     parsed.modelInferenceLimitExceeded = true;
@@ -151,5 +242,63 @@ describe("Codex terminal failure classification", () => {
         terminalMessages,
       ),
     ).toThrow("timed out");
+  });
+});
+
+describe("parseCodexEventLine usage", () => {
+  // Captured verbatim from `codex exec --json` (codex-cli 0.151.0). Each
+  // turn.completed carries that turn's own counters, not a running total.
+  const TURN_ONE =
+    '{"type":"turn.completed","usage":{"input_tokens":21391,' +
+    '"cached_input_tokens":12032,"cache_write_input_tokens":0,' +
+    '"output_tokens":5,"reasoning_output_tokens":0}}';
+  const TURN_TWO =
+    '{"type":"turn.completed","usage":{"input_tokens":28008,' +
+    '"cached_input_tokens":12032,"cache_write_input_tokens":0,' +
+    '"output_tokens":5,"reasoning_output_tokens":0}}';
+
+  it("keeps every counter the provider reported", () => {
+    const parsed = emptyParsed();
+    parseCodexEventLine(TURN_ONE, parsed);
+
+    expect(parsed.usage).toEqual({
+      inputTokens: 21_391,
+      cachedInputTokens: 12_032,
+      cacheWriteInputTokens: 0,
+      outputTokens: 5,
+      reasoningOutputTokens: 0,
+    });
+  });
+
+  // Turn counters are per-turn, so a run that completes several turns spent
+  // all of them. Overwriting would silently drop every turn but the last.
+  it("sums a run that completed more than one turn", () => {
+    const parsed = emptyParsed();
+    parseCodexEventLine(TURN_ONE, parsed);
+    parseCodexEventLine(TURN_TWO, parsed);
+
+    expect(parsed.usage).toMatchObject({
+      inputTokens: 49_399,
+      cachedInputTokens: 24_064,
+      outputTokens: 10,
+    });
+  });
+
+  it("leaves usage unreported when no turn carried counters", () => {
+    const parsed = emptyParsed();
+    parseCodexEventLine('{"type":"turn.completed"}', parsed);
+
+    expect(parsed.usage).toBeNull();
+  });
+
+  it("ignores a counter that is not a real count", () => {
+    const parsed = emptyParsed();
+    parseCodexEventLine(
+      '{"type":"turn.completed","usage":{"input_tokens":-5,' +
+        '"output_tokens":"many","cached_input_tokens":7}}',
+      parsed,
+    );
+
+    expect(parsed.usage).toEqual({ cachedInputTokens: 7 });
   });
 });

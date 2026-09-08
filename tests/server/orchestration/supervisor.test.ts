@@ -12,7 +12,12 @@ import {
   buildSupervisorPrompt,
   sanitizeSupervisorSelectionContext,
 } from "../../../apps/server/src/orchestration/supervisor/context.js";
-import { createOrchestrationParticipantSelector } from "../../../apps/server/src/orchestration/supervisor/selector.js";
+import {
+  createOrchestrationParticipantSelector,
+  SupervisorSelector,
+} from "../../../apps/server/src/orchestration/supervisor/selector.js";
+import { ArkResponsesSupervisorProvider } from "../../../apps/server/src/orchestration/supervisor/provider.js";
+import { createSupervisorRequestBudget } from "../../../apps/server/src/orchestration/supervisor/types.js";
 import type {
   SupervisorProvider,
   SupervisorProviderOptions,
@@ -132,6 +137,28 @@ function supervisorInput(
     errorCode: null,
     ...overrides,
   };
+}
+
+function supervisorContext(
+  overrides: Partial<SupervisorSelectionContext> = {},
+): SupervisorSelectionContext {
+  return {
+    sessionId,
+    originalPrompt: "Ship the requested change safely.",
+    participants: roster,
+    stepIndex: 0,
+    maxSteps: 4,
+    previousHandoff: null,
+    recentTurns: [],
+    ...overrides,
+  };
+}
+
+function supervisorResponse(decision: SupervisorDecision): Response {
+  return new Response(
+    JSON.stringify({ output_text: JSON.stringify(decision) }),
+    { status: 200 },
+  );
 }
 
 type SupervisorExecutionOptions = OrchestrationExecutionOptions & {
@@ -364,6 +391,122 @@ describe("supervisor selector boundary", () => {
       avoidImmediateRepeatAgentId: agentIds[0],
       requireDifferentAgentOrComplete: true,
     });
+  });
+
+  it("retries a transient supervisor response within one deadline", async () => {
+    let nowMs = 1_000;
+    let fetchCalls = 0;
+    const sleeps: number[] = [];
+    const responses = [
+      new Response("temporarily busy", {
+        status: 429,
+        headers: { "retry-after": "2" },
+      }),
+      supervisorResponse({ kind: "invoke", participantId: "planner" }),
+    ];
+    const provider = new ArkResponsesSupervisorProvider({
+      apiKey: "test-key",
+      baseUrl: "https://ark.test",
+      model: "ep-test",
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return responses.shift()!;
+      },
+      now: () => nowMs,
+      random: () => 0,
+      sleep: async (delayMs) => {
+        sleeps.push(delayMs);
+        nowMs += delayMs;
+      },
+    });
+    const requestBudget = createSupervisorRequestBudget(10_000);
+
+    await expect(
+      provider.decide(supervisorContext(), { requestBudget }),
+    ).resolves.toEqual({ kind: "invoke", participantId: "planner" });
+    expect(fetchCalls).toBe(2);
+    expect(requestBudget.calls).toBe(2);
+    expect(sleeps).toEqual([2_000]);
+    expect(nowMs).toBeLessThanOrEqual(requestBudget.deadlineAt);
+  });
+
+  it("stops on non-retryable permanent provider errors and pre-aborted requests", async () => {
+    let fetchCalls = 0;
+    const provider = new ArkResponsesSupervisorProvider({
+      apiKey: "test-key",
+      baseUrl: "https://ark.test",
+      model: "ep-test",
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return new Response("unauthorized", { status: 401 });
+      },
+    });
+
+    await expect(provider.decide(supervisorContext())).rejects.toMatchObject({
+      code: "SUPERVISOR_REQUEST_FAILED",
+    });
+    expect(fetchCalls).toBe(1);
+
+    for (const [label, status, body] of [
+      ["hard quota", 500, '{"error":{"code":"SetLimitExceeded"}}'],
+      ["inference limit", 500, '{"error":{"code":"inference_limit_exceeded"}}'],
+      ["rate hard quota", 429, '{"error":"insufficient_quota"}'],
+      ["authentication", 500, '{"error":{"code":"AuthenticationError"}}'],
+      ["model", 500, '{"error":{"code":"ModelNotFound"}}'],
+      ["configuration", 500, '{"error":{"code":"InvalidConfiguration"}}'],
+    ] as const) {
+      let calls = 0;
+      const permanentFailureProvider = new ArkResponsesSupervisorProvider({
+        apiKey: "test-key",
+        baseUrl: "https://ark.test",
+        model: "ep-test",
+        fetchImpl: async () => {
+          calls += 1;
+          return new Response(body, { status });
+        },
+      });
+      await expect(
+        permanentFailureProvider.decide(supervisorContext()),
+        label,
+      ).rejects.toMatchObject({ code: "SUPERVISOR_REQUEST_FAILED" });
+      expect(calls, label).toBe(1);
+    }
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      provider.decide(supervisorContext(), { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchCalls).toBe(1);
+  });
+
+  it("shares the provider-call budget with an immediate-repeat correction", async () => {
+    let fetchCalls = 0;
+    const provider = new ArkResponsesSupervisorProvider({
+      apiKey: "test-key",
+      baseUrl: "https://ark.test",
+      model: "ep-test",
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return supervisorResponse({ kind: "invoke", participantId: "planner" });
+      },
+    });
+    const requestBudget = createSupervisorRequestBudget(Date.now() + 10_000);
+    requestBudget.maxCalls = 1;
+    const selector = new SupervisorSelector(provider);
+
+    await expect(
+      selector.selectNextParticipant(
+        supervisorContext({
+          stepIndex: 1,
+          currentCycleTurnCount: 1,
+          avoidImmediateRepeatAgentId: agentIds[0],
+        }),
+        { requestBudget },
+      ),
+    ).rejects.toMatchObject({ code: "SUPERVISOR_REQUEST_FAILED" });
+    expect(fetchCalls).toBe(1);
+    expect(requestBudget.calls).toBe(1);
   });
 
   it("rejects an immediate repeat at the dispatch boundary for custom selectors", async () => {

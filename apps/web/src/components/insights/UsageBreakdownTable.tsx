@@ -30,10 +30,13 @@ export function UsageBreakdownTable({
 }: UsageBreakdownTableProps) {
   // Share bars are relative to the busiest row, so the ranking is readable
   // even when every row is small in absolute terms.
-  const peak = rows.reduce((max, row) => Math.max(max, row.tokens.totalTokens), 0);
-  // Heaviest first: the table answers "who is spending" before "who ran when".
+  // Ranked on what the model processed, not on what was billed: a Run resuming
+  // a long thread re-sends the conversation so far, so billing tracks a
+  // thread's age rather than the work it caused.
+  const peak = rows.reduce((max, row) => Math.max(max, row.tokens.netNewTokens), 0);
+  // Heaviest first: the table answers "who is working" before "who ran when".
   const ranked = [...rows].sort(
-    (left, right) => right.tokens.totalTokens - left.tokens.totalTokens,
+    (left, right) => right.tokens.netNewTokens - left.tokens.netNewTokens,
   );
 
   if (rows.length === 0) {
@@ -64,7 +67,7 @@ export function UsageBreakdownTable({
           <tbody>
             {ranked.map((row) => {
               const name = row.name ?? row.fallbackName;
-              const share = peak === 0 ? 0 : (row.tokens.totalTokens / peak) * 100;
+              const share = peak === 0 ? 0 : (row.tokens.netNewTokens / peak) * 100;
               return (
                 <tr key={row.id}>
                   <th scope="row">
@@ -94,7 +97,7 @@ export function UsageBreakdownTable({
                         <strong>
                           {row.tokens.availability === "unavailable"
                             ? "—"
-                            : formatCount(row.tokens.totalTokens)}
+                            : formatCount(row.tokens.netNewTokens)}
                         </strong>
                       </span>
                       {share > 0 && (

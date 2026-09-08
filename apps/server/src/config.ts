@@ -51,6 +51,8 @@ const envSchema = z.object({
     .default("2g"),
   CONTAINER_PIDS_LIMIT: z.coerce.number().int().positive().default(256),
   CONTAINER_USER: z.string().optional(),
+  // Stable, unique owner namespace for one concurrently running deployment.
+  // Never reuse an ID across installations that share a container engine.
   RUNTIME_INSTANCE_ID: z
     .string()
     .trim()
@@ -88,6 +90,14 @@ const envSchema = z.object({
     .default(DEFAULT_ARK_MANAGEMENT_MAX_RESPONSE_BYTES),
   /** Comma-separated worker model IDs that are safe for the Codex runtime. */
   WORKER_CURATED_MODELS: z.string().default(""),
+  /**
+   * Per-model context windows, as `modelId=tokens` pairs.
+   *
+   * Neither Codex nor the ModelArk catalog reports a window: `turn.completed`
+   * carries counters only. A model absent from this map reports its headroom as
+   * unknown rather than being given an invented limit.
+   */
+  MODEL_CONTEXT_WINDOWS: z.string().default(""),
   WORKER_MODEL_LIST_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(10_000),
   WORKER_MODEL_CACHE_TTL_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(600_000),
   SUPERVISOR_MODEL: z.string().optional(),
@@ -99,6 +109,11 @@ const envSchema = z.object({
   // An explicit value is allowed for deployments with a shorter-lived policy;
   // the default below is derived from CODEX_TIMEOUT_MS instead of this field.
   MCP_TOKEN_TTL_MS: z.coerce.number().int().min(1_000).max(MAX_MCP_TOKEN_TTL_MS).optional(),
+  /** Opt in to per-run MCP catalogue scoping. Omission preserves legacy advertisement. */
+  MCP_SCOPED_ADVERTISEMENT: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
   /** Local-first by default; Brave remains available as an explicit option. */
   SEARCH_PROVIDER: z.enum(["searxng", "brave", "disabled"]).default("searxng"),
   SEARXNG_URL: z
@@ -185,6 +200,25 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     typeof process.getuid === "function" && typeof process.getgid === "function"
       ? process.getuid() + ":" + process.getgid()
       : "1000:1000";
+  const modelContextWindows = new Map<string, number>();
+  for (const pair of env.MODEL_CONTEXT_WINDOWS.split(",")) {
+    const entry = pair.trim();
+    if (entry.length === 0) continue;
+    const separator = entry.lastIndexOf("=");
+    if (separator <= 0) {
+      throw new Error(
+        `MODEL_CONTEXT_WINDOWS entry "${entry}" is not a modelId=tokens pair`,
+      );
+    }
+    const modelId = entry.slice(0, separator).trim();
+    const tokens = Number(entry.slice(separator + 1).trim());
+    if (modelId.length === 0 || !Number.isSafeInteger(tokens) || tokens <= 0) {
+      throw new Error(
+        `MODEL_CONTEXT_WINDOWS entry "${entry}" needs a positive whole token count`,
+      );
+    }
+    modelContextWindows.set(modelId, tokens);
+  }
   const workerCuratedModels = Array.from(
     new Set(
       env.WORKER_CURATED_MODELS.split(",")
@@ -222,6 +256,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     byteplusManagementTimeoutMs: env.BYTEPLUS_MANAGEMENT_TIMEOUT_MS,
     byteplusManagementMaxResponseBytes: env.BYTEPLUS_MANAGEMENT_MAX_RESPONSE_BYTES,
     workerCuratedModels,
+    modelContextWindows,
     workerModelListTimeoutMs: env.WORKER_MODEL_LIST_TIMEOUT_MS,
     workerModelCacheTtlMs: env.WORKER_MODEL_CACHE_TTL_MS,
     supervisorModel: env.SUPERVISOR_MODEL?.trim() || "",
@@ -231,6 +266,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     mcpContainerUrl: env.MCP_CONTAINER_URL?.trim() || "",
     mcpTokenTtlMs:
       env.MCP_TOKEN_TTL_MS ?? env.CODEX_TIMEOUT_MS + MCP_TOKEN_GRACE_MS,
+    mcpScopedAdvertisement: env.MCP_SCOPED_ADVERTISEMENT,
     searchProvider: env.SEARCH_PROVIDER,
     searxngUrl: env.SEARXNG_URL.replace(/\/+$/, ""),
     searxngTimeoutMs: env.SEARXNG_TIMEOUT_MS,

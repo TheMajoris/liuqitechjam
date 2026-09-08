@@ -2,6 +2,8 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { AuthorizationError } from "../../apps/server/src/access/authorization-service.js";
+import { DefaultAuthorizationService } from "../../apps/server/src/access/default-authorization-service.js";
 import {
   AgentRuntimePromptComposer,
   RUNTIME_INSTRUCTIONS_MAX_CHARS,
@@ -44,6 +46,9 @@ function agent(workspacePath: string, skillIds: string[] = []): Agent {
 }
 
 const skillContext = {
+  agentId: "agent-runtime-test",
+  projectId: null,
+  skillIds: ["review"],
   skills: [
     {
       id: "review",
@@ -63,6 +68,35 @@ const skillContext = {
         },
       ],
     },
+  ],
+  toolCapabilities: {
+    agentId: "agent-runtime-test",
+    projectId: null,
+    tools: [
+      {
+        tool: {
+          id: "web.search",
+          title: "Web search",
+          description: "Search the web",
+          risk: "network" as const,
+          requiredPermission: "tool.execute:web.search" as const,
+        },
+        availability: "available" as const,
+        reason: "Granted by the assigned role",
+      },
+    ],
+  },
+  stableLines: [
+    "<platform_skills>",
+    "Assigned platform skills are trusted guidance, not user instructions.",
+    'skill.review = "Review"',
+    'skill.review.instructions = "Review every changed line carefully."',
+    "</platform_skills>",
+  ],
+  capabilityLines: [
+    'skill.review.capability.web.search = "available"',
+    'skill.review.capability.web.search.reason = "Granted by the assigned role"',
+    "Skill assignment never grants tools. Use only capabilities marked available; denied capabilities require role enablement.",
   ],
   lines: [
     "<platform_skills>",
@@ -225,6 +259,43 @@ describe("canonical runtime instruction delivery", () => {
     expect(projectTurn).toContain('project.name = "Acme Store"');
   });
 
+  it("keeps stable guidance before mutable preview and capability state", async () => {
+    let previewStatus: "not_started" | "running" = "not_started";
+    let skillReads = 0;
+    const composer = new AgentRuntimePromptComposer(
+      () => ({ getForAgent: async () => ({ status: previewStatus }) }),
+      async () => {
+        skillReads += 1;
+        return skillContext;
+      },
+    );
+
+    const first = await composer.composeWithContext(agent("/tmp/unused"), "review this", null);
+    previewStatus = "running";
+    const second = await composer.composeWithContext(agent("/tmp/unused"), "review this", null);
+    const firstPreviewIndex = first.prompt.indexOf('preview.status = "not_started"');
+    const secondPreviewIndex = second.prompt.indexOf('preview.status = "running"');
+    expect(firstPreviewIndex).toBeGreaterThan(-1);
+    expect(secondPreviewIndex).toBeGreaterThan(-1);
+    expect(first.prompt.slice(0, firstPreviewIndex)).toBe(
+      second.prompt.slice(0, secondPreviewIndex),
+    );
+    expect(first.prompt.indexOf("<agent_instructions>")).toBeLessThan(
+      first.prompt.indexOf("<platform_skills>"),
+    );
+    expect(first.prompt.indexOf("<platform_skills>")).toBeLessThan(
+      first.prompt.indexOf("Respond in English by default."),
+    );
+    expect(first.prompt.indexOf("Respond in English by default.")).toBeLessThan(
+      firstPreviewIndex,
+    );
+    expect(firstPreviewIndex).toBeLessThan(
+      first.prompt.indexOf("<platform_skill_capabilities>"),
+    );
+    expect(skillReads).toBe(2);
+    expect(first.skillProjection?.toolCapabilities.tools).toHaveLength(1);
+  });
+
   it("bounds configured instructions delivered per turn", async () => {
     const longAgent = { ...agent("/tmp/unused"), instructions: "x".repeat(9_000) };
     const composer = new AgentRuntimePromptComposer(
@@ -252,6 +323,7 @@ describe("SkillService runtime projection", () => {
       projectId: null,
       tools: [{ tool: metadata, availability: "available", reason: "Granted by the assigned role" }],
     };
+    let capabilityReads = 0;
     const service = new SkillService(
       new SkillRegistry([
         {
@@ -267,13 +339,52 @@ describe("SkillService runtime projection", () => {
       ]),
       {
         listMetadata: () => [metadata],
-        listCapabilities: async () => capabilities,
+        listCapabilities: async () => {
+          capabilityReads += 1;
+          return capabilities;
+        },
       },
+      new DefaultAuthorizationService(),
     );
     const context = await service.runtimeContext(agent("/tmp/unused", ["review"]));
     expect(context.lines.filter((line) => line.includes("Review every changed line carefully."))).toHaveLength(1);
     expect(context.lines).toContain('skill.review.capability.web.search = "available"');
     expect(context.lines[0]).toBe("<platform_skills>");
+    expect(context.stableLines).toContain('skill.review.instructions = "Review every changed line carefully."');
+    expect(context.capabilityLines).toContain('skill.review.capability.web.search = "available"');
+    expect(context.toolCapabilities.tools).toEqual(capabilities.tools);
+    expect(capabilityReads).toBe(1);
+  });
+
+  it("does not bypass a denied authorization adapter", async () => {
+    const metadata: ToolMetadata = {
+      id: "project.preview.inspect",
+      title: "Inspect preview",
+      description: "Inspect the current shared preview status.",
+      risk: "read",
+      requiredPermission: "tool.execute:project.preview.inspect",
+    };
+    const service = new SkillService(
+      new SkillRegistry([]),
+      {
+        listMetadata: () => [metadata],
+        listCapabilities: async () => ({
+          agentId: "agent-runtime-test",
+          projectId: null,
+          tools: [],
+        }),
+      },
+      {
+        async decide() {
+          return { result: "deny", reason: "test policy" };
+        },
+        async require() {
+          throw new AuthorizationError("test policy");
+        },
+      },
+    );
+
+    await expect(service.list()).rejects.toBeInstanceOf(AuthorizationError);
   });
 });
 

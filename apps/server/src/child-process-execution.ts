@@ -9,6 +9,8 @@ export interface ChildProcessExecutionOptions {
   cwd: string;
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
+  signal?: AbortSignal;
+  deadlineAt?: number;
   /**
    * Largest single un-terminated stdout line the parent will hold. This is a
    * retention bound, not a throughput budget: the child may stream far more
@@ -54,6 +56,7 @@ export interface ChildProcessExecution {
 export function startChildProcessExecution(
   options: ChildProcessExecutionOptions,
 ): ChildProcessExecution {
+  assertOperationActive(options);
   let child: ChildProcess;
   try {
     child = spawn(options.command, [...options.args], {
@@ -79,6 +82,8 @@ export function startChildProcessExecution(
   let droppingOversizedLine = false;
   let stopPromise: Promise<void> | null = null;
   let timeout: NodeJS.Timeout | null = null;
+  let deadlineTimer: NodeJS.Timeout | null = null;
+  let removeSignalListener: (() => void) | null = null;
 
   const clearExecutionTimeout = () => {
     if (!timeout) return;
@@ -86,14 +91,25 @@ export function startChildProcessExecution(
     timeout = null;
   };
 
+  const clearDeadlineTimer = () => {
+    if (!deadlineTimer) return;
+    clearTimeout(deadlineTimer);
+    deadlineTimer = null;
+  };
+
   const settled = new Promise<void>((resolve) => {
-    child.once("close", () => {
+    const finish = () => {
       clearExecutionTimeout();
+      clearDeadlineTimer();
+      removeSignalListener?.();
+      removeSignalListener = null;
       resolve();
+    };
+    child.once("close", () => {
+      finish();
     });
     child.once("error", () => {
-      clearExecutionTimeout();
-      resolve();
+      finish();
     });
   });
 
@@ -109,6 +125,19 @@ export function startChildProcessExecution(
     }
     return stopPromise;
   };
+
+  const onAbort = () => {
+    const reason = options.signal?.reason;
+    const timedOutBySignal = reason instanceof Error && reason.name === "TimeoutError";
+    if (timedOutBySignal) timedOut = true;
+    else cancelled = true;
+    void requestStop(timedOutBySignal ? "timed-out" : "cancelled");
+  };
+  if (options.signal) {
+    options.signal.addEventListener("abort", onAbort, { once: true });
+    removeSignalListener = () => options.signal?.removeEventListener("abort", onAbort);
+    if (options.signal.aborted) onAbort();
+  }
 
   const consume = (chunk: Buffer | string, target: "stdout" | "stderr") => {
     if (target !== "stdout") return;
@@ -143,6 +172,19 @@ export function startChildProcessExecution(
     void requestStop("timed-out");
   }, options.timeoutMs);
   timeout.unref();
+  if (options.deadlineAt !== undefined && Number.isFinite(options.deadlineAt)) {
+    const remaining = options.deadlineAt - Date.now();
+    if (remaining <= 0) {
+      timedOut = true;
+      void requestStop("timed-out");
+    } else {
+      deadlineTimer = setTimeout(() => {
+        timedOut = true;
+        void requestStop("timed-out");
+      }, remaining);
+      deadlineTimer.unref();
+    }
+  }
 
   const completed = new Promise<ChildProcessExecutionResult>(
     (resolve, reject) => {
@@ -174,4 +216,23 @@ export function startChildProcessExecution(
       await settled;
     },
   };
+}
+
+function assertOperationActive(options: ChildProcessExecutionOptions): void {
+  if (options.signal?.aborted) {
+    const reason = options.signal.reason;
+    if (reason instanceof Error && reason.name === "TimeoutError") throw reason;
+    const error = new Error("Child process execution was aborted");
+    error.name = "AbortError";
+    throw error;
+  }
+  if (
+    options.deadlineAt !== undefined &&
+    Number.isFinite(options.deadlineAt) &&
+    Date.now() >= options.deadlineAt
+  ) {
+    const error = new Error("Child process execution timed out");
+    error.name = "TimeoutError";
+    throw error;
+  }
 }

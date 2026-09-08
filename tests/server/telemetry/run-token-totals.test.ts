@@ -82,3 +82,39 @@ describe("summarizeRunTokens", () => {
     });
   });
 });
+
+describe("net-new tokens", () => {
+  // Runs resume a Codex thread, so every turn re-sends the conversation so far
+  // and reports it as input. Measured from a live 3-turn probe on one thread:
+  // input rose 21391 -> 28008 -> 34633 while each turn only added ~6.6K.
+  it("counts the re-sent prefix once instead of once per turn", () => {
+    const totals = summarizeRunTokens([
+      { inputTokens: 21_391, cachedInputTokens: 12_032, outputTokens: 5 },
+      { inputTokens: 28_008, cachedInputTokens: 12_032, outputTokens: 5 },
+      { inputTokens: 34_633, cachedInputTokens: 21_248, outputTokens: 5 },
+    ]);
+
+    expect(totals.inputTokens).toBe(84_032);
+    expect(totals.netNewInputTokens).toBe(38_720);
+    expect(totals.netNewTokens).toBe(38_735);
+    // The billed figure is still reported; it is just no longer the headline.
+    expect(totals.totalTokens).toBe(84_047);
+  });
+
+  it("clamps per Run so one bad cache counter cannot eat another Run's input", () => {
+    const totals = summarizeRunTokens([
+      { inputTokens: 100, cachedInputTokens: 400, outputTokens: 0 },
+      { inputTokens: 500, cachedInputTokens: 0, outputTokens: 0 },
+    ]);
+
+    expect(totals.netNewInputTokens).toBe(500);
+  });
+
+  it("reports nothing rather than zero work when no Run reported counters", () => {
+    expect(summarizeRunTokens([])).toMatchObject({
+      availability: "unavailable",
+      netNewInputTokens: 0,
+      netNewTokens: 0,
+    });
+  });
+});

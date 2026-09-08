@@ -39,6 +39,7 @@ import { ProjectServiceExecutionScope } from "./projects/project-execution.js";
 import { createSearchProvider } from "./tools/search-provider-factory.js";
 import { WebFetchAdapter } from "./tools/web-fetch-adapter.js";
 import { McpSessionService } from "./tools/mcp-session-service.js";
+import { EffectiveToolResolver } from "./tools/effective-tool-resolver.js";
 import {
   createBuiltInToolRegistry,
   ToolService,
@@ -53,6 +54,8 @@ import {
 import { AuditService, StorageAuditStoreAdapter } from "./audit/audit-service.js";
 import { createRuntimeTelemetry } from "./telemetry/runtime-telemetry.js";
 import { AgentMetricsService } from "./usage/agent-metrics.js";
+import { ApplicationHealth } from "./application-health.js";
+import { reconcileLocalProcessStartup } from "./runtime-reconciliation.js";
 
 const config = loadConfig();
 
@@ -72,11 +75,13 @@ for (const key of [
 }
 
 const legacyJsonPath = path.join(config.dataDirectory, "launchpad.json");
+const applicationHealth = new ApplicationHealth();
 const store: Storage = config.persistenceBackend === "postgres"
   ? new PostgresStore(config.databaseUrl)
   : new JsonStore(legacyJsonPath);
+applicationHealth.attachStorage(store);
 const auditStore = new StorageAuditStoreAdapter(store);
-const audit = new AuditService(auditStore, auditStore);
+const audit = new AuditService(auditStore, auditStore, config.modelContextWindows);
 const telemetry = createRuntimeTelemetry(config);
 const workspaces = new WorkspaceManager(config.workspaceRoot);
 // `containerHealthSampler` is only set for the container runtime provider.
@@ -208,6 +213,7 @@ const service = new AgentService(
   runner,
   workerModelResolver,
 );
+service.setLifecycleFailureSink(applicationHealth);
 service.setAuditRecorder(audit);
 service.setMcpSessionService(mcpSessions);
 service.setTelemetry(telemetry);
@@ -228,10 +234,12 @@ const projectService = new ProjectService(
   service,
   authorization,
 );
+projectService.setLifecycleFailureSink(applicationHealth);
+const previewRuntime = new LocalContainerPreviewRuntime(config);
 const previewService = new PreviewService(
   store,
   service,
-  new LocalContainerPreviewRuntime(config),
+  previewRuntime,
   new PreviewCommandResolver(),
   authorization,
   {
@@ -288,12 +296,67 @@ const skillService = new SkillService(
 const roleService = new RoleService(store, toolService, skillService, authorization);
 toolService.setProjectRoleToolResolver(roleService);
 skillService.setProjectRoleSkillResolver(roleService);
+const effectiveToolResolver = new EffectiveToolResolver();
+service.setEffectiveToolResolution((agent, projectId, projection) => {
+  if (config.mcpScopedAdvertisement && projection === undefined) {
+    return {
+      ok: false,
+      advertisedToolIds: [],
+      diagnostics: {
+        status: "failed",
+        configuredCatalogueSize: toolRegistry.list().length,
+        advertisedToolCount: 0,
+        reason: "Runtime capability projection is unavailable",
+      },
+    };
+  }
+  const effectiveRole = roleService.getEffectiveRole(agent.id, projectId, agent);
+  return effectiveToolResolver.resolve({
+    registry: toolRegistry,
+    ...(effectiveRole === undefined ? {} : { effectiveRole }),
+    assignedSkills: projection?.skills ?? [],
+    capabilities: projection?.toolCapabilities ?? [],
+    legacyFullAdvertisement: !config.mcpScopedAdvertisement,
+  });
+});
 service.setSkillService(skillService);
 projectService.setSkillService(skillService);
+// Reconcile disposable runtimes once, before any service can reset a busy
+// Agent or release a persisted Project writer lease. The same evidence is
+// passed to all lifecycle owners so startup cannot make independent guesses.
+const startupSnapshot = store.snapshot();
+const agentStartupReconciliation =
+  (await runner.reconcileStartup?.(startupSnapshot)) ??
+  reconcileLocalProcessStartup(startupSnapshot);
+// Agent local-process mode still owns the Agent safety gate, but previews use
+// disposable labeled containers regardless of that provider. Let the preview
+// runtime reconcile its own persisted IDs and merge the evidence before any
+// service resets status or leases.
+const previewStartupReconciliation =
+  agentStartupReconciliation.provider === "local-process"
+    ? await previewRuntime.reconcileStartup?.(startupSnapshot)
+    : undefined;
+const union = (left: readonly string[], right: readonly string[]): string[] =>
+  [...new Set([...left, ...right])].sort();
+const startupReconciliation = {
+  provider: agentStartupReconciliation.provider,
+  confirmedAgentIds: [...agentStartupReconciliation.confirmedAgentIds],
+  confirmedPreviewIds: union(
+    agentStartupReconciliation.confirmedPreviewIds,
+    previewStartupReconciliation?.confirmedPreviewIds ?? [],
+  ),
+  unresolvedAgentIds: [...agentStartupReconciliation.unresolvedAgentIds],
+  unresolvedPreviewIds: union(
+    agentStartupReconciliation.unresolvedPreviewIds,
+    previewStartupReconciliation?.unresolvedPreviewIds ?? [],
+  ),
+};
+service.setStartupReconciliation(startupReconciliation);
+projectService.setStartupReconciliation(startupReconciliation);
 await service.initialize();
 await roleService.initialize();
-await projectService.initialize();
-await previewService.initialize();
+await previewService.initialize(startupReconciliation);
+await projectService.initialize(startupReconciliation);
 
 /**
  * Report — never repair — Agents pointed at the reserved supervisor endpoint.
@@ -370,6 +433,9 @@ const orchestrationService = new OrchestrationService({
     async bindTeam(projectId, conversationId, agentIds) {
       await projectService.bindConversation(projectId, conversationId, agentIds);
     },
+    assertProjectMutationAllowed(projectId) {
+      projectService.assertProjectMutationAllowed(projectId);
+    },
   },
   ...(supervisorSelector === undefined
     ? {}
@@ -400,7 +466,7 @@ projectService.setConversationLifecycle({
     await orchestrationService.stopSessionsForProject(projectId);
   },
   async removeForProject(projectId) {
-    await orchestrationService.removeSessionsForProject(projectId);
+    await orchestrationService.removeSessionsForProject(projectId, { archiveOwned: true });
   },
 });
 await orchestrationService.initialize();
@@ -416,6 +482,7 @@ const app = await createApp(
   {
     sessions: mcpSessions,
     toolService,
+    legacyFullAdvertisement: !config.mcpScopedAdvertisement,
     skillService,
     roleService,
     auditService: audit,
@@ -426,18 +493,72 @@ const app = await createApp(
   modelCatalog,
   agentMetrics,
   agentAuthoring,
+  applicationHealth,
 );
 
 reportReservedSupervisorEndpointConflicts(app.log);
 
+const LIFECYCLE_SHUTDOWN_TIMEOUT_MS = 5_000;
+
+async function boundedLifecycleWait(
+  operation: Promise<unknown>,
+  timeoutMs = LIFECYCLE_SHUTDOWN_TIMEOUT_MS,
+): Promise<void> {
+  const boundedTimeout =
+    Number.isFinite(timeoutMs) && timeoutMs >= 0
+      ? timeoutMs
+      : LIFECYCLE_SHUTDOWN_TIMEOUT_MS;
+  let timer: NodeJS.Timeout | null = null;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, boundedTimeout);
+    timer.unref();
+  });
+  // Observe rejection even when the unhealthy shutdown deadline wins. The
+  // owned lifecycle operation continues its own best-effort settlement.
+  const observed = operation.then(
+    () => undefined,
+    () => undefined,
+  );
+  try {
+    await Promise.race([observed, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+let shutdownInProgress = false;
 const shutdown = async (signal: string) => {
+  if (shutdownInProgress) return;
+  shutdownInProgress = true;
   app.log.info({ signal }, "Shutting down");
-  await orchestrationService.shutdown();
-  await app.close();
-  await store.close();
-  await telemetry.shutdown();
+  // Normal signals must quiesce direct Agent runs as well as Team sessions
+  // before app/store close. Storage-fatal shutdown already started the same
+  // memory-first Agent sweep in the fatal listener above.
+  if (signal !== "STORAGE_FATAL") {
+    await boundedLifecycleWait(
+      service.quiesceForStorageFailure({ timeoutMs: LIFECYCLE_SHUTDOWN_TIMEOUT_MS }),
+    );
+  }
+  await boundedLifecycleWait(orchestrationService.shutdown());
+  await boundedLifecycleWait(app.close());
+  await boundedLifecycleWait(store.close());
+  await boundedLifecycleWait(telemetry.shutdown());
   process.exit(0);
 };
+
+// A fatal adapter transition is terminal for this process. Quiesce all
+// in-memory Agent and Team handles first, then give the normal supervisor a
+// bounded unhealthy shutdown signal. No storage snapshot is consulted here.
+applicationHealth.onStorageFatal(() => {
+  void boundedLifecycleWait(
+    Promise.all([
+      service.quiesceForStorageFailure({ timeoutMs: LIFECYCLE_SHUTDOWN_TIMEOUT_MS }),
+      orchestrationService.quiesceForStorageFailure({
+        timeoutMs: LIFECYCLE_SHUTDOWN_TIMEOUT_MS,
+      }),
+    ]),
+  ).then(() => shutdown("STORAGE_FATAL"));
+});
 
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));

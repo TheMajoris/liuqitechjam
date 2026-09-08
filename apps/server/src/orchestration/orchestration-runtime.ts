@@ -2,10 +2,6 @@ import type { Agent, AgentRun, Message } from "../types.js";
 import type { ModelRef } from "../models/types.js";
 import type { AuditRecorder, AuditSpan } from "../audit/audit-types.js";
 import type { Storage } from "../store.js";
-import {
-  LangGraphOrchestrator,
-  type LangGraphOrchestrationRunner,
-} from "./langgraph-orchestrator.js";
 import { MastraOrchestrator } from "./mastra/mastra-orchestrator.js";
 import {
   PlatformAgentInvoker,
@@ -45,11 +41,10 @@ export type OrchestrationSelectorFactory =
   | OrchestrationParticipantSelector
   | (() => OrchestrationParticipantSelector);
 
-/** Backward-compatible alias for callers that injected the former graph runner. */
-export type OrchestrationGraphRunner = LangGraphOrchestrationRunner;
-
 /** The Project association seam used by shared Team workspaces. */
 export interface OrchestrationProjectBinding {
+  /** Reject Project-owned mutations while archive/compensation is in progress. */
+  assertProjectMutationAllowed?(projectId: string): void;
   /** Preferred binding path: one Project may own many conversations. */
   bindConversation?(
     projectId: string,
@@ -84,7 +79,6 @@ export interface OrchestrationServiceDependencies {
   supervisorTimeoutMs?: number;
   orchestrator?: Orchestrator;
   orchestratorFactory?: () => Orchestrator;
-  graphRunner?: OrchestrationGraphRunner;
   /** Server-owned audit sink for orchestration lifecycle spans. */
   audit?: AuditRecorder;
 }
@@ -160,7 +154,6 @@ export function normalizeOrchestrationDependencies(
   value: Storage | OrchestrationServiceDependencies,
   agents?: OrchestrationAgentAccess,
   invoker?: OrchestrationInvokerFactory,
-  graphRunner?: OrchestrationGraphRunner,
 ): NormalizedOrchestrationDependencies {
   if ("store" in value) {
     const configured = value;
@@ -177,9 +170,7 @@ export function normalizeOrchestrationDependencies(
       ? configured.orchestratorFactory
       : configured.orchestrator
         ? () => configured.orchestrator as Orchestrator
-        : configured.graphRunner
-          ? () => new LangGraphOrchestrator(configured.graphRunner)
-          : () => new MastraOrchestrator();
+        : () => new MastraOrchestrator();
     const selectorFactory = configured.selectorFactory
       ? configured.selectorFactory
       : configured.selectNextParticipant
@@ -214,9 +205,7 @@ export function normalizeOrchestrationDependencies(
     selectorFactory: () => undefined,
     resolveSupervisorModel: undefined,
     supervisorTimeoutMs: undefined,
-    orchestratorFactory: graphRunner
-      ? () => new LangGraphOrchestrator(graphRunner)
-      : () => new MastraOrchestrator(),
+    orchestratorFactory: () => new MastraOrchestrator(),
     projectBinding: undefined,
     audit: undefined,
   };

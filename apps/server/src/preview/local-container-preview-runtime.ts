@@ -11,6 +11,14 @@ import type {
   PreviewRuntimeStatus,
   PreviewStartInput,
 } from "./preview-types.js";
+import type {
+  RuntimeReconciliationInput,
+  RuntimeReconciliationResult,
+} from "../types.js";
+import {
+  isPositiveRuntimeAbsence,
+  reconcileOwnedContainerRuntimes,
+} from "../runtime-reconciliation.js";
 
 const execFileAsync = promisify(execFile);
 const PREVIEW_COMMAND_TIMEOUT_MS = 15_000;
@@ -160,6 +168,26 @@ function parsePublishedPort(value: string): number | null {
 export class LocalContainerPreviewRuntime implements PreviewRuntime {
   constructor(private readonly config: AppConfig) {}
 
+  /** Reconcile only persisted Preview containers; Agent processes remain local. */
+  async reconcileStartup(
+    input: RuntimeReconciliationInput,
+  ): Promise<RuntimeReconciliationResult> {
+    return reconcileOwnedContainerRuntimes(
+      this.config,
+      {
+        agents: [],
+        runs: [],
+        projectLeases: [],
+        previews: input.previews,
+      },
+      (args, timeoutMs) =>
+        execFileAsync(this.config.containerEngine, args, {
+          timeout: timeoutMs,
+          env: this.childEnvironment(),
+        }),
+    );
+  }
+
   async start(input: PreviewStartInput): Promise<PreviewRuntimeHandle> {
     const args = buildPreviewContainerRunArgs(input, this.config);
     let stdout: string;
@@ -210,8 +238,7 @@ export class LocalContainerPreviewRuntime implements PreviewRuntime {
         { env: this.childEnvironment(), timeout: PREVIEW_COMMAND_TIMEOUT_MS, maxBuffer: 16 * 1024 },
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (/no such object|not found|does not exist/i.test(message)) return;
+      if (isPositiveRuntimeAbsence(error)) return;
       throw runtimeError(
         isUnavailable(error) ? "PREVIEW_RUNTIME_UNAVAILABLE" : "PREVIEW_STOP_FAILED",
         isUnavailable(error)
@@ -235,8 +262,7 @@ export class LocalContainerPreviewRuntime implements PreviewRuntime {
       if (state === "exited" || state === "dead") return "failed";
       return "unknown";
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (/no such object|not found|does not exist/i.test(message)) return "stopped";
+      if (isPositiveRuntimeAbsence(error)) return "stopped";
       throw runtimeError(
         isUnavailable(error) ? "PREVIEW_RUNTIME_UNAVAILABLE" : "PREVIEW_START_FAILED",
         isUnavailable(error)
@@ -265,8 +291,7 @@ export class LocalContainerPreviewRuntime implements PreviewRuntime {
         truncated: bounded.length < combined.length,
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (/no such object|not found|does not exist/i.test(message)) {
+      if (isPositiveRuntimeAbsence(error)) {
         return { lines: [], truncated: false };
       }
       throw runtimeError(

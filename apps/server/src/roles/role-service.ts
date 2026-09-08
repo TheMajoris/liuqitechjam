@@ -11,7 +11,6 @@ import {
   SUPPORTED_PERMISSION_IDS,
   type PermissionId,
 } from "../access/permission-types.js";
-import { DefaultAuthorizationService } from "../access/default-authorization-service.js";
 import { HttpError } from "../errors.js";
 import type { Storage } from "../store.js";
 import type { ToolMetadata } from "../tools/tool-types.js";
@@ -126,7 +125,7 @@ export class RoleService {
     private readonly store: Storage,
     private readonly tools: RoleToolDirectory,
     private readonly skills: RoleSkillDirectory,
-    private readonly authorization: AuthorizationService = new DefaultAuthorizationService(),
+    private readonly authorization: AuthorizationService,
   ) {}
 
   /** Add compatibility role templates and attach every legacy membership. */

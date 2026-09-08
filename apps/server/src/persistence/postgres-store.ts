@@ -1,6 +1,6 @@
 import type { QueryResultRow } from "pg";
 import { Client } from "pg";
-import type { Storage } from "../store.js";
+import type { Storage, StorageFatalHandler } from "../store.js";
 import { emptyDatabase, normalizeDatabase } from "../store.js";
 import type { Database } from "../types.js";
 import { normalizeAuditEvent } from "../audit/audit-normalize.js";
@@ -11,6 +11,25 @@ import { LATEST_SCHEMA_VERSION } from "./schema-version.js";
 export const POSTGRES_SCHEMA = "launchpad";
 export const POSTGRES_RUNTIME_ROLE = "launchpad_runtime";
 export const POSTGRES_ADVISORY_LOCK_KEY = { namespace: 19_812, lock: 1_001 } as const;
+
+/**
+ * Bound every driver operation at the client and PostgreSQL protocol layers.
+ * `query_timeout` bounds the driver-side wait while `statement_timeout`
+ * asks the server to cancel an overlong statement. The lock and idle
+ * transaction limits keep ownership from waiting forever on a blocked peer.
+ */
+export const POSTGRES_SQL_TIMEOUT_POLICY = {
+  connectionTimeoutMillis: 10_000,
+  query_timeout: 15_000,
+  statement_timeout: 15_000,
+  lock_timeout: 5_000,
+  idle_in_transaction_session_timeout: 30_000,
+} as const;
+
+export interface PostgresStoreOptions {
+  /** Optional application-owned fatal-storage notification. */
+  onFatal?: StorageFatalHandler;
+}
 
 type JsonRecord = Record<string, unknown>;
 type CollectionName = Exclude<keyof Database, "version" | "modelCatalog" | "auditChainAnchor">;
@@ -593,6 +612,10 @@ function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+function isClientQueryTimeout(error: unknown): boolean {
+  return error instanceof Error && error.message === "Query read timeout";
+}
+
 /**
  * PostgreSQL-backed implementation of the existing synchronous-snapshot
  * contract. It deliberately uses one connection so the advisory lock and all
@@ -603,15 +626,27 @@ export class PostgresStore implements Storage {
   private client: Client | null = null;
   private data: Database | null = null;
   private fatalError: Error | null = null;
+  private fatalHandler: StorageFatalHandler | undefined;
+  private fatalNotificationPublished = false;
   private closed = false;
   private initialization: Promise<void> | undefined;
   private queue: Promise<void> = Promise.resolve();
 
-  constructor(private readonly databaseUrl: string) {}
+  constructor(
+    private readonly databaseUrl: string,
+    options: PostgresStoreOptions = {},
+  ) {
+    this.fatalHandler = options.onFatal;
+  }
+
+  setFatalHandler(handler: StorageFatalHandler | undefined): void {
+    this.fatalHandler = handler;
+    this.publishFatalNotification();
+  }
 
   async initialize(): Promise<void> {
     if (this.data) return;
-    if (this.fatalError) throw this.fatalError;
+    if (this.fatalError) throw this.unavailableError();
     if (this.closed) throw new Error("PostgresStore is closed");
     if (!this.initialization) {
       this.initialization = this.start().catch((error) => {
@@ -637,32 +672,56 @@ export class PostgresStore implements Storage {
         await client.query("BEGIN");
       } catch (error) {
         this.failClosed(error);
-        throw error;
+        throw this.unavailableError();
       }
       const next = structuredClone(this.data!);
       try {
         result = await mutation(next);
-        await persistDatabase(client, this.data!, next);
       } catch (error) {
         const rollbackSucceeded = await client.query("ROLLBACK").then(() => true).catch(() => false);
-        if (!rollbackSucceeded) this.failClosed(error);
+        if (!rollbackSucceeded || this.fatalError) {
+          this.failClosed(error);
+          throw this.unavailableError();
+        }
         throw error;
       }
       try {
+        if (this.fatalError) throw this.unavailableError();
+        await persistDatabase(client, this.data!, next);
+      } catch (error) {
+        // pg's client timeout rejects before an active wire query necessarily
+        // reaches ReadyForQuery. Do not enqueue a rollback behind that query:
+        // close the session so a timed-out transaction cannot continue unseen.
+        if (isClientQueryTimeout(error)) {
+          this.failClosed(error);
+          throw this.unavailableError();
+        }
+        const rollbackSucceeded = await client.query("ROLLBACK").then(() => true).catch(() => false);
+        if (!rollbackSucceeded || this.fatalError) {
+          this.failClosed(error);
+          throw this.unavailableError();
+        }
+        // A statement-level failure that PostgreSQL successfully rolls back
+        // is a rejected business mutation, not a storage-fatal transition.
+        throw error;
+      }
+      try {
+        if (this.fatalError) throw this.unavailableError();
         await client.query("COMMIT");
       } catch (error) {
         // A failed COMMIT is ambiguous: PostgreSQL may have committed even
         // though the client did not receive the acknowledgement.
         this.failClosed(error);
-        throw error;
+        throw this.unavailableError();
       }
       try {
         // Publishing after COMMIT is the key invariant: readers never observe
         // a snapshot that PostgreSQL rolled back.
+        if (this.fatalError) throw this.unavailableError();
         this.data = normalizeDatabase(next);
       } catch (error) {
         this.failClosed(error);
-        throw error;
+        throw this.unavailableError();
       }
     });
     this.queue = operation.catch(() => undefined);
@@ -687,7 +746,7 @@ export class PostgresStore implements Storage {
   }
 
   private requireReady(): void {
-    if (this.fatalError) throw this.fatalError;
+    if (this.fatalError) throw this.unavailableError();
     if (this.closed) throw new Error("PostgresStore is closed");
     if (!this.client || !this.data) throw new Error("PostgresStore has not been initialized");
   }
@@ -698,11 +757,34 @@ export class PostgresStore implements Storage {
     const client = this.client;
     this.client = null;
     this.data = null;
+    this.publishFatalNotification();
     void client?.end().catch(() => undefined);
   }
 
+  private unavailableError(): Error {
+    const error = new Error("Persistent storage is unavailable");
+    error.name = "StorageUnavailableError";
+    return error;
+  }
+
+  private publishFatalNotification(): void {
+    if (this.fatalError === null || this.fatalNotificationPublished || !this.fatalHandler) return;
+    this.fatalNotificationPublished = true;
+    try {
+      this.fatalHandler({
+        code: "STORAGE_UNAVAILABLE",
+        message: "Persistent storage is unavailable",
+      });
+    } catch {
+      // A lifecycle observer must not change the adapter's fail-closed result.
+    }
+  }
+
   private async start(): Promise<void> {
-    const client = new Client({ connectionString: this.databaseUrl, connectionTimeoutMillis: 10_000 });
+    const client = new Client({
+      connectionString: this.databaseUrl,
+      ...POSTGRES_SQL_TIMEOUT_POLICY,
+    });
     client.on("error", (error) => {
       if (!this.closed && this.client === client) this.failClosed(error);
     });

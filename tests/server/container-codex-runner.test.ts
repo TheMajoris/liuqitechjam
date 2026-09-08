@@ -6,6 +6,7 @@ import {
   ContainerCodexRunner,
 } from "../../apps/server/src/container-codex-runner.js";
 import type { SandboxAuditSink } from "../../apps/server/src/audit/sandbox-audit.js";
+import type { RuntimeReconciliationInput } from "../../apps/server/src/types.js";
 
 const hoisted = vi.hoisted(() => {
   const executions: {
@@ -168,6 +169,171 @@ describe("Container Codex runner", () => {
     ).rejects.toThrow("MCP endpoint is unreachable");
     expect(probedEndpoint).toBe(config.mcpPublicUrl);
     expect(probedEndpoint).not.toBe("http://host.docker.internal:3000/mcp");
+  });
+
+  it("cancels a pending MCP probe without spawning a container", async () => {
+    hoisted.executions.length = 0;
+    let probeSignal: AbortSignal | undefined;
+    let resolveFetch!: (response: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      (_endpoint: URL, options?: RequestInit) => {
+        probeSignal = options?.signal;
+        return new Promise<Response>((resolve) => {
+          resolveFetch = resolve;
+        });
+      },
+    );
+    try {
+      const runner = new ContainerCodexRunner(containerConfig());
+      const run = runner.run({
+        ...baseRequest,
+        mcp: { url: "http://host.docker.internal:3000/mcp", token: "opaque" },
+      });
+      await vi.waitFor(() => expect(probeSignal).toBeDefined());
+      const cancellation = runner.cancel("agent");
+      await vi.waitFor(() => expect(probeSignal?.aborted).toBe(true));
+      resolveFetch(new Response(null, { status: 200 }));
+
+      await expect(cancellation).resolves.toBe(true);
+      await expect(run).rejects.toThrow();
+      expect(hoisted.executions).toHaveLength(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("reconciles persisted Agent and Preview runtimes without touching unrelated identities", async () => {
+    const config = containerConfig();
+    const removed = new Set<string>();
+    const calls: string[][] = [];
+    const execEngine = async (args: string[]) => {
+      calls.push([...args]);
+      if (args[0] === "ps") {
+        if (args.includes("label=io.codejam.launchpad=agent-runtime")) {
+          return { stdout: "agent-container\nunknown-agent-container\n" };
+        }
+        return { stdout: "preview-container\nunknown-preview-container\n" };
+      }
+      if (args[0] === "inspect") {
+        const runtimeId = args[1];
+        if (removed.has(runtimeId ?? "")) {
+          throw new Error("No such object: " + runtimeId);
+        }
+        if (runtimeId === "agent-container") {
+          return {
+            stdout: JSON.stringify({
+              "io.codejam.launchpad": "agent-runtime",
+              "io.codejam.instance-id": config.runtimeInstanceId,
+              "io.codejam.agent-id": "owned-agent",
+            }),
+          };
+        }
+        if (runtimeId === "preview-container") {
+          return {
+            stdout: JSON.stringify({
+              "io.codejam.launchpad": "preview-runtime",
+              "io.codejam.instance-id": config.runtimeInstanceId,
+              "io.codejam.preview-id": "owned-preview",
+            }),
+          };
+        }
+        return {
+          stdout: JSON.stringify({
+            "io.codejam.launchpad": args[1]?.includes("preview")
+              ? "preview-runtime"
+              : "agent-runtime",
+            "io.codejam.instance-id": config.runtimeInstanceId,
+            [args[1]?.includes("preview")
+              ? "io.codejam.preview-id"
+              : "io.codejam.agent-id"]: "unrelated-persisted-id",
+          }),
+        };
+      }
+      if (args[0] === "rm") {
+        removed.add(args[2] ?? "");
+        return { stdout: "" };
+      }
+      throw new Error("unexpected engine command");
+    };
+    const input = {
+      agents: [{ id: "owned-agent", status: "busy" }],
+      runs: [],
+      previews: [{ id: "owned-preview", status: "interrupted", runtimeId: "preview-container" }],
+      projectLeases: [],
+    } as unknown as RuntimeReconciliationInput;
+    const runner = new ContainerCodexRunner(config, { execEngine });
+
+    const result = await runner.reconcileStartup(input);
+
+    expect(result.confirmedAgentIds).toEqual(["owned-agent"]);
+    expect(result.confirmedPreviewIds).toEqual(["owned-preview"]);
+    expect(result.unresolvedAgentIds).toEqual([]);
+    expect(result.unresolvedPreviewIds).toEqual([]);
+    expect(calls.filter((args) => args[0] === "rm").map((args) => args[2])).toEqual([
+      "agent-container",
+      "preview-container",
+    ]);
+    expect(calls.some((args) => args.includes("unknown-agent-container"))).toBe(true);
+    expect(calls.some((args) => args.includes("unknown-preview-container"))).toBe(true);
+    const failingRunner = new ContainerCodexRunner(config, {
+      execEngine: async (args: string[]) => {
+        if (args[0] === "ps") return { stdout: "agent-container\n" };
+        if (args[0] === "inspect") {
+          return {
+            stdout: JSON.stringify({
+              "io.codejam.launchpad": "agent-runtime",
+              "io.codejam.instance-id": config.runtimeInstanceId,
+              "io.codejam.agent-id": "owned-agent",
+            }),
+          };
+        }
+        throw new Error("permission denied by engine");
+      },
+    });
+    await expect(failingRunner.reconcileStartup({
+      agents: [{ id: "owned-agent", status: "busy" }],
+      runs: [],
+      previews: [],
+      projectLeases: [],
+    } as unknown as RuntimeReconciliationInput)).resolves.toMatchObject({
+      confirmedAgentIds: [],
+      unresolvedAgentIds: ["owned-agent"],
+    });
+
+    const duplicateRunner = new ContainerCodexRunner(config, {
+      execEngine: async (args: string[]) => {
+        if (args[0] === "ps") return { stdout: "failed-agent\nremoved-agent\n" };
+        if (args[0] === "inspect") {
+          const runtimeId = args[1] ?? "";
+          if (runtimeId === "removed-agent" && removed.has(runtimeId)) {
+            throw new Error("No such object: " + runtimeId);
+          }
+          return {
+            stdout: JSON.stringify({
+              "io.codejam.launchpad": "agent-runtime",
+              "io.codejam.instance-id": config.runtimeInstanceId,
+              "io.codejam.agent-id": "owned-agent",
+            }),
+          };
+        }
+        if (args[0] === "rm") {
+          if (args[2] === "failed-agent") throw new Error("permission denied by engine");
+          removed.add(args[2] ?? "");
+          return { stdout: "" };
+        }
+        throw new Error("unexpected engine command");
+      },
+    });
+    await expect(duplicateRunner.reconcileStartup({
+      agents: [{ id: "owned-agent", status: "busy" }],
+      runs: [],
+      previews: [],
+      projectLeases: [],
+    } as unknown as RuntimeReconciliationInput)).resolves.toMatchObject({
+      confirmedAgentIds: [],
+      unresolvedAgentIds: ["owned-agent"],
+    });
   });
 
   it("inspects the container before removing it when a run is cancelled", async () => {

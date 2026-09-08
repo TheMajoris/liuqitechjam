@@ -1,5 +1,5 @@
 /**
- * The small, pure interface used by the graph router to choose the next
+ * The small, pure interface used by the orchestration router to choose the next
  * participant.  Agent identities are data, so the sequence intentionally
  * accepts any roster instead of knowing about product roles.
  */
@@ -100,7 +100,7 @@ function orderedRoster(
  *
  * `stepIndex` is a dispatch count, not an array offset supplied by a caller;
  * the roster is copied and ordered by its explicit positions.  This keeps the
- * graph's control flow deterministic even when a client sends participants in
+   * orchestration control flow deterministic even when a client sends participants in
  * an arbitrary order.  The function never mutates its input or reads any
  * model-produced content.
  */

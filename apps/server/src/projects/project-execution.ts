@@ -1,5 +1,5 @@
 import type { AgentPreviewStatus } from "../preview/preview-context-provider.js";
-import type { Agent } from "../types.js";
+import type { Agent, OperationOptions } from "../types.js";
 import type { ProjectService } from "./project-service.js";
 
 /** Everything a Project-scoped turn needs, resolved at the runtime boundary. */
@@ -22,12 +22,21 @@ export interface ProjectRunBinding {
  */
 export interface ProjectExecutionScope {
   /** Throws unless this Agent may currently run against this Project. */
-  assertRunnable(projectId: string, agentId: string): void | Promise<void>;
+  assertRunnable(
+    projectId: string,
+    agentId: string,
+    operation?: OperationOptions,
+  ): void | Promise<void>;
   /**
    * Takes the single-writer lease and prepares the shared workspace for the
    * acting Agent. Callers must pair this with `endTurn` in a `finally`.
    */
-  beginTurn(agent: Agent, projectId: string, runId: string): Promise<ProjectRunBinding>;
+  beginTurn(
+    agent: Agent,
+    projectId: string,
+    runId: string,
+    operation?: OperationOptions,
+  ): Promise<ProjectRunBinding>;
   /**
    * Releases the lease, and persists the resumed thread only when the turn
    * actually completed. Safe to call on every path, including cancellation.
@@ -38,6 +47,12 @@ export interface ProjectExecutionScope {
     runId: string,
     outcome: { codexThreadId: string | null } | null,
   ): Promise<void>;
+  /**
+   * Reserves every Project owned by an Agent while its membership and lease
+   * records are removed or restored. Optional keeps lightweight test/runtime
+   * scopes source-compatible; production ProjectService supplies it.
+   */
+  beginAgentDeletion?(agentId: string): () => void;
 }
 
 /** Reads the Project-owned preview status for read-only runtime context. */
@@ -57,15 +72,27 @@ export class ProjectServiceExecutionScope implements ProjectExecutionScope {
     private readonly previewStatus: ProjectPreviewStatusReader = () => "not_started",
   ) {}
 
-  async assertRunnable(projectId: string, agentId: string): Promise<void> {
+  beginAgentDeletion(agentId: string): () => void {
+    return this.projects.beginAgentDeletion(agentId);
+  }
+
+  async assertRunnable(
+    projectId: string,
+    agentId: string,
+    operation: OperationOptions = {},
+  ): Promise<void> {
+    assertOperationActive(operation);
     await this.projects.authorizeAgentExecution(projectId, agentId);
+    assertOperationActive(operation);
   }
 
   async beginTurn(
     agent: Agent,
     projectId: string,
     runId: string,
+    operation: OperationOptions = {},
   ): Promise<ProjectRunBinding> {
+    assertOperationActive(operation);
     // This check is deliberately before the lease mutation. A denied or
     // revoked Agent must never occupy the Project's single-writer slot.
     await this.projects.authorizeAgentExecution(projectId, agent.id);
@@ -73,23 +100,34 @@ export class ProjectServiceExecutionScope implements ProjectExecutionScope {
     // race another Agent's turn.
     await this.projects.acquireWriteLease(projectId, agent.id, runId, {
       principal: { kind: "agent", id: agent.id },
+      ...(operation.signal === undefined ? {} : { signal: operation.signal }),
+      ...(operation.deadlineAt === undefined ? {} : { deadlineAt: operation.deadlineAt }),
     });
     try {
+      assertOperationActive(operation);
       const scope = this.projects.projectRunScope(projectId, agent.id);
       // The role may have changed while waiting for the single-writer lease.
       // Recheck before writing AGENTS.md so a revoked Agent never changes the
       // shared workspace.
       await this.projects.authorizeAgentExecution(projectId, agent.id);
-      await this.projects.prepareTurn(scope.project, agent);
+      assertOperationActive(operation);
+      await this.projects.prepareTurn(scope.project, agent, operation);
+      assertOperationActive(operation);
+      const currentPreviewStatus = await this.previewStatus(projectId);
+      assertOperationActive(operation);
       return {
         projectId,
         projectName: scope.project.name,
         workspacePath: scope.workspacePath,
         codexThreadId: scope.codexThreadId,
-        previewStatus: await this.previewStatus(projectId),
+        previewStatus: currentPreviewStatus,
       };
     } catch (error) {
-      await this.projects.releaseWriteLease(projectId, runId);
+      // Preparation never dispatched a worker, so the lease owner is known
+      // settled and may use the bounded idempotent release retry.
+      await this.projects
+        .releaseWriteLease(projectId, runId, { settled: true })
+        .catch(() => undefined);
       throw error;
     }
   }
@@ -105,8 +143,32 @@ export class ProjectServiceExecutionScope implements ProjectExecutionScope {
         await this.projects.recordProjectThread(projectId, agentId, outcome.codexThreadId);
       }
     } finally {
-      await this.projects.releaseWriteLease(projectId, runId);
+      // AgentRunCoordinator enters endTurn only after a terminal Run fact is
+      // committed and the worker has settled. This is the sole path allowed
+      // to use the two-attempt idempotent release budget.
+      await this.projects.releaseWriteLease(projectId, runId, { settled: true });
     }
+  }
+}
+
+function assertOperationActive(operation: OperationOptions): void {
+  if (operation.signal?.aborted) {
+    const reason = operation.signal.reason;
+    if (reason instanceof Error && (reason.name === "AbortError" || reason.name === "TimeoutError")) {
+      throw reason;
+    }
+    const error = new Error("Project turn was aborted");
+    error.name = "AbortError";
+    throw error;
+  }
+  if (
+    operation.deadlineAt !== undefined &&
+    Number.isFinite(operation.deadlineAt) &&
+    Date.now() >= operation.deadlineAt
+  ) {
+    const error = new Error("Project turn timed out");
+    error.name = "TimeoutError";
+    throw error;
   }
 }
 

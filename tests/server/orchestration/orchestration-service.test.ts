@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { Agent } from "../../../apps/server/src/types.js";
+import type { Agent, AgentRun } from "../../../apps/server/src/types.js";
 import { JsonStore } from "../../../apps/server/src/store.js";
 import type {
   PlatformAgentInvokerContract,
@@ -15,6 +15,7 @@ import {
 import type {
   CreateOrchestrationInput,
   OrchestrationSession,
+  OrchestrationTurn,
 } from "../../../apps/server/src/orchestration/types.js";
 import { AgentService } from "../../../apps/server/src/agent-service.js";
 import { loadConfig } from "../../../apps/server/src/config.js";
@@ -131,6 +132,7 @@ class ImmediateInvoker implements PlatformAgentInvokerContract {
 class PendingInvoker implements PlatformAgentInvokerContract {
   readonly calls: PlatformAgentInvokerInput[] = [];
   readonly cancellations: string[] = [];
+  readonly storageFailureCancellations: string[] = [];
   private resolvePending: (() => void) | null = null;
   private rejectPending: ((error: Error) => void) | null = null;
 
@@ -151,6 +153,13 @@ class PendingInvoker implements PlatformAgentInvokerContract {
 
   async cancel(runId: string): Promise<void> {
     this.cancellations.push(runId);
+    this.rejectPending?.(new Error("child Run cancelled"));
+    this.rejectPending = null;
+    this.resolvePending = null;
+  }
+
+  async cancelForStorageFailure(runId: string): Promise<void> {
+    this.storageFailureCancellations.push(runId);
     this.rejectPending?.(new Error("child Run cancelled"));
     this.rejectPending = null;
     this.resolvePending = null;
@@ -275,6 +284,206 @@ describe("OrchestrationService", () => {
     expect(detail.events.at(-1)?.completionReason).toBe("roster_exhausted");
   });
 
+  it("repairs a completed dispatched turn from committed output without dispatching", async () => {
+    const store = await makeStore();
+    const sessionId = "44444444-4444-4444-8444-444444444444";
+    const agentId = agentIds[0]!;
+    const participantId = "recovery-completed";
+    const runId = "55555555-5555-4555-8555-555555555555";
+    const turnId = "66666666-6666-4666-8666-666666666666";
+    const timestamp = "2026-09-01T00:00:00.000Z";
+    const output =
+      "token: should-not-leak\nworkspacePath: /Users/darren/private\n" +
+      "x".repeat(9_000);
+    const session: OrchestrationSession = {
+      id: sessionId,
+      name: "Recoverable session",
+      originalPrompt: "Recover the committed result.",
+      participants: [{ id: participantId, agentId, role: "Worker", position: 0 }],
+      mode: "sequential",
+      status: "running",
+      currentParticipantId: participantId,
+      currentRunId: runId,
+      stepIndex: 0,
+      maxSteps: 1,
+      perAgentTimeoutMs: 1_000,
+      errorCode: null,
+      errorMessage: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      startedAt: timestamp,
+      completedAt: null,
+    };
+    const turn: OrchestrationTurn = {
+      id: turnId,
+      sessionId,
+      participantId,
+      agentId,
+      runId,
+      position: 0,
+      stepIndex: 0,
+      status: "dispatched",
+      safeInputSummary: "Recover the committed result.",
+      safeOutput: null,
+      outputTruncated: false,
+      errorCode: null,
+      createdAt: timestamp,
+      completedAt: null,
+    };
+    const run: AgentRun = {
+      id: runId,
+      agentId,
+      status: "completed",
+      prompt: "Recover the committed result.",
+      output,
+      error: null,
+      usage: null,
+      startedAt: timestamp,
+      completedAt: "2026-09-01T00:00:01.000Z",
+      createdAt: timestamp,
+    };
+    await store.mutate((database) => {
+      database.orchestrations.push(session);
+      database.orchestrationTurns.push(turn);
+      database.runs.push(run);
+    });
+
+    const invoker = new ImmediateInvoker();
+    const service = new OrchestrationService(store, makeAgentsAccess([]), invoker);
+    await service.initialize();
+    await service.initialize();
+
+    const detail = await service.getSession(sessionId);
+    expect(detail.session.status).toBe("interrupted");
+    expect(detail.session.currentRunId).toBeNull();
+    expect(detail.turns).toHaveLength(1);
+    expect(detail.turns[0]).toMatchObject({
+      id: turnId,
+      runId,
+      stepIndex: 0,
+      status: "completed",
+      outputTruncated: true,
+    });
+    expect(detail.turns[0]?.safeOutput).not.toContain("should-not-leak");
+    expect(detail.turns[0]?.safeOutput).toContain("[REDACTED]");
+    expect(detail.turns[0]?.safeOutput).toContain("[REDACTED PATH]");
+    expect(detail.turns[0]?.safeOutput?.length).toBeLessThan(output.length);
+    expect(detail.events.filter((event) => event.type === "run_completed")).toHaveLength(1);
+    expect(detail.events.map((event) => event.sequence)).toEqual([0, 1]);
+    expect(invoker.calls).toHaveLength(0);
+  });
+
+  it("settles failed, cancelled, nonterminal, and missing child evidence safely", async () => {
+    const store = await makeStore();
+    const sessionId = "77777777-7777-4777-8777-777777777777";
+    const timestamp = "2026-09-01T00:00:00.000Z";
+    const participants = [
+      { id: "recovery-failed", agentId: agentIds[0]!, role: "Failed", position: 0 },
+      { id: "recovery-cancelled", agentId: agentIds[1]!, role: "Cancelled", position: 1 },
+      { id: "recovery-running", agentId: agentIds[2]!, role: "Running", position: 2 },
+      { id: "recovery-missing", agentId: agentIds[0]!, role: "Missing", position: 3 },
+    ];
+    const session: OrchestrationSession = {
+      id: sessionId,
+      name: "Partial session",
+      originalPrompt: "Inspect recovered child state.",
+      participants,
+      mode: "sequential",
+      status: "interrupted",
+      currentParticipantId: null,
+      currentRunId: null,
+      stepIndex: 4,
+      maxSteps: 4,
+      perAgentTimeoutMs: 1_000,
+      errorCode: "ORCHESTRATION_INTERRUPTED",
+      errorMessage: "Orchestration was interrupted because the server restarted",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      startedAt: timestamp,
+      completedAt: timestamp,
+    };
+    const runs: AgentRun[] = [
+      {
+        id: "88888888-8888-4888-8888-888888888880",
+        agentId: participants[0]!.agentId,
+        status: "failed",
+        prompt: "failed",
+        output: null,
+        error: "worker failed",
+        errorCode: "MODEL_INFERENCE_LIMIT_EXCEEDED",
+        usage: null,
+        startedAt: timestamp,
+        completedAt: timestamp,
+        createdAt: timestamp,
+      },
+      {
+        id: "88888888-8888-4888-8888-888888888881",
+        agentId: participants[1]!.agentId,
+        status: "cancelled",
+        prompt: "cancelled",
+        output: null,
+        error: "Run cancelled",
+        usage: null,
+        startedAt: timestamp,
+        completedAt: timestamp,
+        createdAt: timestamp,
+      },
+      {
+        id: "88888888-8888-4888-8888-888888888882",
+        agentId: participants[2]!.agentId,
+        status: "running",
+        prompt: "running",
+        output: null,
+        error: null,
+        usage: null,
+        startedAt: timestamp,
+        completedAt: null,
+        createdAt: timestamp,
+      },
+    ];
+    const turns: OrchestrationTurn[] = participants.map((participant, index) => ({
+      id: `99999999-9999-4999-8999-99999999999${index}`,
+      sessionId,
+      participantId: participant.id,
+      agentId: participant.agentId,
+      runId:
+        index < runs.length
+          ? runs[index]!.id
+          : "88888888-8888-4888-8888-888888888883",
+      position: participant.position,
+      stepIndex: index,
+      status: "dispatched",
+      safeInputSummary: participant.role,
+      safeOutput: null,
+      outputTruncated: false,
+      errorCode: null,
+      createdAt: timestamp,
+      completedAt: null,
+    }));
+    await store.mutate((database) => {
+      database.orchestrations.push(session);
+      database.orchestrationTurns.push(...turns);
+      database.runs.push(...runs);
+    });
+
+    const invoker = new ImmediateInvoker();
+    const service = new OrchestrationService(store, makeAgentsAccess([]), invoker);
+    await service.initialize();
+
+    const detail = await service.getSession(sessionId);
+    expect(detail.session.status).toBe("interrupted");
+    expect(detail.turns.map((turn) => [turn.status, turn.errorCode])).toEqual([
+      ["failed", "MODEL_INFERENCE_LIMIT_EXCEEDED"],
+      ["cancelled", "RUN_CANCELLED"],
+      ["cancelled", "ORCHESTRATION_INTERRUPTED"],
+      ["failed", "RUN_NOT_FOUND"],
+    ]);
+    expect(detail.turns.map((turn) => turn.stepIndex)).toEqual([0, 1, 2, 3]);
+    expect(detail.events.filter((event) => event.type === "participant_failed")).toHaveLength(2);
+    expect(detail.events.filter((event) => event.type === "child_run_cancelled")).toHaveLength(2);
+    expect(invoker.calls).toHaveLength(0);
+  });
+
   it("fails a round-robin session at maxSteps and persists execution step indices", async () => {
     const store = await makeStore();
     const agents = agentIds.map((id) => makeAgent(id));
@@ -340,7 +549,7 @@ describe("OrchestrationService", () => {
     );
   });
 
-  it("stops an active session by cancelling only its accepted child Run", async () => {
+  it("stops and quiesces an active session through its accepted child Run", async () => {
     const store = await makeStore();
     const agents = [makeAgent(agentIds[0]!)];
     const invoker = new PendingInvoker();
@@ -374,6 +583,31 @@ describe("OrchestrationService", () => {
       expect.arrayContaining(["child_run_cancelled", "orchestration_stopped"]),
     );
     expect(agents[0]?.status).toBe("ready");
+
+    const quiesced = await service.createSession(
+      makeInput([
+        {
+          id: "worker",
+          agentId: agentIds[0]!,
+          role: "Worker",
+          position: 0,
+        },
+      ]),
+    );
+    await service.startSession(quiesced.id);
+    for (let attempt = 0; attempt < 100 && invoker.calls.length < 2; attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    }
+    expect(invoker.calls).toHaveLength(2);
+
+    await service.quiesceForStorageFailure({ timeoutMs: 1_000 });
+
+    // Fatal Team shutdown uses the memory-only physical seam. In particular,
+    // it must not route through AgentService.cancelRun and its Storage read.
+    expect(invoker.storageFailureCancellations).toEqual([
+      "00000000-0000-4000-8000-000000000099",
+    ]);
+    expect(invoker.cancellations).toHaveLength(1);
   });
 
   it("snapshots the server-wide supervisor model and passes it to routing", async () => {
@@ -626,6 +860,7 @@ describe("OrchestrationService", () => {
     const started = audit.ofType("run_started");
     expect(started).toHaveLength(2);
     for (const event of started) {
+      expect(event.orchestrationId).toBe(created.id);
       expect(event.span?.traceId).toBe(created.id);
       expect(participantSpanIds).toContain(event.span?.parentSpanId);
     }

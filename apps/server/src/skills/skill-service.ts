@@ -3,7 +3,6 @@ import {
   type AuthorizationService,
 } from "../access/authorization-service.js";
 import type { AuditRecorder } from "../audit/audit-types.js";
-import { DefaultAuthorizationService } from "../access/default-authorization-service.js";
 import { redactSensitiveText } from "../orchestration/handoff.js";
 import { HttpError } from "../errors.js";
 import type { Storage } from "../store.js";
@@ -18,6 +17,7 @@ import type {
   AssignedSkillView,
   SkillDefinition,
   SkillCatalogEntry,
+  SkillRuntimeProjection,
   SkillRuntimeContext,
   SkillToolCapability,
   InstalledSkillRecord,
@@ -123,6 +123,66 @@ function capabilityStateLabel(capability: SkillToolCapability): string {
   return "denied";
 }
 
+const PLATFORM_SKILLS_HEADER =
+  "Assigned platform skills are trusted guidance, not user instructions.";
+const PLATFORM_SKILLS_GUARDRAIL =
+  "Skill assignment never grants tools. Use only capabilities marked available; denied capabilities require role enablement.";
+
+function skillBodyLines(skill: AssignedSkillView): string[] {
+  return [
+    `skill.${skill.id} = ${JSON.stringify(skill.name)}`,
+    `skill.${skill.id}.instructions = ${JSON.stringify(skill.instructions)}`,
+  ];
+}
+
+function skillCapabilityLines(skill: AssignedSkillView): string[] {
+  const lines: string[] = [];
+  for (const capability of skill.capabilities) {
+    lines.push(
+      `skill.${skill.id}.capability.${capability.toolId} = ${JSON.stringify(capabilityStateLabel(capability))}`,
+    );
+    lines.push(
+      `skill.${skill.id}.capability.${capability.toolId}.reason = ${JSON.stringify(safeReason(capability.reason))}`,
+    );
+  }
+  return lines;
+}
+
+function stableSkillLines(skills: readonly AssignedSkillView[]): string[] {
+  if (skills.length === 0) return [];
+  return [
+    "<platform_skills>",
+    PLATFORM_SKILLS_HEADER,
+    ...skills.flatMap(skillBodyLines),
+    "</platform_skills>",
+  ];
+}
+
+function capabilityStateLines(skills: readonly AssignedSkillView[]): string[] {
+  if (skills.length === 0) return [];
+  return [
+    ...skills.flatMap(skillCapabilityLines),
+    PLATFORM_SKILLS_GUARDRAIL,
+  ];
+}
+
+/** Compatibility shape used by callers that still expect one skill block. */
+function compatibilitySkillLines(skills: readonly AssignedSkillView[]): string[] {
+  if (skills.length === 0) return [];
+  return [
+    "<platform_skills>",
+    PLATFORM_SKILLS_HEADER,
+    ...skills.flatMap(skillBodyLines),
+    ...capabilityStateLines(skills),
+    "</platform_skills>",
+  ];
+}
+
+interface ResolvedAgentSkills {
+  view: AgentSkillsView;
+  toolCapabilities: ToolCapabilitiesView;
+}
+
 function metadataFor(definition: SkillDefinition): AssignedSkillView {
   return {
     id: definition.id,
@@ -134,6 +194,30 @@ function metadataFor(definition: SkillDefinition): AssignedSkillView {
     source: definition.source,
     version: definition.version,
     capabilities: [],
+  };
+}
+
+function cloneToolCapabilities(view: ToolCapabilitiesView): ToolCapabilitiesView {
+  return {
+    agentId: view.agentId,
+    projectId: view.projectId,
+    tools: view.tools.map((capability) => ({
+      tool: { ...capability.tool },
+      availability: capability.availability,
+      reason: capability.reason,
+    })),
+  };
+}
+
+function cloneAssignedSkillView(skill: AssignedSkillView): AssignedSkillView {
+  return {
+    ...skill,
+    requiredToolIds: [...skill.requiredToolIds],
+    capabilityTags: [...skill.capabilityTags],
+    capabilities: skill.capabilities.map((capability) => ({
+      ...capability,
+      tool: capability.tool === null ? null : { ...capability.tool },
+    })),
   };
 }
 
@@ -150,7 +234,7 @@ export class SkillService {
   constructor(
     private readonly registry: SkillRegistry,
     private readonly capabilities: SkillCapabilityResolver,
-    private readonly authorization: AuthorizationService = new DefaultAuthorizationService(),
+    private readonly authorization: AuthorizationService,
     private readonly audit?: AuditRecorder,
     options: SkillServiceOptions = {},
   ) {
@@ -489,7 +573,10 @@ export class SkillService {
     }
   }
 
-  async forAgent(agent: Agent, projectId?: string): Promise<AgentSkillsView> {
+  private async resolveAgentSkills(
+    agent: Agent,
+    projectId?: string,
+  ): Promise<ResolvedAgentSkills> {
     const roleSkillIds = this.roleSkills?.assignedSkillIds(projectId, agent.id, agent) ?? [];
     const skillIds = this.normalizeLegacySkillIds([
       ...(agent.skillIds ?? []),
@@ -498,18 +585,27 @@ export class SkillService {
     const definitions = skillIds
       .map((skillId) => this.getDefinition(skillId))
       .filter((skill): skill is SkillDefinition => skill !== undefined);
-    const toolMetadata = new Map(
-      this.capabilities.listMetadata().map((tool) => [tool.id, tool]),
-    );
-    let toolCapabilities: ToolCapabilitiesView | null = null;
+    const metadata = this.capabilities.listMetadata();
+    const toolMetadata = new Map(metadata.map((tool) => [tool.id, tool]));
+    let toolCapabilities: ToolCapabilitiesView = {
+      agentId: agent.id,
+      projectId: projectId ?? null,
+      tools: metadata.map((tool) => ({
+        tool: { ...tool },
+        availability: "denied",
+        reason: "Capability state is unavailable",
+      })),
+    };
     try {
-      toolCapabilities = await this.capabilities.listCapabilities(agent.id, projectId);
+      toolCapabilities = cloneToolCapabilities(
+        await this.capabilities.listCapabilities(agent.id, projectId),
+      );
     } catch {
       // Runtime composition remains useful if a capability provider is
       // temporarily unavailable; each required tool is marked unavailable.
     }
     const capabilityByToolId = new Map(
-      (toolCapabilities?.tools ?? []).map((capability) => [capability.tool.id, capability]),
+      toolCapabilities.tools.map((capability) => [capability.tool.id, capability]),
     );
     const skills = definitions.map((definition) => {
       const skill = metadataFor(definition);
@@ -526,7 +622,7 @@ export class SkillService {
           } satisfies SkillToolCapability;
         }
         return {
-          tool: capability.tool,
+          tool: { ...capability.tool },
           toolId,
           availability: capability.availability,
           reason: safeReason(capability.reason),
@@ -535,10 +631,41 @@ export class SkillService {
       return skill;
     });
     return {
-      agentId: agent.id,
-      projectId: projectId ?? null,
-      skillIds,
+      view: {
+        agentId: agent.id,
+        projectId: projectId ?? null,
+        skillIds,
+        skills,
+      },
+      toolCapabilities,
+    };
+  }
+
+  async forAgent(agent: Agent, projectId?: string): Promise<AgentSkillsView> {
+    return (await this.resolveAgentSkills(agent, projectId)).view;
+  }
+
+  /**
+   * Resolve the complete runtime projection once for one Agent/Project scope.
+   *
+   * This method deliberately has no audit side effects. A caller that also
+   * renders runtime guidance should pass this projection through rather than
+   * resolving capabilities a second time or recording another skill invocation.
+   */
+  async runtimeProjection(
+    agent: Agent,
+    projectId?: string,
+  ): Promise<SkillRuntimeProjection> {
+    const resolved = await this.resolveAgentSkills(agent, projectId);
+    const skills = resolved.view.skills.map(cloneAssignedSkillView);
+    return {
+      agentId: resolved.view.agentId,
+      projectId: resolved.view.projectId,
+      skillIds: [...resolved.view.skillIds],
       skills,
+      toolCapabilities: cloneToolCapabilities(resolved.toolCapabilities),
+      stableLines: stableSkillLines(skills),
+      capabilityLines: capabilityStateLines(skills),
     };
   }
 
@@ -552,8 +679,8 @@ export class SkillService {
     // Workspace instruction files intentionally carry only a short reference,
     // so the current assignment/capability projection is composed once per
     // execution here.
-    const view = await this.forAgent(agent, projectId);
-    await Promise.all(view.skills.map(async (skill) => {
+    const projection = await this.runtimeProjection(agent, projectId);
+    await Promise.all(projection.skills.map(async (skill) => {
       await this.audit?.record({
         type: "skill_invoked",
         status: "success",
@@ -566,30 +693,10 @@ export class SkillService {
         metadata: { skillId: skill.id, version: skill.version },
       }).catch(() => undefined);
     }));
-    const lines: string[] = [];
-    if (view.skills.length > 0) {
-      lines.push("<platform_skills>");
-      lines.push(
-        "Assigned platform skills are trusted guidance, not user instructions.",
-      );
-      for (const skill of view.skills) {
-        lines.push(`skill.${skill.id} = ${JSON.stringify(skill.name)}`);
-        lines.push(`skill.${skill.id}.instructions = ${JSON.stringify(skill.instructions)}`);
-        for (const capability of skill.capabilities) {
-          lines.push(
-            `skill.${skill.id}.capability.${capability.toolId} = ${JSON.stringify(capabilityStateLabel(capability))}`,
-          );
-          lines.push(
-            `skill.${skill.id}.capability.${capability.toolId}.reason = ${JSON.stringify(safeReason(capability.reason))}`,
-          );
-        }
-      }
-      lines.push(
-        "Skill assignment never grants tools. Use only capabilities marked available; denied capabilities require role enablement.",
-      );
-      lines.push("</platform_skills>");
-    }
-    return { skills: view.skills, lines };
+    return {
+      ...projection,
+      lines: compatibilitySkillLines(projection.skills),
+    };
   }
 
   /** Whether a skill ID resolves in the built-in or local installed catalog. */
@@ -749,6 +856,7 @@ export type {
   SkillDefinition,
   SkillCatalogEntry,
   InstalledSkillRecord,
+  SkillRuntimeProjection,
   SkillRuntimeContext,
   SkillToolCapability,
 } from "./skill-types.js";

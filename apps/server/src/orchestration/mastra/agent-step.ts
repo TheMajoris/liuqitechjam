@@ -8,7 +8,7 @@ import {
 } from "../handoff.js";
 import {
   OrchestrationErrorCodeSchema,
-  OrchestrationGraphStatusSchema,
+  OrchestrationExecutionStatusSchema,
   OrchestrationModeSchema,
   OrchestrationParticipantSchema,
   ORCHESTRATION_LIMITS,
@@ -77,7 +77,7 @@ export const mastraExecutionStateSchema: z.ZodType<MastraExecutionState> = z.obj
   turns: z
     .array(mastraExecutionTurnSchema)
     .max(ORCHESTRATION_LIMITS.maxSteps),
-  status: OrchestrationGraphStatusSchema,
+  status: OrchestrationExecutionStatusSchema,
   errorCode: OrchestrationErrorCodeSchema.nullable(),
 });
 
@@ -547,12 +547,16 @@ export async function executeMastraOrchestrationStep(
   let acceptedRunId: string | null = null;
   const linked = linkAbortSignals(workflowSignal, options.signal);
   try {
+    // The participant budget covers platform acceptance as well as execution;
+    // establish it immediately before the sendMessage boundary.
+    const participantDeadlineAt = Date.now() + options.perAgentTimeoutMs;
     const childResult = await options.invoker.invoke({
       agentId: participant.agentId,
       prompt: handoff.prompt,
       ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
       ...(options.orchestrationId === undefined ? {} : { orchestrationId: options.orchestrationId }),
       timeoutMs: options.perAgentTimeoutMs,
+      deadlineAt: participantDeadlineAt,
       signal: linked.signal,
       onRunAccepted: async (runId) => {
         if (acceptedRunId !== null || runId.trim().length === 0) return;

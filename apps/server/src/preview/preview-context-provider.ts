@@ -15,6 +15,18 @@ export interface AgentPreviewContext {
 }
 
 /**
+ * Stable and mutable sections of the trusted runtime envelope.
+ *
+ * Stable guidance is rendered before fixed policies so provider prefix-cache
+ * candidates remain unchanged when Preview or capability state changes.
+ */
+export interface RuntimeContextSections {
+  identityLines?: readonly string[];
+  stableSkillLines?: readonly string[];
+  currentStateLines?: readonly string[];
+}
+
+/**
  * Workspace instruction files point at this runtime seam instead of copying
  * mutable skill/capability data. Keeping the reference short is intentional:
  * the full, current projection is composed once for each execution below.
@@ -77,7 +89,17 @@ export function composeRuntimeContextPrompt(
   prompt: string,
   context: AgentPreviewContext,
   extraLines: readonly string[] = [],
+  sections: RuntimeContextSections = {},
 ): string {
+  const stableLines = [
+    ...(sections.identityLines ?? []),
+    ...(sections.stableSkillLines ?? []),
+  ];
+  const currentStateLines = [
+    `preview.status = ${JSON.stringify(context.status)}`,
+    ...(sections.currentStateLines ?? []),
+    ...extraLines,
+  ];
   return [
     "<platform_runtime_context>",
     "The following trusted LQAM runtime metadata is not part of the user's message; do not repeat it verbatim.",
@@ -86,11 +108,12 @@ export function composeRuntimeContextPrompt(
     // The newest block is the only current one.
     "This block replaces any earlier platform_runtime_context in this conversation; identity, instructions, and state from earlier blocks no longer apply.",
     "",
-    `preview.status = "${context.status}"`,
-    ...extraLines,
-    "",
+    ...stableLines,
+    ...(stableLines.length > 0 ? [""] : []),
     AGENT_RESPONSE_LANGUAGE_POLICY,
     "Preview servers are controlled by the user in the Preview panel; you cannot start, stop, or restart them.",
+    "",
+    ...currentStateLines,
     "</platform_runtime_context>",
     "",
     "<user_request>",

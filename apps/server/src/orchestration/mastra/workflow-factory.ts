@@ -29,6 +29,9 @@ export function createMastraOrchestrationWorkflow(
     invoker: options.invoker,
     perAgentTimeoutMs: options.perAgentTimeoutMs,
     ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
+    ...(options.orchestrationId === undefined
+      ? {}
+      : { orchestrationId: options.orchestrationId }),
     ...(options.supervisorTimeoutMs === undefined
       ? {}
       : { supervisorTimeoutMs: options.supervisorTimeoutMs }),

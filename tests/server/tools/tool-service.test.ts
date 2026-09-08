@@ -295,4 +295,32 @@ describe("ToolService Agent web permissions", () => {
     });
     expect(calls).toEqual({ search: 2, fetch: 1 });
   });
+
+  it("rechecks live authorization after a tool was advertised and the Project grant is revoked", async () => {
+    const store = makeStore();
+    roots.push(store);
+    await seed(store, {
+      globalRole: makeRole(
+        ["web.search"],
+        ["tool.execute:web.search"],
+      ),
+      project: true,
+    });
+    const calls = { search: 0, fetch: 0 };
+    const service = new ToolService(
+      new ToolRegistry(webTools(calls)),
+      new RepositoryAuthorizationService(store),
+      store,
+    );
+
+    await expect(service.execute(context("project-1"), "web.search", { query: "before-revoke" }))
+      .resolves.toEqual({ ok: true });
+    await store.mutate((database) => {
+      database.projectAgents = [];
+    });
+
+    await expect(service.execute(context("project-1"), "web.search", { query: "after-revoke" }))
+      .rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    expect(calls).toEqual({ search: 1, fetch: 0 });
+  });
 });

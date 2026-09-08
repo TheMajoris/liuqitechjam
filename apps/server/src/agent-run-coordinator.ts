@@ -18,6 +18,8 @@ import {
   McpSessionService,
   type MintedMcpSession,
 } from "./tools/mcp-session-service.js";
+import type { EffectiveToolResolution } from "./tools/effective-tool-resolver.js";
+import type { SkillRuntimeProjection } from "./skills/skill-types.js";
 import type { RuntimeTelemetry, TelemetrySpan } from "./telemetry/telemetry-types.js";
 import { correlationAttributes } from "./telemetry/telemetry-types.js";
 import { usageAttributes } from "./telemetry/telemetry-usage.js";
@@ -28,9 +30,11 @@ import type {
   AgentRun,
   AgentRunner,
   MessageOrigin,
+  OperationOptions,
   RunnerResult,
 } from "./types.js";
 import type { Storage } from "./store.js";
+import type { ApplicationLifecycleFailure } from "./application-health.js";
 import { safeRuntimeError } from "./safe-runtime-error.js";
 import type {
   AuditEventInput,
@@ -49,6 +53,7 @@ import {
 import { agentPrincipal } from "./access/access-types.js";
 
 const RUN_POLL_INTERVAL_MS = 50;
+const STORAGE_QUIESCE_TIMEOUT_MS = 5_000;
 const now = () => new Date().toISOString();
 
 function isTerminalRun(run: AgentRun): boolean {
@@ -63,6 +68,46 @@ function waitError(name: "AbortError" | "TimeoutError", message: string): Error 
   const error = new Error(message);
   error.name = name;
   return error;
+}
+
+/**
+ * Bound a shutdown/quiescence observer without detaching the owned operation.
+ * All promise branches are observed, and the operation continues its own
+ * cleanup after the observer's deadline if physical settlement is slower.
+ */
+async function settleWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {
+  const boundedTimeout =
+    Number.isFinite(timeoutMs) && timeoutMs >= 0 ? timeoutMs : STORAGE_QUIESCE_TIMEOUT_MS;
+  let timer: NodeJS.Timeout | null = null;
+  const timeout = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), boundedTimeout);
+    timer.unref();
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+interface RunControl {
+  operation: OperationOptions;
+  controller: AbortController;
+  dispose: () => void;
+}
+
+function createRunControl(operation: OperationOptions): RunControl {
+  const controller = new AbortController();
+  const onAbort = () => {
+    if (!controller.signal.aborted) controller.abort(operation.signal?.reason);
+  };
+  operation.signal?.addEventListener("abort", onAbort, { once: true });
+  if (operation.signal?.aborted) onAbort();
+  return {
+    operation: { ...operation, signal: controller.signal },
+    controller,
+    dispose: () => operation.signal?.removeEventListener("abort", onAbort),
+  };
 }
 
 function modelRefForRuntime(runtimeModel: WorkerRuntimeModelConfig) {
@@ -96,10 +141,25 @@ export interface AgentRunCoordinatorDependencies {
   prompt: AgentRuntimePromptComposer;
   getProjectScope: () => ProjectExecutionScope | undefined;
   getMcpSessions: () => McpSessionService | undefined;
+  getEffectiveToolResolution?: () =>
+    | ((
+        agent: Agent,
+        projectId: string | undefined,
+        projection: SkillRuntimeProjection | undefined,
+      ) => EffectiveToolResolution)
+    | undefined;
   getTelemetry: () => RuntimeTelemetry | undefined;
   /** Optional server-owned audit sink for fallback usage events. */
   getAudit?: () => AuditRecorder | undefined;
   getRun: (runId: string) => AgentRun;
+  /** Application-owned sink for failures that need lifecycle attention. */
+  reportLifecycleFailure?: (failure: ApplicationLifecycleFailure) => void;
+}
+
+interface ActiveExecution {
+  runId: string;
+  run: AgentRun;
+  execution: Promise<void>;
 }
 
 /**
@@ -113,11 +173,13 @@ export interface AgentRunCoordinatorDependencies {
 export class AgentRunCoordinator {
   private readonly activeExecutions = new Map<
     string,
-    { runId: string; execution: Promise<void> }
+    ActiveExecution
   >();
   private readonly cancellationRequests = new Set<string>();
   private readonly runCancellations = new Map<string, Promise<AgentRun>>();
   private readonly agentCancellationLocks = new Set<string>();
+  /** Abort signal owned by each registered execution, including preparation. */
+  private readonly runControls = new Map<string, RunControl>();
   /** Audit span of each in-flight Run, so runtime events can parent under it. */
   private readonly runSpans = new Map<string, AuditSpan>();
 
@@ -133,6 +195,102 @@ export class AgentRunCoordinator {
     return span === undefined ? undefined : { ...span };
   }
 
+  /**
+   * Request physical cancellation from the process-local ownership table.
+   *
+   * This path is intentionally independent of Storage: a fatal database
+   * transition can make getRun/snapshot unavailable while a local or container
+   * worker is still capable of writing to a workspace. Every cancellation
+   * request is made before the bounded wait; executions retain their locks
+   * until their own finally blocks have actually settled.
+   */
+  async quiesceForStorageFailure(options: { timeoutMs?: number } = {}): Promise<void> {
+    const active = [...this.activeExecutions.entries()];
+    if (active.length === 0) return;
+
+    const alreadyCancelling = new Map(
+      active.map(([agentId]) => [agentId, this.agentCancellationLocks.has(agentId)]),
+    );
+    for (const [agentId, execution] of active) {
+      this.agentCancellationLocks.add(agentId);
+      this.cancellationRequests.add(execution.runId);
+      this.runControls.get(execution.runId)?.controller.abort(new RunCancelledError());
+    }
+
+    const cancellations = active.map(async ([agentId, execution]) => {
+      try {
+        // A Team cancellation can arrive through the orchestration invoker at
+        // the same time as this storage-fatal sweep. The lock is the existing
+        // process-local ownership gate; only its first owner may invoke the
+        // physical runner stop.
+        if (!alreadyCancelling.get(agentId)) {
+          await this.dependencies.runner.cancel(agentId);
+        }
+      } catch (error) {
+        this.reportLifecycleFailure({
+          code: "RUNTIME_CANCELLATION_FAILED",
+          message: "Physical Agent runtime cancellation failed during storage recovery",
+          runId: execution.runId,
+          agentId,
+        });
+      }
+      try {
+        await execution.execution;
+      } catch (error) {
+        this.reportLifecycleFailure({
+          code: "EXECUTION_FINALIZATION_FAILED",
+          message: "Agent Run execution did not settle cleanly during storage recovery",
+          runId: execution.runId,
+          agentId,
+        });
+      } finally {
+        // If the bounded caller has already returned, this delayed cleanup is
+        // still required before the Agent can ever be considered reusable.
+        if (this.activeExecutions.get(agentId)?.runId === execution.runId) {
+          this.activeExecutions.delete(agentId);
+        }
+        this.cancellationRequests.delete(execution.runId);
+        this.agentCancellationLocks.delete(agentId);
+      }
+    });
+
+    await settleWithin(
+      Promise.all(cancellations).then(() => undefined),
+      options.timeoutMs ?? STORAGE_QUIESCE_TIMEOUT_MS,
+    );
+  }
+
+  /**
+   * Cancel one known in-memory child without consulting Storage. The
+   * orchestration fatal-shutdown path uses this when its journal is already
+   * unavailable; the ordinary user cancellation path keeps its read-backed
+   * result semantics separately.
+   */
+  async cancelRunForStorageFailure(runId: string): Promise<void> {
+    const inMemory = this.activeExecutionByRunId(runId);
+    if (!inMemory) return;
+    const { agentId, execution } = inMemory;
+    const alreadyCancelling = this.agentCancellationLocks.has(agentId);
+    this.agentCancellationLocks.add(agentId);
+    this.cancellationRequests.add(runId);
+    this.runControls.get(runId)?.controller.abort(new RunCancelledError());
+    let cancellationError: unknown;
+    try {
+      if (!alreadyCancelling) {
+        try {
+          await this.dependencies.runner.cancel(agentId);
+        } catch (error) {
+          cancellationError = error;
+        }
+      }
+      await execution.execution;
+    } finally {
+      this.cancellationRequests.delete(runId);
+      this.agentCancellationLocks.delete(agentId);
+    }
+    if (cancellationError) throw cancellationError;
+  }
+
   /** An audit sink failure must never change the outcome of a Run. */
   private async recordAudit(input: AuditEventInput): Promise<void> {
     const audit = this.dependencies.getAudit?.();
@@ -140,6 +298,15 @@ export class AgentRunCoordinator {
     await audit.record(input).catch((error) => {
       console.warn("audit write failed", error);
     });
+  }
+
+  private reportLifecycleFailure(failure: ApplicationLifecycleFailure): void {
+    try {
+      this.dependencies.reportLifecycleFailure?.(failure);
+    } catch {
+      // Reporting is advisory to the execution boundary; a broken reporter
+      // must never prevent the in-memory cancellation/settlement path.
+    }
   }
 
   /** Starts and registers a Run after the facade has persisted its queue record. */
@@ -154,7 +321,9 @@ export class AgentRunCoordinator {
     fallbackModels: readonly WorkerRuntimeModelConfig[] = [],
     modelSnapshot?: AgentModelSnapshot,
     parentSpan?: { traceId: string; spanId: string },
+    operation: OperationOptions = {},
   ): void {
+    const control = createRunControl(operation);
     // Queue the async body behind the registration. `executeRun` reaches its
     // first await synchronously, so invoking it before inserting this entry
     // leaves a cancellation or waitForRun call with no local execution to
@@ -171,18 +340,32 @@ export class AgentRunCoordinator {
         fallbackModels,
         modelSnapshot,
         parentSpan,
+        control.operation,
       ),
     );
-    this.activeExecutions.set(agentAtStart.id, { runId: run.id, execution });
+    this.activeExecutions.set(agentAtStart.id, {
+      runId: run.id,
+      run: structuredClone(run),
+      execution,
+    });
+    this.runControls.set(run.id, control);
     void execution.then(
       () => {
         if (this.activeExecutions.get(agentAtStart.id)?.runId === run.id) {
           this.activeExecutions.delete(agentAtStart.id);
         }
+        if (this.runControls.get(run.id) === control) {
+          control.dispose();
+          this.runControls.delete(run.id);
+        }
       },
       () => {
         if (this.activeExecutions.get(agentAtStart.id)?.runId === run.id) {
           this.activeExecutions.delete(agentAtStart.id);
+        }
+        if (this.runControls.get(run.id) === control) {
+          control.dispose();
+          this.runControls.delete(run.id);
         }
       },
     );
@@ -202,7 +385,11 @@ export class AgentRunCoordinator {
       return initial;
     }
     if (options.signal?.aborted) {
-      throw waitError("AbortError", "Waiting for Run " + runId + " was aborted");
+      const reason = options.signal.reason;
+      throw reason instanceof Error &&
+        (reason.name === "AbortError" || reason.name === "TimeoutError")
+        ? reason
+        : waitError("AbortError", "Waiting for Run " + runId + " was aborted");
     }
 
     return new Promise<AgentRun>((resolve, reject) => {
@@ -252,8 +439,14 @@ export class AgentRunCoordinator {
       };
 
       const onAbort = () => {
+        const reason = options.signal?.reason;
         settle(() =>
-          reject(waitError("AbortError", "Waiting for Run " + runId + " was aborted")),
+          reject(
+            reason instanceof Error &&
+              (reason.name === "AbortError" || reason.name === "TimeoutError")
+              ? reason
+              : waitError("AbortError", "Waiting for Run " + runId + " was aborted"),
+          ),
         );
       };
 
@@ -280,6 +473,15 @@ export class AgentRunCoordinator {
     return active?.runId === runId ? active.execution : undefined;
   }
 
+  private activeExecutionByRunId(runId: string):
+    | { agentId: string; execution: ActiveExecution }
+    | undefined {
+    for (const [agentId, execution] of this.activeExecutions) {
+      if (execution.runId === runId) return { agentId, execution };
+    }
+    return undefined;
+  }
+
   async cancelRun(runId: string): Promise<AgentRun> {
     const existing = this.runCancellations.get(runId);
     if (existing) return existing;
@@ -302,11 +504,19 @@ export class AgentRunCoordinator {
       return;
     }
 
+    const alreadyCancelling = this.agentCancellationLocks.has(agentId);
     this.agentCancellationLocks.add(agentId);
     this.cancellationRequests.add(active.runId);
     try {
-      await this.dependencies.runner.cancel(agentId);
+      this.runControls.get(active.runId)?.controller.abort(new RunCancelledError());
+      let cancellationError: unknown;
+      try {
+        if (!alreadyCancelling) await this.dependencies.runner.cancel(agentId);
+      } catch (error) {
+        cancellationError = error;
+      }
       await active.execution;
+      if (cancellationError) throw cancellationError;
     } finally {
       this.cancellationRequests.delete(active.runId);
       this.agentCancellationLocks.delete(agentId);
@@ -324,6 +534,7 @@ export class AgentRunCoordinator {
     fallbackModels: readonly WorkerRuntimeModelConfig[] = [],
     modelSnapshot?: AgentModelSnapshot,
     parentSpan?: { traceId: string; spanId: string },
+    operation: OperationOptions = {},
   ): Promise<void> {
     const telemetry = this.dependencies.getTelemetry();
     const attributes = correlationAttributes({
@@ -355,6 +566,7 @@ export class AgentRunCoordinator {
           modelSnapshot,
           span,
           parentSpan,
+          operation,
         ),
       );
       return;
@@ -371,6 +583,7 @@ export class AgentRunCoordinator {
       modelSnapshot,
       undefined,
       parentSpan,
+      operation,
     );
   }
 
@@ -386,6 +599,7 @@ export class AgentRunCoordinator {
     modelSnapshot?: AgentModelSnapshot,
     runSpan?: TelemetrySpan,
     parentSpan?: { traceId: string; spanId: string },
+    operation: OperationOptions = {},
   ): Promise<void> {
     const startedAt = now();
     // One span identity for the whole Run: every lifecycle event of this turn
@@ -399,17 +613,6 @@ export class AgentRunCoordinator {
         ? {}
         : { parentSpanId: parentSpan.spanId }),
     };
-    await this.dependencies.store.mutate((database) => {
-      const storedRun = database.runs.find((item) => item.id === run.id);
-      if (storedRun) {
-        storedRun.status = "running";
-        storedRun.startedAt = startedAt;
-        // Persist the trace identity on the Run so historical evidence stays
-        // reachable from the Run record alone.
-        storedRun.traceId = auditSpan.traceId;
-      }
-    });
-    this.runSpans.set(run.id, auditSpan);
     const correlation = {
       agentId: agentAtStart.id,
       ...(projectId === undefined ? {} : { projectId }),
@@ -418,39 +621,92 @@ export class AgentRunCoordinator {
       principal: agentPrincipal(agentAtStart.id),
       span: auditSpan,
     } as const;
-    await this.recordAudit({
-      ...correlation,
-      type: "run_started",
-      status: "success",
-      summary: "Run started",
-      metadata: {
-        model: runtimeModel.modelId,
-        providerId: runtimeModel.providerId,
-        fallbackCount: fallbackModels.length,
-        origin,
-        hasProject: projectId !== undefined,
-      },
-    });
     // Held for the whole turn when the run is Project-scoped. The lease and
     // the shared-scope thread are settled in the finally below.
     let binding: ProjectRunBinding | null = null;
     let outcome: { codexThreadId: string | null } | null = null;
     let mintedMcpSession: MintedMcpSession | null = null;
+    let terminalPersisted = false;
+    let runningRecordFound = false;
+    let terminalRecordFound = false;
     try {
-      if (this.cancellationRequests.has(run.id)) {
-        throw new RunCancelledError();
+      // Setup is part of the same guarded lifetime as the runner. If this
+      // mutation fails, the catch below records the failure (when possible)
+      // and, importantly, never dispatches a worker from a silently rejected
+      // background promise.
+      const initialControlError = this.executionControlError(run.id, operation);
+      if (initialControlError) {
+        terminalPersisted = await this.markRunCancelledBeforeExecution(
+          run.id,
+          agentAtStart.id,
+        );
+        return;
       }
+      await this.dependencies.store.mutate((database) => {
+        const storedRun = database.runs.find((item) => item.id === run.id);
+        if (storedRun) {
+          runningRecordFound = true;
+          storedRun.status = "running";
+          storedRun.startedAt = startedAt;
+          // Persist the trace identity on the Run so historical evidence stays
+          // reachable from the Run record alone.
+          storedRun.traceId = auditSpan.traceId;
+        }
+      });
+      if (!runningRecordFound) {
+        throw new Error("Accepted Run was not found during execution setup");
+      }
+      const afterRunning = this.executionControlError(run.id, operation);
+      if (afterRunning) {
+        terminalPersisted = await this.markRunCancelledBeforeExecution(
+          run.id,
+          agentAtStart.id,
+        );
+        return;
+      }
+      await this.recordAudit({
+        ...correlation,
+        type: "run_started",
+        status: "success",
+        summary: "Run started",
+        metadata: {
+          model: runtimeModel.modelId,
+          providerId: runtimeModel.providerId,
+          fallbackCount: fallbackModels.length,
+          origin,
+          hasProject: projectId !== undefined,
+        },
+      });
+      const afterStartAudit = this.executionControlError(run.id, operation);
+      if (afterStartAudit) {
+        terminalPersisted = await this.markRunCancelledBeforeExecution(
+          run.id,
+          agentAtStart.id,
+        );
+        return;
+      }
+      this.runSpans.set(run.id, auditSpan);
+
+      const beforePreparation = this.executionControlError(run.id, operation);
+      if (beforePreparation) throw beforePreparation;
       if (projectId !== undefined) {
         binding = await this.requireProjectScope().beginTurn(
           agentAtStart,
           projectId,
           run.id,
+          operation,
         );
         // Role changes can happen after acceptance or while waiting for the
         // Project lease. Recheck immediately before invoking the runner.
-        await this.requireProjectScope().assertRunnable(projectId, agentAtStart.id);
+        await this.requireProjectScope().assertRunnable(
+          projectId,
+          agentAtStart.id,
+          operation,
+        );
+        const afterProjectPreparation = this.executionControlError(run.id, operation);
+        if (afterProjectPreparation) throw afterProjectPreparation;
       }
-      const executionPrompt = await this.dependencies.prompt.compose(
+      const runtimePrompt = await this.dependencies.prompt.composeWithContext(
         agentAtStart,
         run.prompt,
         binding,
@@ -458,6 +714,9 @@ export class AgentRunCoordinator {
         run.id,
         orchestrationId,
       );
+      const executionPrompt = runtimePrompt.prompt;
+      const afterPrompt = this.executionControlError(run.id, operation);
+      if (afterPrompt) throw afterPrompt;
       // Mint as late as possible: the opaque token exists only for the child
       // run and is revoked on every completion/failure/cancellation path.
       let mcpUrl: string | undefined;
@@ -467,6 +726,41 @@ export class AgentRunCoordinator {
       const mcpSessions = this.dependencies.getMcpSessions();
       if (mcpSessions) {
         mcpUrl = this.mcpUrl();
+        let toolResolution: EffectiveToolResolution | undefined;
+        const resolveEffectiveTools = this.dependencies.getEffectiveToolResolution?.();
+        if (!resolveEffectiveTools && this.dependencies.config.mcpScopedAdvertisement) {
+          toolResolution = {
+            ok: false,
+            advertisedToolIds: [],
+            diagnostics: {
+              status: "failed",
+              configuredCatalogueSize: 0,
+              advertisedToolCount: 0,
+              reason: "Effective tool resolver is unavailable",
+            },
+          };
+        } else if (resolveEffectiveTools) {
+          try {
+            toolResolution = resolveEffectiveTools(
+              agentAtStart,
+              projectId,
+              runtimePrompt.skillProjection,
+            );
+          } catch {
+            toolResolution = this.dependencies.config.mcpScopedAdvertisement
+              ? {
+                  ok: false,
+                  advertisedToolIds: [],
+                  diagnostics: {
+                    status: "failed",
+                    configuredCatalogueSize: 0,
+                    advertisedToolCount: 0,
+                    reason: "Effective tool resolution failed",
+                  },
+                }
+              : undefined;
+          }
+        }
         mintedMcpSession = mcpSessions.mint({
           agentId: agentAtStart.id,
           ...(projectId === undefined ? {} : { projectId }),
@@ -475,6 +769,18 @@ export class AgentRunCoordinator {
           ...(traceCarrier.traceparent === undefined
             ? {}
             : { traceparent: traceCarrier.traceparent }),
+          ...(toolResolution === undefined
+            ? {}
+            : {
+                advertisedToolIds: toolResolution.advertisedToolIds,
+                diagnostics: {
+                  configuredCatalogueSize:
+                    toolResolution.diagnostics.configuredCatalogueSize,
+                  advertisedToolCount:
+                    toolResolution.diagnostics.advertisedToolCount,
+                  resolutionStatus: toolResolution.diagnostics.status,
+                },
+              }),
         });
       }
       const initialThreadId = binding
@@ -514,9 +820,8 @@ export class AgentRunCoordinator {
       let selectedModelIndex = -1;
       let lastModelError: unknown;
       for (const [modelIndex, attempt] of modelAttempts.entries()) {
-        if (this.cancellationRequests.has(run.id)) {
-          throw new RunCancelledError();
-        }
+        const beforeRunner = this.executionControlError(run.id, operation);
+        if (beforeRunner) throw beforeRunner;
         try {
           result = await this.dependencies.runner.run({
             agentId: agentAtStart.id,
@@ -545,7 +850,13 @@ export class AgentRunCoordinator {
                       : { traceparent: mintedMcpSession.context.traceparent }),
                   },
                 }),
+            ...(operation.signal === undefined ? {} : { signal: operation.signal }),
+            ...(operation.deadlineAt === undefined
+              ? {}
+              : { deadlineAt: operation.deadlineAt }),
           });
+          const afterRunner = this.executionControlError(run.id, operation);
+          if (afterRunner) throw afterRunner;
           // The model may swallow an MCP isError and return apparent output.
           // The authenticated MCP route latches the denial for this Run, so a
           // successful runner result cannot turn a denied tool call into a
@@ -556,10 +867,8 @@ export class AgentRunCoordinator {
           selectedModelIndex = modelIndex;
           break;
         } catch (error) {
-          if (
-            error instanceof RunCancelledError ||
-            this.cancellationRequests.has(run.id)
-          ) {
+          const runnerControlError = this.executionControlError(run.id, operation);
+          if (runnerControlError) {
             throw error;
           }
           // Check the terminal denial before considering a model fallback. A
@@ -594,6 +903,8 @@ export class AgentRunCoordinator {
       if (result === undefined) {
         throw lastModelError ?? new Error("No worker model attempt completed");
       }
+      const beforeCompletion = this.executionControlError(run.id, operation);
+      if (beforeCompletion) throw beforeCompletion;
       const selectedModelRef = assignmentSnapshot
         ? selectedModelIndex === 0
           ? assignmentSnapshot.modelRef
@@ -615,8 +926,9 @@ export class AgentRunCoordinator {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
         if (!storedRun || !agent) return;
+        terminalRecordFound = true;
         if (isTerminalRun(storedRun)) return;
-        if (this.cancellationRequests.has(run.id)) {
+        if (this.executionControlError(run.id, operation)) {
           cancelledWhileCompleting = true;
           storedRun.status = "cancelled";
           storedRun.error = "Run cancelled";
@@ -665,6 +977,7 @@ export class AgentRunCoordinator {
         agent.lastError = null;
         agent.updatedAt = completedAt;
       });
+      terminalPersisted = terminalRecordFound;
       if (selectedModelIndex > 0 && persistedCompletion) {
         await this.recordAudit({
           ...correlation,
@@ -719,8 +1032,11 @@ export class AgentRunCoordinator {
       if (binding !== null) outcome = { codexThreadId: result.threadId };
     } catch (error) {
       const completedAt = now();
+      const controlError = this.executionControlError(run.id, operation);
       const cancelled =
-        error instanceof RunCancelledError || this.cancellationRequests.has(run.id);
+        error instanceof RunCancelledError ||
+        this.cancellationRequests.has(run.id) ||
+        controlError instanceof RunCancelledError;
       const webPermissionDenied =
         !cancelled &&
         (error instanceof WebToolPermissionDeniedError ||
@@ -729,42 +1045,58 @@ export class AgentRunCoordinator {
         !cancelled && runtimeErrorCode(error) === MODEL_INFERENCE_LIMIT_EXCEEDED;
       runSpan?.setStatus(cancelled ? "ok" : "error");
       const message = safeRuntimeError(error);
-      await this.dependencies.store.mutate((database) => {
-        const storedRun = database.runs.find((item) => item.id === run.id);
-        const agent = database.agents.find((item) => item.id === agentAtStart.id);
-        if (storedRun && isTerminalRun(storedRun)) {
+      try {
+        await this.dependencies.store.mutate((database) => {
+          const storedRun = database.runs.find((item) => item.id === run.id);
+          const agent = database.agents.find((item) => item.id === agentAtStart.id);
+          if (storedRun && isTerminalRun(storedRun)) {
+            terminalRecordFound = true;
+            if (agent) {
+              if (agent.status !== "stopped") agent.status = "ready";
+              agent.updatedAt = completedAt;
+            }
+            return;
+          }
+          if (storedRun) {
+            terminalRecordFound = true;
+            storedRun.status = cancelled ? "cancelled" : "failed";
+            storedRun.error = cancelled ? "Run cancelled" : message;
+            if (webPermissionDenied) {
+              storedRun.errorCode = WEB_TOOL_PERMISSION_DENIED;
+            } else if (modelInferenceLimitExceeded) {
+              storedRun.errorCode = MODEL_INFERENCE_LIMIT_EXCEEDED;
+            } else {
+              delete storedRun.errorCode;
+            }
+            storedRun.completedAt = completedAt;
+          }
           if (agent) {
-            if (agent.status !== "stopped") agent.status = "ready";
+            if (agent.status !== "stopped") {
+              agent.status =
+                cancelled || webPermissionDenied || modelInferenceLimitExceeded
+                  ? "ready"
+                  : "error";
+            }
+            agent.lastError =
+              cancelled || webPermissionDenied || modelInferenceLimitExceeded
+                ? null
+                : message;
             agent.updatedAt = completedAt;
           }
-          return;
-        }
-        if (storedRun) {
-          storedRun.status = cancelled ? "cancelled" : "failed";
-          storedRun.error = cancelled ? "Run cancelled" : message;
-          if (webPermissionDenied) {
-            storedRun.errorCode = WEB_TOOL_PERMISSION_DENIED;
-          } else if (modelInferenceLimitExceeded) {
-            storedRun.errorCode = MODEL_INFERENCE_LIMIT_EXCEEDED;
-          } else {
-            delete storedRun.errorCode;
-          }
-          storedRun.completedAt = completedAt;
-        }
-        if (agent) {
-          if (agent.status !== "stopped") {
-            agent.status =
-              cancelled || webPermissionDenied || modelInferenceLimitExceeded
-                ? "ready"
-                : "error";
-          }
-          agent.lastError =
-            cancelled || webPermissionDenied || modelInferenceLimitExceeded
-              ? null
-              : message;
-          agent.updatedAt = completedAt;
-        }
-      });
+        });
+        terminalPersisted = terminalRecordFound;
+      } catch {
+        // A failed terminal write is uncertainty, not permission to release a
+        // Project lease. Keep the ownership evidence in place and report the
+        // failure through the application lifecycle sink.
+        this.reportLifecycleFailure({
+          code: "EXECUTION_FINALIZATION_FAILED",
+          message: "Agent Run terminal state could not be persisted",
+          runId: run.id,
+          agentId: agentAtStart.id,
+          ...(projectId === undefined ? {} : { projectId }),
+        });
+      }
       const durationMs = Math.max(
         0,
         Date.parse(completedAt) - Date.parse(startedAt),
@@ -802,12 +1134,37 @@ export class AgentRunCoordinator {
       );
     } finally {
       this.runSpans.delete(run.id);
-      // The write lease must never outlive its turn, on any path: success,
-      // failure, cancellation, or a runner that threw before producing output.
+      // Release only after a terminal Run fact is known to be committed. A
+      // failed terminal write leaves physical ownership uncertain, so keeping
+      // the lease is the safe recovery gate rather than releasing a possibly
+      // live writer.
       if (binding !== null) {
-        await this.requireProjectScope()
-          .endTurn(binding.projectId, agentAtStart.id, run.id, outcome)
-          .catch(() => undefined);
+        if (terminalPersisted) {
+          try {
+            await this.requireProjectScope().endTurn(
+              binding.projectId,
+              agentAtStart.id,
+              run.id,
+              outcome,
+            );
+          } catch {
+            this.reportLifecycleFailure({
+              code: "PROJECT_LEASE_RELEASE_FAILED",
+              message: "Project turn cleanup could not be completed",
+              runId: run.id,
+              agentId: agentAtStart.id,
+              projectId: binding.projectId,
+            });
+          }
+        } else {
+          this.reportLifecycleFailure({
+            code: "EXECUTION_FINALIZATION_FAILED",
+            message: "Project lease retained because Agent Run settlement is uncertain",
+            runId: run.id,
+            agentId: agentAtStart.id,
+            projectId: binding.projectId,
+          });
+        }
       }
       if (mintedMcpSession !== null) {
         this.dependencies.getMcpSessions()?.revoke(mintedMcpSession.token);
@@ -817,7 +1174,17 @@ export class AgentRunCoordinator {
   }
 
   private async cancelRunInternal(runId: string): Promise<AgentRun> {
-    const initial = this.dependencies.getRun(runId);
+    // Prefer the process-local handle before consulting Storage. A fatal
+    // adapter transition may make the persisted snapshot unreadable while an
+    // accepted child still needs an explicit physical cancellation.
+    const inMemory = this.activeExecutionByRunId(runId);
+    let initial: AgentRun;
+    try {
+      initial = this.dependencies.getRun(runId);
+    } catch (error) {
+      if (!inMemory) throw error;
+      initial = structuredClone(inMemory.execution.run);
+    }
     if (isTerminalRun(initial)) return initial;
 
     const active = this.activeExecutions.get(initial.agentId);
@@ -827,16 +1194,81 @@ export class AgentRunCoordinator {
       throw new HttpError(409, "Run is not currently active");
     }
 
+    const alreadyCancelling = this.agentCancellationLocks.has(initial.agentId);
     this.agentCancellationLocks.add(initial.agentId);
     this.cancellationRequests.add(runId);
     try {
-      await this.dependencies.runner.cancel(initial.agentId);
+      this.runControls.get(runId)?.controller.abort(new RunCancelledError());
+      let cancellationError: unknown;
+      try {
+        if (!alreadyCancelling) await this.dependencies.runner.cancel(initial.agentId);
+      } catch (error) {
+        cancellationError = error;
+      }
       await active.execution;
-      return this.dependencies.getRun(runId);
+      if (cancellationError) throw cancellationError;
+      try {
+        return this.dependencies.getRun(runId);
+      } catch {
+        // Storage may remain unavailable after physical cancellation. Return
+        // only an in-memory cancellation projection to the caller; no
+        // fabricated terminal record is persisted.
+        return {
+          ...structuredClone(active.run),
+          status: "cancelled",
+          error: "Run cancelled",
+          completedAt: now(),
+        };
+      }
     } finally {
       this.cancellationRequests.delete(runId);
       this.agentCancellationLocks.delete(initial.agentId);
     }
+  }
+
+  /**
+   * A cancellation can arrive while the accepted Run is still queued. Make
+   * that record terminal without entering the running/audit/runner path.
+   */
+  private async markRunCancelledBeforeExecution(
+    runId: string,
+    agentId: string,
+  ): Promise<boolean> {
+    const completedAt = now();
+    let persisted = false;
+    await this.dependencies.store.mutate((database) => {
+      const storedRun = database.runs.find((item) => item.id === runId);
+      const agent = database.agents.find((item) => item.id === agentId);
+      if (!storedRun || !agent || isTerminalRun(storedRun)) return;
+      persisted = true;
+      storedRun.status = "cancelled";
+      storedRun.error = "Run cancelled";
+      storedRun.completedAt = completedAt;
+      if (agent.status !== "stopped") agent.status = "ready";
+      agent.lastError = null;
+      agent.updatedAt = completedAt;
+    });
+    return persisted;
+  }
+
+  private executionControlError(
+    runId: string,
+    operation: OperationOptions,
+  ): Error | undefined {
+    if (this.cancellationRequests.has(runId)) return new RunCancelledError();
+    if (operation.signal?.aborted) {
+      const reason = operation.signal.reason;
+      if (reason instanceof Error && reason.name === "TimeoutError") return reason;
+      return new RunCancelledError();
+    }
+    if (
+      operation.deadlineAt !== undefined &&
+      Number.isFinite(operation.deadlineAt) &&
+      Date.now() >= operation.deadlineAt
+    ) {
+      return waitError("TimeoutError", "Run " + runId + " timed out");
+    }
+    return undefined;
   }
 
   private requireProjectScope(): ProjectExecutionScope {

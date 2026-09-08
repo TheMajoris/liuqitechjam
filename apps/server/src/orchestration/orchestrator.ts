@@ -11,11 +11,12 @@ import type {
   OrchestrationMode,
   OrchestrationParticipant,
 } from "./types.js";
+import type { SupervisorRequestBudget } from "./supervisor/types.js";
 
 /**
  * Application-owned projection of one orchestration execution turn.
  *
- * The graph engine may use this projection internally, but callers of the
+ * The execution engine may use this projection internally, but callers of the
  * orchestration service do not need to know which workflow framework executes
  * it.
  */
@@ -75,6 +76,8 @@ export interface OrchestrationSelectionInput {
 export interface OrchestrationSelectionOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Shared supervisor deadline/call budget for semantic corrections. */
+  requestBudget?: SupervisorRequestBudget;
 }
 
 /** Awaitable application-owned participant routing policy. */
@@ -205,7 +208,7 @@ export interface OrchestrationExecutionOptions {
 /**
  * Stable application seam for workflow engines.
  *
- * Implementations may use LangGraph, Mastra, or another engine, but the
+ * Implementations may use Mastra or another engine, but the
  * service only exchanges repository-owned execution data and hooks here.
  */
 export interface Orchestrator {

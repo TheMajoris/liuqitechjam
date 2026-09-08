@@ -94,6 +94,7 @@ export const REPORT_MCP_OUTPUT = {
 export const REPORT_USAGE_EVENTS = [
   {
     type: "turn.completed",
+    scope: "last-request",
     request_id: "request-1",
     usage: {
       input_tokens: 120,
@@ -146,4 +147,3 @@ export const REPORT_USAGE_EVENTS = [
     },
   },
 ] as const;
-

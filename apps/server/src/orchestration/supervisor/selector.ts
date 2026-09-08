@@ -13,6 +13,7 @@ import type { SequenceDecision } from "../sequence.js";
 import type { HandoffEnvelope } from "../handoff.js";
 import { ORCHESTRATION_LIMITS } from "../schemas.js";
 import { DEFAULT_SUPERVISOR_TIMEOUT_MS } from "./provider.js";
+import { createSupervisorRequestBudget } from "./types.js";
 import type {
   SupervisorProvider,
   SupervisorProviderOptions,
@@ -104,9 +105,32 @@ export class SupervisorSelector {
     options: SupervisorProviderOptions = {},
   ): Promise<SupervisorSelection> {
     if (options.signal?.aborted) throw createAbortError();
-    const startedAt = Date.now();
+    const configuredTimeoutMs = options.timeoutMs;
+    const selectionTimeoutMs =
+      typeof configuredTimeoutMs === "number" &&
+      Number.isInteger(configuredTimeoutMs) &&
+      configuredTimeoutMs > 0
+        ? configuredTimeoutMs
+        : DEFAULT_SUPERVISOR_TIMEOUT_MS;
+    const requestBudget =
+      options.requestBudget ??
+      createSupervisorRequestBudget(Date.now() + selectionTimeoutMs);
+    const remainingTimeoutMs = requestBudget.deadlineAt - Date.now();
+    if (!Number.isFinite(remainingTimeoutMs) || remainingTimeoutMs <= 0) {
+      throw new SupervisorError(
+        "SUPERVISOR_TIMED_OUT",
+        "Supervisor did not make a routing decision before the routing deadline",
+      );
+    }
+    const providerOptions: SupervisorProviderOptions = {
+      ...options,
+      requestBudget,
+    };
     const safeContext = sanitizeSupervisorSelectionContext(context);
-    const rawDecision = await this.provider.decide(safeContext, options);
+    const rawDecision = await this.provider.decide(
+      safeContext,
+      providerOptions,
+    );
     if (options.signal?.aborted) throw createAbortError();
     const decision = parseSupervisorRoutingDecision(rawDecision);
     const selection = resolveSelection(safeContext, decision);
@@ -119,17 +143,8 @@ export class SupervisorSelector {
     }
 
     if (options.signal?.aborted) throw createAbortError();
-    const configuredTimeoutMs = options.timeoutMs;
-    const selectionTimeoutMs =
-      typeof configuredTimeoutMs === "number" &&
-      Number.isInteger(configuredTimeoutMs) &&
-      configuredTimeoutMs > 0
-        ? configuredTimeoutMs
-        : DEFAULT_SUPERVISOR_TIMEOUT_MS;
-    const remainingTimeoutMs =
-      selectionTimeoutMs -
-      Math.max(0, Date.now() - startedAt);
-    if (remainingTimeoutMs <= 0) {
+    const correctionTimeoutMs = requestBudget.deadlineAt - Date.now();
+    if (correctionTimeoutMs <= 0) {
       throw new SupervisorError(
         "SUPERVISOR_TIMED_OUT",
         "Supervisor did not correct an immediate repeat before the routing deadline",
@@ -142,7 +157,7 @@ export class SupervisorSelector {
     });
     const correctedRawDecision = await this.provider.decide(
       correctionContext,
-      { ...options, timeoutMs: remainingTimeoutMs },
+      { ...providerOptions, timeoutMs: correctionTimeoutMs },
     );
     if (options.signal?.aborted) throw createAbortError();
     const correctedDecision = parseSupervisorRoutingDecision(correctedRawDecision);

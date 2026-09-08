@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { McpSessionContext } from "./tools/mcp-session-service.js";
 import { McpSessionService } from "./tools/mcp-session-service.js";
@@ -17,6 +18,8 @@ import type { WebFetchAdapter } from "./tools/web-fetch-adapter.js";
 export interface McpRouteDependencies {
   sessions: McpSessionService;
   toolService: ToolService;
+  /** Explicit opt-in switch for scoped discovery; omitted preserves legacy advertisement. */
+  legacyFullAdvertisement?: boolean;
   /** Optional so isolated Wave 9 route tests can omit the skill plane. */
   skillService?: SkillService;
   /** Optional reusable Agent role-template control plane. */
@@ -37,6 +40,8 @@ export interface McpRouteDependencies {
 export interface McpServerOptions {
   /** Called only after an authenticated web tool returns PERMISSION_DENIED. */
   onWebToolPermissionDenied?: (runId: string) => void;
+  /** Safe rollback hook; omitted preserves the historical full registry. */
+  legacyFullAdvertisement?: boolean;
 }
 
 function bearerToken(request: FastifyRequest): string | null {
@@ -103,12 +108,30 @@ export function createMcpServer(
   // The propagation header is a transport concern. Keep it out of the
   // ToolService execution context even though it remains available to the
   // authenticated HTTP boundary as a parent-context fallback.
-  const { traceparent: _traceparent, ...toolContext } = context;
+  const {
+    traceparent: _traceparent,
+    expiresAt: _expiresAt,
+    advertisedToolIds,
+    diagnostics,
+    ...toolContext
+  } = context;
+  void _traceparent;
+  void _expiresAt;
+  void diagnostics;
   const server = new McpServer({
     name: "lqam",
     version: "1.0.0",
   });
-  for (const definition of toolService.getRegistry().list()) {
+  const registryDefinitions = toolService.getRegistry().list();
+  const registeredDefinitions = advertisedToolIds === undefined
+    ? diagnostics?.resolutionStatus === "failed" || options.legacyFullAdvertisement === false
+      ? []
+      : registryDefinitions
+    : (() => {
+        const snapshot = new Set(advertisedToolIds);
+        return registryDefinitions.filter((definition) => snapshot.has(definition.id));
+      })();
+  for (const definition of registeredDefinitions) {
     server.registerTool(
       definition.id,
       {
@@ -137,6 +160,14 @@ export function createMcpServer(
         }
       },
     );
+  }
+  // McpServer lazily installs its tools handlers from registerTool(). A
+  // fail-closed empty snapshot has no definition to trigger that setup, so
+  // install the read-only empty catalogue handler directly without inventing
+  // a dummy executable tool.
+  if (registeredDefinitions.length === 0) {
+    server.server.registerCapabilities({ tools: { listChanged: true } });
+    server.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: [] }));
   }
   return server;
 }
@@ -178,8 +209,31 @@ export function registerMcpRoute(
     }
     const context = detailed.context;
 
+    const configuredCatalogueSize = context.diagnostics?.configuredCatalogueSize ??
+      dependencies.toolService.getRegistry().list().length;
+    const advertisedToolCount = context.diagnostics?.advertisedToolCount ??
+      context.advertisedToolIds?.length ??
+      (context.diagnostics?.resolutionStatus === "failed" ||
+      dependencies.legacyFullAdvertisement === false
+        ? 0
+        : configuredCatalogueSize);
+    if (
+      context.diagnostics?.configuredCatalogueSize === undefined ||
+      context.diagnostics.advertisedToolCount === undefined
+    ) {
+      dependencies.sessions.recordCatalogueObservation(
+        context.runId,
+        configuredCatalogueSize,
+        advertisedToolCount,
+      );
+    }
+    dependencies.sessions.observeToolsListMessage(context.runId, request.body);
+
     const handleRequest = async () => {
       const server = createMcpServer(context, dependencies.toolService, {
+        ...(dependencies.legacyFullAdvertisement === undefined
+          ? {}
+          : { legacyFullAdvertisement: dependencies.legacyFullAdvertisement }),
         onWebToolPermissionDenied: (runId) => {
           dependencies.sessions.markWebToolPermissionDenied(runId);
         },

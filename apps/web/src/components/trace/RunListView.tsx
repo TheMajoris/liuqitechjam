@@ -3,7 +3,14 @@ import { api, ApiError } from "../../api";
 import type { RunHistoryEntry, RunStatus } from "../../types";
 import { Spinner } from "../playground/Spinner";
 import { formatCount, formatDuration, formatPercent } from "../insights/usage-format";
-import { describeTokens, formatStarted, formatTokenCell, shortId } from "./run-format";
+import {
+  describeContext,
+  describeTokens,
+  formatContextRemaining,
+  formatStarted,
+  formatTokenCell,
+  shortId,
+} from "./run-format";
 import {
   TokenHotspots,
   TokenSplitBar,
@@ -47,8 +54,15 @@ function startedAt(run: RunHistoryEntry): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+/**
+ * What a Run made the model process, for ranking and for the bar.
+ *
+ * Not the billed total: a Run resuming a long thread re-sends the conversation
+ * so far, so billing rises with the thread's age rather than with the work.
+ * The billed figure stays in the cell's tooltip.
+ */
 function reportedTokens(run: RunHistoryEntry): number {
-  return run.tokens.availability === "unavailable" ? -1 : run.tokens.totalTokens;
+  return run.tokens.availability === "unavailable" ? -1 : run.tokens.netNewTokens;
 }
 
 function sortRuns(runs: readonly RunHistoryEntry[], sort: SortValue): RunHistoryEntry[] {
@@ -182,7 +196,8 @@ export function RunListView({
                   <th>Status</th>
                   <th>Started</th>
                   <th className="numeric">Duration</th>
-                  <th className="token-column">Tokens</th>
+                  <th className="token-column">Processed</th>
+                  <th className="numeric">Context left</th>
                   <th className="numeric">Events</th>
                   <th className="numeric">Errors</th>
                 </tr>
@@ -233,7 +248,7 @@ export function RunListView({
                           <strong>{formatTokenCell(run.tokens)}</strong>
                           {windowTokens > 0 && reportedTokens(run) > 0 && (
                             <span className="token-cell-share">
-                              {formatPercent(run.tokens.totalTokens, windowTokens)}
+                              {formatPercent(run.tokens.netNewTokens, windowTokens)}
                             </span>
                           )}
                         </span>
@@ -241,13 +256,21 @@ export function RunListView({
                           <span
                             className="token-cell-bar"
                             style={{
-                              width: (run.tokens.totalTokens / peakTokens) * 100 + "%",
+                              width: (run.tokens.netNewTokens / peakTokens) * 100 + "%",
                             }}
                           >
                             <TokenSplitBar hotspot={run.tokens} />
                           </span>
                         )}
                       </span>
+                    </td>
+                    <td
+                      className={
+                        "numeric" + (run.context === null ? " is-absent" : "")
+                      }
+                      title={describeContext(run.context)}
+                    >
+                      {formatContextRemaining(run.context)}
                     </td>
                     <td className="numeric">{run.eventCount}</td>
                     <td className="numeric">{run.errorCount > 0 ? run.errorCount : ""}</td>

@@ -172,4 +172,27 @@ describe("PreviewService", () => {
     expect(result.logs.join(" ")).not.toContain("secret-value");
   });
 
+  it("retries cleanup for an interrupted Preview that still has a runtime handle", async () => {
+    const context = await makePreview();
+    const started = await context.service.start({
+      kind: "agent",
+      agentId: context.agent.id,
+    });
+    await context.store.mutate((database) => {
+      const preview = database.previews.find((item) => item.id === started.id);
+      if (!preview) throw new Error("preview fixture was not persisted");
+      preview.status = "interrupted";
+      preview.errorCode = "PREVIEW_INTERRUPTED";
+      preview.errorMessage = "restart";
+      // Keep runtimeId to model a stop that was interrupted before confirmation.
+    });
+
+    await context.service.initialize();
+
+    expect(context.runtime.stops).toEqual([
+      expect.objectContaining({ runtimeId: "runtime-1" }),
+    ]);
+    expect(context.store.snapshot().previews[0]?.runtimeId).toBeNull();
+  });
+
 });

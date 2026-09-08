@@ -157,10 +157,20 @@ export interface Message {
   createdAt: string;
 }
 
+/**
+ * Provider counters for one Run.
+ *
+ * `cachedInputTokens` is the slice of `inputTokens` the provider served from
+ * its prompt cache, not a separate bucket, so it is never added to a total.
+ * `reasoningOutputTokens` is likewise a breakdown of `outputTokens`.
+ */
 export interface RunUsage {
   inputTokens?: number;
   cachedInputTokens?: number;
+  /** Input written into the prompt cache. Reported separately from reads. */
+  cacheWriteInputTokens?: number;
   outputTokens?: number;
+  reasoningOutputTokens?: number;
 }
 
 export interface AgentRun {
@@ -237,6 +247,29 @@ export interface Database {
   installedSkills: InstalledSkillRecord[];
 }
 
+/**
+ * The committed identities a runtime reconciler may inspect during startup.
+ * Keeping this projection narrow prevents a runtime adapter from making
+ * decisions from prompts, workspace paths, or other application state.
+ */
+export type RuntimeReconciliationInput = Pick<
+  Database,
+  "agents" | "runs" | "previews" | "projectLeases"
+>;
+
+/**
+ * Evidence returned by the application-owned startup runtime boundary.
+ * `confirmed*` means the matching runtime was absent after cleanup (or was
+ * positively absent at inventory time); unresolved identities remain gated.
+ */
+export interface RuntimeReconciliationResult {
+  provider: "container" | "local-process";
+  confirmedAgentIds: string[];
+  confirmedPreviewIds: string[];
+  unresolvedAgentIds: string[];
+  unresolvedPreviewIds: string[];
+}
+
 export interface CreateAgentInput {
   name: string;
   description?: string | undefined;
@@ -270,6 +303,18 @@ export interface RunnerResult {
   usage: RunUsage | null;
 }
 
+/**
+ * Optional control-plane bounds shared by one accepted operation.
+ *
+ * The signal requests cancellation; the absolute deadline prevents work that
+ * was waiting on an earlier asynchronous boundary from starting late. Neither
+ * field is a substitute for waiting for the owned worker to settle.
+ */
+export interface OperationOptions {
+  signal?: AbortSignal;
+  deadlineAt?: number;
+}
+
 /** Per-run MCP settings. The bearer token is consumed only by the child env. */
 export interface RunnerMcpConfig {
   url: string;
@@ -297,10 +342,18 @@ export interface RunnerRequest {
   observer?: import("./audit/runtime-action-audit.js").RuntimeActionObserver;
   /** Sandbox lifecycle witness; ignored by runners without a container. */
   sandboxAudit?: import("./audit/sandbox-audit.js").SandboxAuditSink;
+  /** Control-plane cancellation for pre-spawn and child-process boundaries. */
+  signal?: AbortSignal;
+  /** Absolute operation deadline, when the caller supplied one. */
+  deadlineAt?: number;
 }
 
 export interface AgentRunner {
   run(request: RunnerRequest): Promise<RunnerResult>;
   cancel(agentId: string): Promise<boolean>;
   isAvailable(): Promise<boolean>;
+  /** Optional startup reconciliation; local/test adapters may omit it. */
+  reconcileStartup?(
+    input: RuntimeReconciliationInput,
+  ): Promise<RuntimeReconciliationResult>;
 }

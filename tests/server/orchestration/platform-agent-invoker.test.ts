@@ -41,4 +41,38 @@ describe("PlatformAgentInvoker Project authorization", () => {
       "Edit workspace files (project.write)",
     );
   });
+
+  it("cancels an accepted child when acceptance resolves after cancellation", async () => {
+    let resolveSend!: (value: any) => void;
+    let cancelCalls = 0;
+    let waitCalls = 0;
+    const invoker = new PlatformAgentInvoker({
+      sendMessage: async () =>
+        new Promise((resolve) => {
+          resolveSend = resolve;
+        }),
+      async waitForRun() {
+        waitCalls += 1;
+        throw new Error("waitForRun should not be called");
+      },
+      async cancelRun() {
+        cancelCalls += 1;
+        return {} as any;
+      },
+    });
+    const controller = new AbortController();
+    const invocation = invoker.invoke({
+      agentId: "agent-1",
+      prompt: "write the requested change",
+      timeoutMs: 1_000,
+      signal: controller.signal,
+    });
+
+    controller.abort();
+    resolveSend({ run: { id: "run-1" }, message: {} });
+
+    await expect(invocation).rejects.toMatchObject({ name: "AbortError" });
+    expect(cancelCalls).toBe(1);
+    expect(waitCalls).toBe(0);
+  });
 });

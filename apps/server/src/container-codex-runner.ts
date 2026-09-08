@@ -11,23 +11,36 @@ import {
   parseCodexEventLine,
   type ParsedEvents,
 } from "./codex-runner.js";
-import { RetryableModelError } from "./errors.js";
+import { RetryableModelError, RunCancelledError } from "./errors.js";
 import type { SandboxAuditSink } from "./audit/sandbox-audit.js";
 import type { ContainerHealthSampler } from "./telemetry/container-health-sampler.js";
 import { MCP_BEARER_TOKEN_ENV } from "./tools/mcp-session-service.js";
 import type {
   AgentRunner,
+  RuntimeReconciliationInput,
+  RuntimeReconciliationResult,
   RunnerRequest,
   RunnerResult,
 } from "./types.js";
+import {
+  reconcileOwnedContainerRuntimes,
+  type RuntimeContainerEngineExec,
+} from "./runtime-reconciliation.js";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_MCP_PREFLIGHT_TIMEOUT_MS = 2_000;
 const MAX_MCP_PREFLIGHT_TIMEOUT_MS = 5_000;
 
+function timeoutError(message: string): Error {
+  const error = new Error(message);
+  error.name = "TimeoutError";
+  return error;
+}
+
 export interface McpEndpointProbeOptions {
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
 }
 
 /**
@@ -63,6 +76,12 @@ export async function probeMcpEndpoint(
   const timeoutResult = new Promise<boolean>((resolve) => {
     resolveTimeout = resolve;
   });
+  const onExternalAbort = () => {
+    controller.abort(options.signal?.reason);
+    resolveTimeout(false);
+  };
+  options.signal?.addEventListener("abort", onExternalAbort, { once: true });
+  if (options.signal?.aborted) onExternalAbort();
   const timeout = setTimeout(() => {
     timedOut = true;
     controller.abort();
@@ -87,11 +106,25 @@ export async function probeMcpEndpoint(
     return await Promise.race([probe, timeoutResult]);
   } finally {
     clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", onExternalAbort);
   }
 }
 
 interface ActiveContainer {
   execution: ChildProcessExecution;
+  context: ContainerExecutionContext;
+}
+
+interface ContainerExecutionContext {
+  controller: AbortController;
+  deadlineAt?: number;
+  execution: ChildProcessExecution | null;
+  settled: Promise<void>;
+  resolveSettled: () => void;
+  cancelPromise: Promise<void> | null;
+  cancelReason: "cancelled" | "timed-out" | null;
+  deadlineTimer: NodeJS.Timeout | null;
+  removeSignalListener: (() => void) | null;
 }
 
 /** The engine `inspect` seam; only the fields we treat as evidence are named. */
@@ -105,10 +138,7 @@ interface ContainerState {
 const INSPECT_TIMEOUT_MS = 4_000;
 const REMOVE_TIMEOUT_MS = 8_000;
 
-export type ContainerEngineExec = (
-  args: string[],
-  timeoutMs: number,
-) => Promise<{ stdout: string }>;
+export type ContainerEngineExec = RuntimeContainerEngineExec;
 
 function parseContainerState(stdout: unknown): ContainerState | null {
   if (typeof stdout !== "string") return null;
@@ -191,19 +221,28 @@ export function buildContainerRunArgs(
 
 export class ContainerCodexRunner implements AgentRunner {
   private readonly active = new Map<string, ActiveContainer>();
-  private readonly mcpProbe: (endpoint: string) => Promise<boolean>;
+  private readonly contexts = new Map<string, ContainerExecutionContext>();
+  private readonly mcpProbe: (
+    endpoint: string,
+    options?: McpEndpointProbeOptions,
+  ) => Promise<boolean>;
   private readonly execEngine: ContainerEngineExec;
   private readonly healthSampler: ContainerHealthSampler | undefined;
 
   constructor(
     private readonly config: AppConfig,
     options: {
-      mcpProbe?: (endpoint: string) => Promise<boolean>;
+      mcpProbe?: (
+        endpoint: string,
+        options?: McpEndpointProbeOptions,
+      ) => Promise<boolean>;
       execEngine?: ContainerEngineExec;
       healthSampler?: ContainerHealthSampler;
     } = {},
   ) {
-    this.mcpProbe = options.mcpProbe ?? ((endpoint) => probeMcpEndpoint(endpoint));
+    this.mcpProbe =
+      options.mcpProbe ??
+      ((endpoint, probeOptions) => probeMcpEndpoint(endpoint, probeOptions));
     this.execEngine =
       options.execEngine ??
       ((args, timeoutMs) =>
@@ -231,12 +270,101 @@ export class ContainerCodexRunner implements AgentRunner {
     }
   }
 
-  async cancel(agentId: string): Promise<boolean> {
-    const active = this.active.get(agentId);
-    if (!active) return false;
+  /** Reconcile only this configured instance's persisted runtime identities. */
+  async reconcileStartup(
+    input: RuntimeReconciliationInput,
+  ): Promise<RuntimeReconciliationResult> {
+    return reconcileOwnedContainerRuntimes(
+      this.config,
+      input,
+      this.execEngine,
+    );
+  }
 
-    await active.execution.cancel();
+  async cancel(agentId: string): Promise<boolean> {
+    const context = this.contexts.get(agentId);
+    if (!context) return false;
+    await this.cancelContext(context, "cancelled");
     return true;
+  }
+
+  private createContext(request: RunnerRequest): ContainerExecutionContext {
+    const controller = new AbortController();
+    let resolveSettled!: () => void;
+    const settled = new Promise<void>((resolve) => {
+      resolveSettled = resolve;
+    });
+    const context: ContainerExecutionContext = {
+      controller,
+      ...(request.deadlineAt === undefined ? {} : { deadlineAt: request.deadlineAt }),
+      execution: null,
+      settled,
+      resolveSettled,
+      cancelPromise: null,
+      cancelReason: null,
+      deadlineTimer: null,
+      removeSignalListener: null,
+    };
+    const onAbort = () => {
+      const reason = request.signal?.reason;
+      const timedOut = reason instanceof Error && reason.name === "TimeoutError";
+      void this.cancelContext(context, timedOut ? "timed-out" : "cancelled");
+    };
+    request.signal?.addEventListener("abort", onAbort, { once: true });
+    context.removeSignalListener = () =>
+      request.signal?.removeEventListener("abort", onAbort);
+    if (request.signal?.aborted) onAbort();
+    if (request.deadlineAt !== undefined && Number.isFinite(request.deadlineAt)) {
+      const remaining = request.deadlineAt - Date.now();
+      if (remaining <= 0) {
+        void this.cancelContext(context, "timed-out");
+      } else {
+        context.deadlineTimer = setTimeout(() => {
+          void this.cancelContext(context, "timed-out");
+        }, remaining);
+        context.deadlineTimer.unref();
+      }
+    }
+    return context;
+  }
+
+  private async cancelContext(
+    context: ContainerExecutionContext,
+    reason: "cancelled" | "timed-out",
+  ): Promise<void> {
+    if (context.cancelPromise) return context.cancelPromise;
+    context.cancelReason = reason;
+    const abortReason =
+      reason === "timed-out"
+        ? timeoutError("Runtime operation timed out")
+        : new RunCancelledError();
+    if (!context.controller.signal.aborted) context.controller.abort(abortReason);
+    context.cancelPromise = (async () => {
+      let cancellationError: unknown;
+      try {
+        if (context.execution) await context.execution.cancel();
+      } catch (error) {
+        cancellationError = error;
+      }
+      await context.settled;
+      if (cancellationError) throw cancellationError;
+    })();
+    await context.cancelPromise;
+  }
+
+  private operationError(context: ContainerExecutionContext): Error | undefined {
+    if (
+      context.deadlineAt !== undefined &&
+      Number.isFinite(context.deadlineAt) &&
+      Date.now() >= context.deadlineAt
+    ) {
+      return timeoutError("Runtime operation timed out");
+    }
+    if (!context.cancelReason) return undefined;
+    if (context.cancelReason === "timed-out") {
+      return timeoutError("Runtime operation timed out");
+    }
+    return new RunCancelledError();
   }
 
   /**
@@ -282,118 +410,159 @@ export class ContainerCodexRunner implements AgentRunner {
   }
 
   async run(request: RunnerRequest): Promise<RunnerResult> {
-    if (this.active.has(request.agentId)) {
+    if (this.active.has(request.agentId) || this.contexts.has(request.agentId)) {
       throw new Error("Agent already has an active Runtime container");
     }
-    if (request.mcp) {
-      let reachable = false;
-      try {
-        reachable = await this.mcpProbe(this.config.mcpPublicUrl);
-      } catch {
-        reachable = false;
-      }
-      if (!reachable) {
-        throw new Error("MCP endpoint is unreachable");
-      }
-      // The probe yields to the event loop. Re-check before spawning so two
-      // concurrent calls cannot both pass the initial active-run guard.
-      if (this.active.has(request.agentId)) {
-        throw new Error("Agent already has an active Runtime container");
-      }
-    }
-
-    const parsed: ParsedEvents = {
-      messages: [],
-      threadId: request.threadId,
-      usage: null,
-      errors: [],
-    };
-    const activeContainerName = containerName(
-      request.agentId,
-      this.config.runtimeInstanceId,
-    );
-    let termination: Promise<ContainerState | null> | null = null;
-    let inspectedState: ContainerState | null = null;
-    // Inspect + remove is idempotent per run: the stop path and the normal
-    // path share one promise so the container is never inspected twice.
-    const cleanup = (child?: ChildProcess): Promise<ContainerState | null> => {
-      if (!termination) {
-        termination = this.inspectAndRemove(
-          activeContainerName,
-          child,
-          request.sandboxAudit,
-        );
-      }
-      return termination;
-    };
-    let execution: ChildProcessExecution;
-    request.sandboxAudit?.started({
-      engine: this.config.containerEngine,
-      image: this.config.containerRuntimeImage,
-      cpuLimit: this.config.containerCpuLimit,
-      memoryLimit: this.config.containerMemoryLimit,
-      pidsLimit: this.config.containerPidsLimit,
-      containerName: activeContainerName,
-    });
-    const startedAt = Date.now();
+    const context = this.createContext(request);
+    this.contexts.set(request.agentId, context);
     try {
-      execution = startChildProcessExecution({
-        command: this.config.containerEngine,
-        args: buildContainerRunArgs(request, this.config),
-        cwd: request.workspacePath,
-        env: this.childEnvironment(request),
-        timeoutMs: this.config.codexTimeoutMs,
-        maxOutputBytes: this.config.codexMaxOutputBytes,
-        startErrorMessage: "Container runtime could not start",
-        onLine: (line) => parseCodexEventLine(line, parsed, request.observer),
-        stop: (child) => cleanup(child).then(() => undefined),
-      });
-    } catch (error) {
-      throw new RetryableModelError("Container runtime could not start", {
-        cause: error,
-      });
-    }
-    this.active.set(request.agentId, { execution });
-    const runId = request.runId ?? request.agentId;
-    this.healthSampler?.start(activeContainerName, {
-      agentId: request.agentId,
-      runId,
-    });
+      const initialControlError = this.operationError(context);
+      if (initialControlError) throw initialControlError;
+      if (request.mcp) {
+        let reachable = false;
+        try {
+          const probeTimeoutMs =
+            request.deadlineAt === undefined
+              ? undefined
+              : Math.max(1, request.deadlineAt - Date.now());
+          reachable = await this.mcpProbe(this.config.mcpPublicUrl, {
+            signal: context.controller.signal,
+            ...(probeTimeoutMs === undefined ? {} : { timeoutMs: probeTimeoutMs }),
+          });
+        } catch {
+          const probeControlError = this.operationError(context);
+          if (probeControlError) throw probeControlError;
+          reachable = false;
+        }
+        const probeControlError = this.operationError(context);
+        if (probeControlError) throw probeControlError;
+        if (!reachable) {
+          throw new Error("MCP endpoint is unreachable");
+        }
+        // The probe yields to the event loop. Re-check before spawning so two
+        // concurrent calls cannot both pass the initial active-run guard.
+        if (this.active.has(request.agentId)) {
+          throw new Error("Agent already has an active Runtime container");
+        }
+      }
 
-    let result: Awaited<typeof execution.completed> | undefined;
-    try {
+      const parsed: ParsedEvents = {
+        messages: [],
+        threadId: request.threadId,
+        usage: null,
+        errors: [],
+      };
+      const activeContainerName = containerName(
+        request.agentId,
+        this.config.runtimeInstanceId,
+      );
+      let termination: Promise<ContainerState | null> | null = null;
+      let inspectedState: ContainerState | null = null;
+      // Inspect + remove is idempotent per run: the stop path and the normal
+      // path share one promise so the container is never inspected twice.
+      const cleanup = (child?: ChildProcess): Promise<ContainerState | null> => {
+        if (!termination) {
+          termination = this.inspectAndRemove(
+            activeContainerName,
+            child,
+            request.sandboxAudit,
+          );
+        }
+        return termination;
+      };
+      let execution: ChildProcessExecution;
+      request.sandboxAudit?.started({
+        engine: this.config.containerEngine,
+        image: this.config.containerRuntimeImage,
+        cpuLimit: this.config.containerCpuLimit,
+        memoryLimit: this.config.containerMemoryLimit,
+        pidsLimit: this.config.containerPidsLimit,
+        containerName: activeContainerName,
+      });
+      const beforeSpawnControlError = this.operationError(context);
+      if (beforeSpawnControlError) throw beforeSpawnControlError;
+      const startedAt = Date.now();
       try {
-        result = await execution.completed;
+        execution = startChildProcessExecution({
+          command: this.config.containerEngine,
+          args: buildContainerRunArgs(request, this.config),
+          cwd: request.workspacePath,
+          env: this.childEnvironment(request),
+          timeoutMs: this.config.codexTimeoutMs,
+          signal: context.controller.signal,
+          ...(request.deadlineAt === undefined
+            ? {}
+            : { deadlineAt: request.deadlineAt }),
+          maxOutputBytes: this.config.codexMaxOutputBytes,
+          startErrorMessage: "Container runtime could not start",
+          onLine: (line) => parseCodexEventLine(line, parsed, request.observer),
+          stop: (child) => cleanup(child).then(() => undefined),
+        });
       } catch (error) {
+        const spawnControlError = this.operationError(context);
+        if (spawnControlError) throw spawnControlError;
         throw new RetryableModelError("Container runtime could not start", {
           cause: error,
         });
       }
-      inspectedState = await cleanup();
-      return finalizeCodexRun(parsed, result, {
-        timeout: "Runtime timed out after " + this.config.codexTimeoutMs + " ms",
-        exit: "Container runtime exited with code " + result.exitCode,
-        missing: "Codex completed without an agent message",
-        missingTruncated:
-          "Codex completed without an agent message after an oversized event was dropped; raise CODEX_MAX_OUTPUT_BYTES",
+      context.execution = execution;
+      this.active.set(request.agentId, { execution, context });
+      const runId = request.runId ?? request.agentId;
+      this.healthSampler?.start(activeContainerName, {
+        agentId: request.agentId,
+        runId,
       });
+
+      let result: Awaited<typeof execution.completed> | undefined;
+      try {
+        try {
+          result = await execution.completed;
+        } catch (error) {
+          const executionControlError = this.operationError(context);
+          if (executionControlError) throw executionControlError;
+          throw new RetryableModelError("Container runtime could not start", {
+            cause: error,
+          });
+        }
+        inspectedState = await cleanup();
+        const cleanupControlError = this.operationError(context);
+        if (cleanupControlError) throw cleanupControlError;
+        return finalizeCodexRun(parsed, result, {
+          timeout: "Runtime timed out after " + this.config.codexTimeoutMs + " ms",
+          exit: "Container runtime exited with code " + result.exitCode,
+          missing: "Codex completed without an agent message",
+          missingTruncated:
+            "Codex completed without an agent message after an oversized event was dropped; raise CODEX_MAX_OUTPUT_BYTES",
+        });
+      } finally {
+        this.active.delete(request.agentId);
+        this.healthSampler?.stop(runId);
+        const peak = this.healthSampler?.peak(runId);
+        const inspected = inspectedState !== null;
+        request.sandboxAudit?.exited({
+          exitCode: inspected
+            ? (inspectedState?.ExitCode ?? null)
+            : (result?.exitCode ?? null),
+          oomKilled: inspected ? Boolean(inspectedState?.OOMKilled) : null,
+          durationMs: Date.now() - startedAt,
+          inspected,
+          cancelled: result?.cancelled ?? context.cancelReason === "cancelled",
+          timedOut: result?.timedOut ?? context.cancelReason === "timed-out",
+          ...(peak ? { peakCpuPct: peak.peakCpuPct, peakMemBytes: peak.peakMemBytes } : {}),
+        });
+      }
     } finally {
-      this.active.delete(request.agentId);
-      this.healthSampler?.stop(runId);
-      const peak = this.healthSampler?.peak(runId);
-      const inspected = inspectedState !== null;
-      request.sandboxAudit?.exited({
-        exitCode: inspected
-          ? (inspectedState?.ExitCode ?? null)
-          : (result?.exitCode ?? null),
-        oomKilled: inspected ? Boolean(inspectedState?.OOMKilled) : null,
-        durationMs: Date.now() - startedAt,
-        inspected,
-        cancelled: result?.cancelled ?? false,
-        timedOut: result?.timedOut ?? false,
-        ...(peak ? { peakCpuPct: peak.peakCpuPct, peakMemBytes: peak.peakMemBytes } : {}),
-      });
+      this.settleContext(request.agentId, context);
     }
+  }
+
+  private settleContext(agentId: string, context: ContainerExecutionContext): void {
+    if (context.deadlineTimer) clearTimeout(context.deadlineTimer);
+    context.deadlineTimer = null;
+    context.removeSignalListener?.();
+    context.removeSignalListener = null;
+    if (this.contexts.get(agentId) === context) this.contexts.delete(agentId);
+    context.resolveSettled();
   }
 
   private childEnvironment(request?: { mcp?: { token: string; traceparent?: string } }): NodeJS.ProcessEnv {

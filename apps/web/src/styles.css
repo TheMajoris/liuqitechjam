@@ -771,6 +771,28 @@ input {
   margin-top: 6px;
 }
 
+/* Checkboxes and radios are controls, not text fields: the field sizing above
+   stretches them into full-width 40px boxes that shove their own label off the
+   row. Opt them back out to a plain native control. */
+input[type="checkbox"],
+input[type="radio"] {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin-top: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  accent-color: var(--purple);
+  cursor: pointer;
+}
+
+input[type="checkbox"]:disabled,
+input[type="radio"]:disabled {
+  cursor: not-allowed;
+}
+
 textarea {
   resize: vertical;
   padding: 11px 12px;
