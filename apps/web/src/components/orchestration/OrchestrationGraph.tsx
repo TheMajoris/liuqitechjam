@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from "react";
+import { useMemo, useRef, useState, type CSSProperties } from "react";
 import type { Agent, OrchestrationSessionDetail } from "../../types";
 import { AgentAvatar } from "./AgentAvatar";
 import {
@@ -15,6 +15,7 @@ import {
   type GraphRow,
 } from "./orchestration-graph";
 import { OrchestrationTurnInspector } from "./OrchestrationTurnInspector";
+import { briefLine } from "./turn-narrative";
 
 interface OrchestrationGraphProps {
   detail: OrchestrationSessionDetail | null;
@@ -221,6 +222,24 @@ export function OrchestrationGraph({
     [graph.edges],
   );
 
+  /**
+   * The one-line answer to "what was this turn for".
+   *
+   * The stored input is a rendered prompt of several thousand characters, so a
+   * row that printed it verbatim said nothing at a glance. A turn's input is
+   * written once at dispatch and never rewritten, so the reading is cached by
+   * turn ID: a live run replaces `detail` on a sub-second poll, and reparsing
+   * every historical prompt on each of those would be steady wasted work.
+   */
+  const summaryCache = useRef(new Map<string, string>());
+  const rowSummary = (node: GraphNode): string => {
+    const cached = summaryCache.current.get(node.id);
+    if (cached !== undefined) return cached;
+    const line = briefLine(node.turn.safeInputSummary);
+    summaryCache.current.set(node.id, line);
+    return line;
+  };
+
   const visibleRows = useMemo<GraphRow[]>(() => {
     const rows =
       filter === "failed"
@@ -396,7 +415,11 @@ export function OrchestrationGraph({
                     </span>
                     <AgentAvatar agentId={row.turn.agentId} name={name} size="sm" />
                     <span className="orch-log-name">{name}</span>
-                    <span className="orch-log-summary">{row.turn.safeInputSummary}</span>
+                    <span className="orch-log-summary">
+                      {/* An unreadable record is still the record: showing it
+                          verbatim beats claiming the turn had no input. */}
+                      {rowSummary(row) || row.turn.safeInputSummary}
+                    </span>
                     <span className={"orch-log-status " + status}>
                       {turnStatusLabel(row.turn.status)}
                     </span>
@@ -414,6 +437,7 @@ export function OrchestrationGraph({
                       <OrchestrationTurnInspector
                         node={row}
                         agents={agents}
+                        participants={detail?.session.participants ?? []}
                         onRetry={onRetry}
                         retryPending={retryPending}
                         retryBlocked={retryBlocked}
