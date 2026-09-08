@@ -6,6 +6,7 @@ import { AgentSprite } from "./AgentSprite";
 import { Desk, DeskChair } from "./Desk";
 import { HandoffToken } from "./HandoffToken";
 import { BoardStation, PreviewStation } from "./Stations";
+import { DepartingAgent, type DepartingAgentModel } from "./DepartingAgent";
 import { Perks } from "./Perks";
 import { Room } from "./Room";
 import { avatarLook, type WorkspaceCrew } from "./art/avatar-look";
@@ -29,6 +30,8 @@ export interface WorkspaceSceneProps {
   perks?: ReadonlySet<PerkId>;
   /** People or robots. One choice for the whole room. */
   crew?: WorkspaceCrew;
+  /** Agents that have already been removed, on their way out the door. */
+  departures?: readonly DepartingAgentModel[];
   /** Reports where an Agent currently stands, so its HTML plate can follow. */
   onAgentPosition?: (agentId: string, x: number, y: number) => void;
 }
@@ -55,6 +58,7 @@ export function WorkspaceScene({
   onOpenPreview,
   perks,
   crew = "people",
+  departures,
   onAgentPosition,
 }: WorkspaceSceneProps) {
   const seated = useMemo(
@@ -160,6 +164,16 @@ export function WorkspaceScene({
             onSelect={onSelectAgent}
             onHoverChange={onHoverAgent}
             {...(onAgentPosition ? { onPositionChange: onAgentPosition } : {})}
+          />
+        ))}
+        {/* Drawn in the same sorted layer as the seated Agents so someone
+            leaving passes in front of and behind furniture correctly. They own
+            no seat and take no part in the roster. */}
+        {departures?.map((departure) => (
+          <DepartingAgent
+            key={departure.agentId + ":" + departure.startedAt}
+            agent={departure}
+            crew={crew}
           />
         ))}
         <HandoffToken

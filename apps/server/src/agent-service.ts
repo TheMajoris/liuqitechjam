@@ -722,6 +722,21 @@ export class AgentService {
           database.projectLeases = database.projectLeases.filter(
             (item) => item.agentId !== id,
           );
+          // Membership is not the only place an Agent is listed. A draft
+          // Conversation is still being composed, so a roster entry pointing at
+          // an Agent that no longer exists is stale rather than historical: it
+          // keeps a desk in the room, and starting the Conversation fails with
+          // AGENT_NOT_FOUND until the whole thing is deleted. Started and
+          // finished Conversations keep their roster verbatim, because those
+          // records explain runs that actually happened.
+          for (const session of database.orchestrations) {
+            if (session.status !== "draft") continue;
+            if (!session.participants.some((item) => item.agentId === id)) continue;
+            session.participants = session.participants
+              .filter((item) => item.agentId !== id)
+              .map((item, position) => ({ ...item, position }));
+            session.updatedAt = deletedAt;
+          }
         });
         return { archivedWorkspace };
       } catch (error) {
@@ -769,6 +784,15 @@ export class AgentService {
               .filter((item) => item.agentId === id)
               .map((item) => structuredClone(item)),
           );
+          // Restore the draft rosters this delete trimmed, so a failed cleanup
+          // leaves the Agent exactly as usable as it was before it was tried.
+          for (const session of database.orchestrations) {
+            const original = before.orchestrations.find((item) => item.id === session.id);
+            if (!original || original.status !== "draft") continue;
+            if (!original.participants.some((item) => item.agentId === id)) continue;
+            session.participants = structuredClone(original.participants);
+            session.updatedAt = original.updatedAt;
+          }
         });
         if (archivedWorkspace !== null) {
           await this.workspaces.restore(stoppedAgent, archivedWorkspace).catch(() => undefined);

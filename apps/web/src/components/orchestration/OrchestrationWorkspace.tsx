@@ -205,6 +205,16 @@ export function OrchestrationWorkspace({
     [orchestration],
   );
 
+  const handleClarifyFirst = useCallback(
+    (clarifyFirst: boolean) => {
+      if (!detail) return;
+      void orchestration
+        .setClarifyFirst(clarifyFirst, detail.session.id)
+        .catch(() => undefined);
+    },
+    [detail, orchestration],
+  );
+
   const handleRetry = useCallback(
     (fromStepIndex: number) => {
       void orchestration.retryFromStep(fromStepIndex).catch(() => undefined);
@@ -466,11 +476,6 @@ export function OrchestrationWorkspace({
               modelProviders={modelProviders}
               project={workspaceProject}
               onInspectFailure={inspectFailure}
-              onClarifyFirstChange={(clarifyFirst) => {
-                void orchestration
-                  .setClarifyFirst(clarifyFirst, detail.session.id)
-                  .catch(() => undefined);
-              }}
             />
             <OrchestrationRunTabs
               detail={detail}
@@ -478,6 +483,7 @@ export function OrchestrationWorkspace({
               action={orchestration.action}
               onContinue={handleContinue}
               onRetry={handleRetry}
+              onClarifyFirstChange={handleClarifyFirst}
               activeTab={activeTab}
               onTabChange={setActiveTab}
               workspace={workspaceView}

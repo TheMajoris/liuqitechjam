@@ -29,6 +29,8 @@ interface OrchestrationRunTabsProps {
   onContinue?: (prompt: string, sessionId: string) => void;
   /** Retries the run from one recorded step; omitted when unavailable. */
   onRetry?: (fromStepIndex: number) => void;
+  /** Prompt-policy edit, surfaced beside the composer's send button. */
+  onClarifyFirstChange?: ((clarifyFirst: boolean) => void) | undefined;
   activeTab: RunTab;
   onTabChange: (tab: RunTab) => void;
   /** Rendered for the Workspace tab; supplied by the owner so this component
@@ -50,6 +52,7 @@ export function OrchestrationRunTabs({
   action = null,
   onContinue,
   onRetry,
+  onClarifyFirstChange,
   activeTab,
   onTabChange,
   workspace,
@@ -126,6 +129,7 @@ export function OrchestrationRunTabs({
             action={action}
             onContinue={onContinue}
             onRetry={onRetry}
+            onClarifyFirstChange={onClarifyFirstChange}
           />
         ) : activeTab === "activity" ? (
           // The log is the reading order. The raw journal stays one disclosure

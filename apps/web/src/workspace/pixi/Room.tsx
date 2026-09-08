@@ -5,6 +5,7 @@ import { pixelTexture } from "./art/pixel-texture";
 import { PLANT } from "./art/sprites";
 import {
   CORRIDOR,
+  EXIT_DOOR,
   SHELVES,
   WALL_HEIGHT,
   WORLD,
@@ -156,6 +157,20 @@ export function Room() {
         .rect(rackX + 2, server.y + 24, 12, 2)
         .fill(SCENE.rackLight);
     }
+
+    // The way out, on the left edge of the bottom corridor. Drawn as a recess
+    // rather than a door on a wall, because the room has no side walls: a dark
+    // opening with a lit threshold reads as somewhere to walk to.
+    graphics
+      .rect(EXIT_DOOR.x, EXIT_DOOR.y, EXIT_DOOR.width, EXIT_DOOR.height)
+      .fill(SCENE.doorFrame)
+      .rect(EXIT_DOOR.x, EXIT_DOOR.y + 3, EXIT_DOOR.width - 3, EXIT_DOOR.height - 6)
+      .fill(SCENE.doorPanel)
+      .rect(EXIT_DOOR.x + EXIT_DOOR.width - 5, EXIT_DOOR.y + EXIT_DOOR.height / 2 - 1, 2, 2)
+      .fill(SCENE.doorHandle)
+      // A strip of daylight on the floor, so the doorway reads as open.
+      .rect(EXIT_DOOR.x, EXIT_DOOR.y + EXIT_DOOR.height, EXIT_DOOR.width + 4, 2)
+      .fill({ color: SCENE.white, alpha: 0.35 });
 
     // Walls last, so no fixture is drawn over a partition.
     for (const zone of Object.values(ZONES)) zoneWalls(graphics, zone);

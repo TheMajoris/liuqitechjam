@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 
 const MAX_COMPOSER_HEIGHT = 200;
 
@@ -15,6 +15,7 @@ export function StickyComposer({
   hint,
   disabled,
   sending,
+  accessory,
   onChange,
   onSubmit,
 }: {
@@ -23,6 +24,8 @@ export function StickyComposer({
   hint: string;
   disabled: boolean;
   sending: boolean;
+  /** Small control shown beside Send, for settings that belong to the message. */
+  accessory?: ReactNode;
   onChange: (value: string) => void;
   onSubmit: (event: React.FormEvent) => void;
 }) {
@@ -61,6 +64,7 @@ export function StickyComposer({
             rows={1}
             aria-label="Message the Agent"
           />
+          {accessory}
           <button
             type="submit"
             className="send-button"

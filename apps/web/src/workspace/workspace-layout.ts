@@ -80,6 +80,18 @@ export const ZONES = {
   server: { x: 288, y: 128, width: 106, height: 68 },
 } as const satisfies Record<string, WorldRect>;
 
+/**
+ * The way out.
+ *
+ * On the left edge at the bottom corridor, which is the one place a doorway
+ * can go without cutting through a partitioned zone: the bottom corridor runs
+ * the full width of the room, so any desk can reach it and then walk straight
+ * out. `x` is negative on purpose — an Agent leaving walks past the frame
+ * rather than stopping politely at the threshold.
+ */
+export const EXIT_DOOR = { x: 0, y: 194, width: 11, height: 30 } as const;
+export const EXIT_POINT: WorldPoint = { x: -12, y: CORRIDOR.bottom };
+
 export const BOARD = { x: 180, y: 76, width: 84, height: 28 } as const;
 export const PREVIEW_SCREEN = { x: 340, y: 150, width: 56, height: 30 } as const;
 export const DESK = { width: 40, height: 20 } as const;
@@ -213,6 +225,29 @@ export function walkRoute(
   const settledX = route.at(-1)?.x ?? from.x;
   if (target.x !== settledX) route.push({ x: target.x, y: targetLane });
   if (target.y !== targetLane) route.push({ x: target.x, y: target.y });
+  return route;
+}
+
+/**
+ * The route out of the building, from wherever the Agent is standing.
+ *
+ * Deliberately not a `StationName`: the exit is not somewhere an Agent works,
+ * and adding it to that union would put a door in every switch that decides
+ * what an Agent is doing. It follows the same corridor rules as `walkRoute`,
+ * so no leg crosses a partition.
+ */
+export function exitRoute(from: WorldPoint): WorldPoint[] {
+  const route: WorldPoint[] = [];
+  const startLane = laneFor(from.y);
+  if (from.y !== startLane) route.push({ x: from.x, y: startLane });
+  if (startLane !== CORRIDOR.bottom) {
+    const side = Math.abs(from.x - CORRIDOR.left) <= Math.abs(from.x - CORRIDOR.right)
+      ? CORRIDOR.left
+      : CORRIDOR.right;
+    route.push({ x: side, y: startLane });
+    route.push({ x: side, y: CORRIDOR.bottom });
+  }
+  route.push({ x: EXIT_POINT.x, y: CORRIDOR.bottom });
   return route;
 }
 

@@ -1,7 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { canvasSupported } from "./pixi/canvas-support";
+import { useReducedMotion } from "./pixi/use-reduced-motion";
+import { useDepartures } from "./use-departures";
 import type { WorkspaceCrew } from "./pixi/art/avatar-look";
 import type { PerkId } from "./pixi/art/perks";
+import type { WorldPoint } from "./workspace-layout";
 import {
   MAX_SEATS,
   seatLayout,
@@ -139,7 +142,41 @@ export function WorkspaceStage({
   const liveRef = useRef({ transform, seated });
   liveRef.current = { transform, seated };
 
+  /**
+   * Where each Agent last stood.
+   *
+   * Written from the ticker, so it is the live position rather than the desk —
+   * an Agent that wanders off and is then deleted should start its goodbye
+   * from wherever it actually was.
+   */
+  const lastPositions = useRef(new Map<string, WorldPoint>());
+  useEffect(() => {
+    // Seed from the seats, so an Agent deleted before its first drawn frame
+    // still leaves from its own desk rather than from the origin.
+    for (const { agent, seat } of seated) {
+      if (!lastPositions.current.has(agent.agentId)) {
+        lastPositions.current.set(agent.agentId, { ...seat.anchor });
+      }
+    }
+  }, [seated]);
+
+  const positionOf = useCallback(
+    (agentId: string): WorldPoint | null => lastPositions.current.get(agentId) ?? null,
+    [],
+  );
+
+  const reducedMotion = useReducedMotion();
+  const departures = useDepartures({
+    scopeId: viewModel.projectId ?? viewModel.id,
+    agents: viewModel.agents,
+    positionOf,
+    // A goodbye is a flourish. Skipping it removes the Agent immediately,
+    // which is the same outcome without the motion.
+    enabled: !reducedMotion,
+  });
+
   const handleAgentPosition = useCallback((agentId: string, x: number, y: number) => {
+    lastPositions.current.set(agentId, { x, y });
     const plate = plateRefs.current.get(agentId);
     if (!plate) return;
     const { transform: live } = liveRef.current;
@@ -169,6 +206,7 @@ export function WorkspaceStage({
             replies={replies}
             perks={perks}
             crew={crew}
+            departures={departures}
             onSelectAgent={onSelectAgent}
             onHoverAgent={hover}
             onOpenConversation={onOpenConversation}

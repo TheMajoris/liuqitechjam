@@ -25,6 +25,8 @@ interface OrchestrationConversationProps {
   onContinue?: (prompt: string, sessionId: string) => void;
   /** Re-runs one failed recorded turn and continues from that checkpoint. */
   onRetry?: (fromStepIndex: number) => void;
+  /** Prompt-policy edit; omitted hides the control. */
+  onClarifyFirstChange?: ((clarifyFirst: boolean) => void) | undefined;
 }
 
 const UNFINISHED: OrchestrationTurn["status"][] = ["failed", "cancelled", "timed_out"];
@@ -51,6 +53,7 @@ export function OrchestrationConversation({
   action = null,
   onContinue,
   onRetry,
+  onClarifyFirstChange,
 }: OrchestrationConversationProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [followUp, setFollowUp] = useState("");
@@ -309,6 +312,32 @@ export function OrchestrationConversation({
           }
           disabled={composerLocked}
           sending={action === "continue" || action === "start"}
+          accessory={
+            onClarifyFirstChange ? (
+              // Beside Send because it is a property of the message being
+              // sent — how the team should treat this task — not a property of
+              // the conversation's identity, which is what the header states.
+              <button
+                type="button"
+                className={
+                  "composer-toggle" + (session.clarifyFirst ? " is-on" : "")
+                }
+                aria-pressed={session.clarifyFirst === true}
+                // Editing mid-cycle would change the rules inside a run the
+                // transcript already records, so it waits for the run to settle.
+                disabled={active || action !== null}
+                title={
+                  active
+                    ? "Stop the conversation to change this"
+                    : "Agents ask questions until the task is unambiguous before they change anything. Applies from the next turn."
+                }
+                onClick={() => onClarifyFirstChange(session.clarifyFirst !== true)}
+              >
+                <span aria-hidden="true">?</span>
+                Clarify first
+              </button>
+            ) : null
+          }
           onChange={setFollowUp}
           onSubmit={(event) => {
             event.preventDefault();
