@@ -167,6 +167,8 @@ function modelHotspots(evidence: readonly TraceModelEvidence[]): TokenHotspot[] 
       cachedInputTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
+      netNewInputTokens: 0,
+      netNewTokens: 0,
       runs: 0,
       runsMissing: 0,
     };
@@ -184,6 +186,11 @@ function modelHotspots(evidence: readonly TraceModelEvidence[]): TokenHotspot[] 
     row.cachedInputTokens += cached;
     row.outputTokens += output;
     row.totalTokens += total;
+    // Clamped per record: cache reads are a slice of that record's input, and
+    // a provider reporting more cache than input must not drive this negative.
+    const fresh = input - Math.min(cached, input);
+    row.netNewInputTokens += fresh;
+    row.netNewTokens += fresh + output;
     rows.set(key, row);
   }
   return [...rows.values()];
@@ -408,32 +415,35 @@ export function TraceDetailView({
             </span>
             <span>{formatDuration(durationMs)}</span>
             <span title={describeTokens(tokens)}>
-              {formatTokenCell(tokens)} tokens
+              {formatTokenCell(tokens)} tokens processed
             </span>
             <span>{eventCount} events</span>
             {toolCalls > 0 && <span>{toolCalls} tool calls</span>}
             {run !== null && <span>{formatStarted(run.startedAt ?? run.createdAt)}</span>}
           </p>
-          {tokens && tokens.availability !== "unavailable" && tokens.totalTokens > 0 && (
+          {tokens && tokens.availability !== "unavailable" && tokens.netNewTokens > 0 && (
             <div className="trace-token-summary">
               <span className="trace-token-bar">
                 <TokenSplitBar hotspot={tokens} />
               </span>
+              {/* Shares are quoted against what was processed, matching the
+                  bar beside them. The billed total and the cache read that
+                  explains the gap are stated as figures, not as shares of it. */}
               <span className="trace-token-parts">
                 <span>
-                  <strong>{formatCount(tokens.inputTokens)}</strong> input ·{" "}
-                  {formatPercent(tokens.inputTokens, tokens.totalTokens)}
+                  <strong>{formatCount(tokens.netNewInputTokens)}</strong> fresh input ·{" "}
+                  {formatPercent(tokens.netNewInputTokens, tokens.netNewTokens)}
                 </span>
                 <span>
                   <strong>{formatCount(tokens.outputTokens)}</strong> output ·{" "}
-                  {formatPercent(tokens.outputTokens, tokens.totalTokens)}
+                  {formatPercent(tokens.outputTokens, tokens.netNewTokens)}
                 </span>
-                {/* A different denominator: the cache share is of the input it
-                    came from, never of the billed total. */}
                 <span title={CACHED_TOKENS_HELP}>
-                  <strong>{formatCount(tokens.cachedInputTokens)}</strong> of that input
-                  was cached ·{" "}
-                  {formatPercent(tokens.cachedInputTokens, tokens.inputTokens)}
+                  <strong>{formatCount(tokens.cachedInputTokens)}</strong> re-sent from
+                  cache
+                </span>
+                <span>
+                  <strong>{formatCount(tokens.totalTokens)}</strong> billed
                 </span>
               </span>
             </div>

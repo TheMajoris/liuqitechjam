@@ -443,8 +443,26 @@ export interface RunTokenTotals {
   cachedInputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  /** Input processed fresh, with each Run's cache reads already removed. */
+  netNewInputTokens: number;
+  /** Fresh input plus output: what the model actually worked through. */
+  netNewTokens: number;
   runsReporting: number;
   runsMissing: number;
+}
+
+/**
+ * What a Run left occupied in its model's context window.
+ *
+ * Measured in billed tokens, not the net-new figure the rest of the surfaces
+ * lead with: context is space, not price, so a prompt served from cache still
+ * occupies the window it was read from.
+ */
+export interface RunContextWindow {
+  windowTokens: number;
+  usedTokens: number;
+  remainingTokens: number;
+  usedShare: number;
 }
 
 export interface RunHistoryEntry {
@@ -463,6 +481,8 @@ export interface RunHistoryEntry {
   eventCount: number;
   errorCount: number;
   tokens: RunTokenTotals;
+  /** Null when the model has no configured window or nothing was reported. */
+  context: RunContextWindow | null;
   failed: boolean;
   error: string | null;
 }
@@ -692,6 +712,10 @@ export interface UsageTokenTotals {
   cachedInputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  /** Input processed fresh, with each Run's cache reads already removed. */
+  netNewInputTokens: number;
+  /** Fresh input plus output: what the model actually worked through. */
+  netNewTokens: number;
   runsReporting: number;
 }
 

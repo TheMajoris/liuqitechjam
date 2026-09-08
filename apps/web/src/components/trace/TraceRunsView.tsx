@@ -37,8 +37,15 @@ type FilterValue = (typeof FILTERS)[number]["value"];
 type TraceSort = (typeof TRACE_SORTS)[number]["value"];
 type Tab = "runs" | "traces";
 
+/**
+ * What a trace made the model process, for ranking and for the bar.
+ *
+ * Not the billed total: each turn re-sends the conversation so far, so billing
+ * rises with a thread's age rather than with the work. The billed figure stays
+ * in the cell's tooltip.
+ */
 function traceTokens(trace: AuditTraceSummary): number {
-  return trace.tokens.availability === "unavailable" ? -1 : trace.tokens.totalTokens;
+  return trace.tokens.availability === "unavailable" ? -1 : trace.tokens.netNewTokens;
 }
 
 function sortTraces(
@@ -302,7 +309,7 @@ export function TraceRunsView({
                     <th>Agents</th>
                     <th>Status</th>
                     <th className="numeric">Duration</th>
-                    <th className="token-column">Tokens</th>
+                    <th className="token-column">Processed</th>
                     <th className="numeric">Events</th>
                     <th className="numeric">Tools</th>
                     <th className="numeric">Sandbox</th>
@@ -350,7 +357,7 @@ export function TraceRunsView({
                               <strong>{formatTokenCell(trace.tokens)}</strong>
                               {windowTokens > 0 && traceTokens(trace) > 0 && (
                                 <span className="token-cell-share">
-                                  {formatPercent(trace.tokens.totalTokens, windowTokens)}
+                                  {formatPercent(trace.tokens.netNewTokens, windowTokens)}
                                 </span>
                               )}
                             </span>
@@ -358,7 +365,7 @@ export function TraceRunsView({
                               <span
                                 className="token-cell-bar"
                                 style={{
-                                  width: (trace.tokens.totalTokens / peakTokens) * 100 + "%",
+                                  width: (trace.tokens.netNewTokens / peakTokens) * 100 + "%",
                                 }}
                               >
                                 <TokenSplitBar hotspot={trace.tokens} />

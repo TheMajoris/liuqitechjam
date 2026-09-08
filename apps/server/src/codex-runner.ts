@@ -208,6 +208,46 @@ export function buildCodexArgs(
   return args;
 }
 
+/** A provider counter is trusted only when it is a real non-negative count. */
+function numericCounter(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+/**
+ * Sum one turn's counters into the run's running totals.
+ *
+ * A counter absent from every turn stays absent, so "the provider never
+ * reported this" remains distinguishable from "the provider reported zero".
+ */
+function addTurnUsage(
+  into: RunUsage | null,
+  turn: {
+    inputTokens: number | undefined;
+    cachedInputTokens: number | undefined;
+    cacheWriteInputTokens: number | undefined;
+    outputTokens: number | undefined;
+    reasoningOutputTokens: number | undefined;
+  },
+): RunUsage | null {
+  const fields = [
+    "inputTokens",
+    "cachedInputTokens",
+    "cacheWriteInputTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+  ] as const;
+  let total: RunUsage | null = into;
+  for (const field of fields) {
+    const value = turn[field];
+    if (value === undefined) continue;
+    total ??= {};
+    total[field] = (total[field] ?? 0) + value;
+  }
+  return total;
+}
+
 export function parseCodexEventLine(
   line: string,
   parsed: ParsedEvents,
@@ -243,17 +283,17 @@ export function parseCodexEventLine(
 
   if (event.type === "turn.completed" && event.usage && typeof event.usage === "object") {
     const usage = event.usage as Record<string, unknown>;
-    parsed.usage = {
-      ...(typeof usage.input_tokens === "number"
-        ? { inputTokens: usage.input_tokens }
-        : {}),
-      ...(typeof usage.cached_input_tokens === "number"
-        ? { cachedInputTokens: usage.cached_input_tokens }
-        : {}),
-      ...(typeof usage.output_tokens === "number"
-        ? { outputTokens: usage.output_tokens }
-        : {}),
-    };
+    // Codex reports each turn.completed independently rather than as a running
+    // total: on a resumed thread turn N carries that turn's own prompt, not the
+    // sum of the turns before it. A single `codex exec` is normally one turn,
+    // but when a run does produce several, the run's usage is their sum.
+    parsed.usage = addTurnUsage(parsed.usage, {
+      inputTokens: numericCounter(usage.input_tokens),
+      cachedInputTokens: numericCounter(usage.cached_input_tokens),
+      cacheWriteInputTokens: numericCounter(usage.cache_write_input_tokens),
+      outputTokens: numericCounter(usage.output_tokens),
+      reasoningOutputTokens: numericCounter(usage.reasoning_output_tokens),
+    });
   }
 
   if (event.type === "turn.completed") {

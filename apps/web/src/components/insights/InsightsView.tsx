@@ -61,6 +61,8 @@ function hotspotsFrom(
     cachedInputTokens: row.tokens.cachedInputTokens,
     outputTokens: row.tokens.outputTokens,
     totalTokens: row.tokens.totalTokens,
+    netNewInputTokens: row.tokens.netNewInputTokens,
+    netNewTokens: row.tokens.netNewTokens,
     runs: row.runs.total,
     runsMissing: Math.max(0, row.runs.total - row.tokens.runsReporting),
   }));
@@ -218,7 +220,7 @@ export function InsightsView({
 
         <article className="usage-tile">
           <span className="usage-tile-label">
-            Tokens
+            Processed
             <span className={"usage-chip usage-chip-" + totals.tokens.availability}>
               {availabilityLabel(totals.tokens.availability)}
             </span>
@@ -226,9 +228,9 @@ export function InsightsView({
           <strong>
             {totals.tokens.availability === "unavailable"
               ? "—"
-              : formatCount(totals.tokens.totalTokens)}
+              : formatCount(totals.tokens.netNewTokens)}
           </strong>
-          {totals.tokens.availability !== "unavailable" && totals.tokens.totalTokens > 0 && (
+          {totals.tokens.availability !== "unavailable" && totals.tokens.netNewTokens > 0 && (
             <span className="usage-tile-bar">
               <TokenSplitBar hotspot={totals.tokens} />
             </span>
@@ -236,8 +238,9 @@ export function InsightsView({
           <span className="usage-tile-foot">
             {totals.tokens.availability === "unavailable"
               ? (caveat ?? "No counters reported")
-              : `${formatCount(totals.tokens.inputTokens)} input · ` +
+              : `${formatCount(totals.tokens.netNewInputTokens)} fresh input · ` +
                 `${formatCount(totals.tokens.outputTokens)} output · ` +
+                `${formatCount(totals.tokens.totalTokens)} billed · ` +
                 `${formatPercent(
                   totals.tokens.cachedInputTokens,
                   totals.tokens.inputTokens,

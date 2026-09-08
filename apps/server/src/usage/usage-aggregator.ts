@@ -2,7 +2,7 @@ import type { AuditEvent } from "../audit/audit-types.js";
 import type { OrchestrationSession, OrchestrationTurn } from "../orchestration/types.js";
 import type { Project } from "../projects/project-types.js";
 import type { Agent, AgentRun, Message } from "../types.js";
-import { normalizeRunUsage } from "../telemetry/telemetry-usage.js";
+import { netNewInputTokens, normalizeRunUsage } from "../telemetry/telemetry-usage.js";
 import type {
   UsageActivityTotals,
   UsageAgentBreakdown,
@@ -41,6 +41,7 @@ interface UsageAccumulator {
   tokens: {
     inputTokens: number;
     cachedInputTokens: number;
+    netNewInputTokens: number;
     outputTokens: number;
     runsReporting: number;
     runsMissing: number;
@@ -58,6 +59,7 @@ function createAccumulator(): UsageAccumulator {
     tokens: {
       inputTokens: 0,
       cachedInputTokens: 0,
+      netNewInputTokens: 0,
       outputTokens: 0,
       runsReporting: 0,
       runsMissing: 0,
@@ -98,6 +100,9 @@ function addRun(accumulator: UsageAccumulator, run: AgentRun): void {
     if (usage.availability === "partial") accumulator.tokens.runsPartial += 1;
     accumulator.tokens.inputTokens += usage.inputTokens ?? 0;
     accumulator.tokens.cachedInputTokens += usage.cachedInputTokens ?? 0;
+    // Clamped per Run inside netNewInputTokens, so one Run's over-large cache
+    // figure cannot cancel out fresh input reported by another.
+    accumulator.tokens.netNewInputTokens += netNewInputTokens(usage);
     accumulator.tokens.outputTokens += usage.outputTokens ?? 0;
   }
 
@@ -153,6 +158,8 @@ function summarizeTokens(accumulator: UsageAccumulator): UsageTokenTotals {
     cachedInputTokens: tokens.cachedInputTokens,
     outputTokens: tokens.outputTokens,
     totalTokens: tokens.inputTokens + tokens.outputTokens,
+    netNewInputTokens: tokens.netNewInputTokens,
+    netNewTokens: tokens.netNewInputTokens + tokens.outputTokens,
     runsReporting: tokens.runsReporting,
   };
 }

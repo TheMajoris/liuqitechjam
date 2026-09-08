@@ -157,10 +157,20 @@ export interface Message {
   createdAt: string;
 }
 
+/**
+ * Provider counters for one Run.
+ *
+ * `cachedInputTokens` is the slice of `inputTokens` the provider served from
+ * its prompt cache, not a separate bucket, so it is never added to a total.
+ * `reasoningOutputTokens` is likewise a breakdown of `outputTokens`.
+ */
 export interface RunUsage {
   inputTokens?: number;
   cachedInputTokens?: number;
+  /** Input written into the prompt cache. Reported separately from reads. */
+  cacheWriteInputTokens?: number;
   outputTokens?: number;
+  reasoningOutputTokens?: number;
 }
 
 export interface AgentRun {

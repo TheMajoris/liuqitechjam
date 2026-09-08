@@ -43,7 +43,16 @@ export class AuditService implements AuditRecorder, AuditReader {
   constructor(
     private readonly store: AuditStoreAdapter,
     private readonly runtime?: AuditRunReader,
+    /**
+     * Per-model context windows. Absent for a model means its headroom is
+     * reported as unknown rather than being given an invented limit.
+     */
+    private readonly contextWindows?: ReadonlyMap<string, number>,
   ) {}
+
+  /** Configured window for a model, or undefined when none is configured. */
+  private contextWindowFor = (modelId: string): number | undefined =>
+    this.contextWindows?.get(modelId);
 
   async record(input: AuditEventInput): Promise<AuditEvent> {
     const safe = safeAuditInput(input);
@@ -102,12 +111,22 @@ export class AuditService implements AuditRecorder, AuditReader {
    * Agent has been deleted is still returned with its snapshotted identity.
    */
   runs(filter: RunHistoryQuery = {}): RunHistoryEntry[] {
-    return listRunHistory(this.runtime?.readRuns() ?? [], this.readNormalized(), filter);
+    return listRunHistory(
+      this.runtime?.readRuns() ?? [],
+      this.readNormalized(),
+      filter,
+      this.contextWindowFor,
+    );
   }
 
   /** One historical Run rollup, or null when no such Run was recorded. */
   run(runId: string): RunHistoryEntry | null {
-    return findRunHistory(this.runtime?.readRuns() ?? [], this.readNormalized(), runId);
+    return findRunHistory(
+      this.runtime?.readRuns() ?? [],
+      this.readNormalized(),
+      runId,
+      this.contextWindowFor,
+    );
   }
 
   /** A run belonging to an orchestration resolves to the orchestration trace. */

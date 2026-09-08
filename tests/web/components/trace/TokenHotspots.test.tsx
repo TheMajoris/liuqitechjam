@@ -15,6 +15,8 @@ function tokens(overrides: Partial<RunTokenTotals> = {}): RunTokenTotals {
     cachedInputTokens: 500,
     outputTokens: 250,
     totalTokens: 1_750,
+    netNewInputTokens: 500,
+    netNewTokens: 750,
     runsReporting: 1,
     runsMissing: 0,
     ...overrides,
@@ -28,7 +30,13 @@ describe("tokenSegments", () => {
   it("bills input plus output, with cache taken out of the input", () => {
     expect(
       tokenSegments({ inputTokens: 142_000, cachedInputTokens: 85_000, outputTokens: 20_000 }),
-    ).toEqual({ fresh: 57_000, cached: 85_000, output: 20_000, total: 162_000 });
+    ).toEqual({
+      fresh: 57_000,
+      cached: 85_000,
+      output: 20_000,
+      total: 162_000,
+      netNew: 77_000,
+    });
   });
 
   it("keeps the three segments summing to the billed total", () => {
@@ -41,13 +49,26 @@ describe("tokenSegments", () => {
   it("clamps a cache counter that overshoots the input it came from", () => {
     expect(
       tokenSegments({ inputTokens: 100, cachedInputTokens: 400, outputTokens: 50 }),
-    ).toEqual({ fresh: 0, cached: 100, output: 50, total: 150 });
+    ).toEqual({ fresh: 0, cached: 100, output: 50, total: 150, netNew: 50 });
   });
 
   it("has nothing to draw when no counter was reported", () => {
     expect(
       tokenSegments({ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 }).total,
     ).toBe(0);
+  });
+
+  // A resumed turn re-sends the conversation so far, so most of its input is a
+  // cache read. Net-new is what the model had to work through this turn.
+  it("excludes the re-sent cached prefix from what the model processed", () => {
+    const { netNew, total } = tokenSegments({
+      inputTokens: 34_633,
+      cachedInputTokens: 21_248,
+      outputTokens: 5,
+    });
+
+    expect(netNew).toBe(13_390);
+    expect(total).toBe(34_638);
   });
 });
 
@@ -60,6 +81,7 @@ describe("addTokens", () => {
     expect(row.runs).toBe(2);
     expect(row.inputTokens).toBe(1_200);
     expect(row.totalTokens).toBe(2_700);
+    expect(row.netNewTokens).toBe(1_500);
     expect(row.runsMissing).toBe(0);
   });
 
@@ -82,20 +104,70 @@ describe("addTokens", () => {
 });
 
 describe("TokenHotspots", () => {
-  it("ranks by spend rather than by the order it was handed", () => {
+  it("ranks by what the model processed rather than by the order it was handed", () => {
     const html = renderToStaticMarkup(
       <TokenHotspots
         title="Where the tokens went"
         subject="Agent"
         rows={[
-          { ...emptyHotspot("a", "Small"), totalTokens: 100, inputTokens: 100, runs: 1 },
-          { ...emptyHotspot("b", "Large"), totalTokens: 9_000, inputTokens: 9_000, runs: 4 },
+          {
+            ...emptyHotspot("a", "Small"),
+            totalTokens: 100,
+            inputTokens: 100,
+            netNewInputTokens: 100,
+            netNewTokens: 100,
+            runs: 1,
+          },
+          {
+            ...emptyHotspot("b", "Large"),
+            totalTokens: 9_000,
+            inputTokens: 9_000,
+            netNewInputTokens: 9_000,
+            netNewTokens: 9_000,
+            runs: 4,
+          },
         ]}
       />,
     );
 
     expect(html.indexOf("Large")).toBeLessThan(html.indexOf("Small"));
-    expect(html).toContain("9.1K tokens");
+    expect(html).toContain("9.1K tokens processed");
+  });
+
+  // A long-running thread bills far more than it processes, because every turn
+  // re-sends the prefix. Ranking on the billed figure would put it on top.
+  it("ranks a chatty thread below the one that did more work", () => {
+    const html = renderToStaticMarkup(
+      <TokenHotspots
+        title="Where the tokens went"
+        subject="Agent"
+        rows={[
+          {
+            ...emptyHotspot("resumed", "LongThread"),
+            inputTokens: 900_000,
+            cachedInputTokens: 850_000,
+            outputTokens: 10_000,
+            totalTokens: 910_000,
+            netNewInputTokens: 50_000,
+            netNewTokens: 60_000,
+            runs: 30,
+          },
+          {
+            ...emptyHotspot("fresh", "HardWorker"),
+            inputTokens: 200_000,
+            cachedInputTokens: 10_000,
+            outputTokens: 40_000,
+            totalTokens: 240_000,
+            netNewInputTokens: 190_000,
+            netNewTokens: 230_000,
+            runs: 3,
+          },
+        ]}
+      />,
+    );
+
+    expect(html.indexOf("HardWorker")).toBeLessThan(html.indexOf("LongThread"));
+    expect(html).toContain("910K billed");
   });
 
   it("folds everything past the limit into one row instead of a long tail", () => {
@@ -103,6 +175,8 @@ describe("TokenHotspots", () => {
       ...emptyHotspot("row-" + index, "Row " + index),
       totalTokens: 1_000 - index,
       inputTokens: 1_000 - index,
+      netNewInputTokens: 1_000 - index,
+      netNewTokens: 1_000 - index,
       runs: 1,
     }));
     const html = renderToStaticMarkup(

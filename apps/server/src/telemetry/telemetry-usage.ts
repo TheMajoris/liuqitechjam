@@ -10,6 +10,19 @@ export interface NormalizedRunUsage {
   outputTokens?: number;
 }
 
+/**
+ * Input the model had to process fresh, with cache reads removed.
+ *
+ * Cache reads are clamped to the input they are a slice of: a provider that
+ * ever reports a larger cache figure than input would otherwise drive this
+ * negative and understate the work done.
+ */
+export function netNewInputTokens(usage: NormalizedRunUsage): number {
+  const input = usage.inputTokens ?? 0;
+  const cached = Math.min(usage.cachedInputTokens ?? 0, input);
+  return input - cached;
+}
+
 function finiteTokenCount(value: number | undefined): number | undefined {
   return value !== undefined && Number.isSafeInteger(value) && value >= 0
     ? value
@@ -54,6 +67,16 @@ export interface RunTokenTotals {
   cachedInputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  /**
+   * Input the model processed fresh, summed across Runs.
+   *
+   * On a resumed thread every turn re-sends the conversation so far, so
+   * `inputTokens` re-counts the same prefix once per turn. This counts only
+   * what each turn actually added.
+   */
+  netNewInputTokens: number;
+  /** Fresh input plus output: the work this Run caused, cache reads excluded. */
+  netNewTokens: number;
   /** Runs that reported at least one counter. */
   runsReporting: number;
   /** Runs that reported nothing at all. */
@@ -66,6 +89,7 @@ export function summarizeRunTokens(
 ): RunTokenTotals {
   let inputTokens = 0;
   let cachedInputTokens = 0;
+  let netNew = 0;
   let outputTokens = 0;
   let runsReporting = 0;
   let runsMissing = 0;
@@ -81,6 +105,9 @@ export function summarizeRunTokens(
     if (normalized.availability === "partial") runsPartial += 1;
     inputTokens += normalized.inputTokens ?? 0;
     cachedInputTokens += normalized.cachedInputTokens ?? 0;
+    // Clamped per Run rather than on the sum, so one Run's over-large cache
+    // figure cannot cancel out fresh input reported by another.
+    netNew += netNewInputTokens(normalized);
     outputTokens += normalized.outputTokens ?? 0;
   }
 
@@ -96,6 +123,8 @@ export function summarizeRunTokens(
     // Cached input is already part of the input count; adding it would
     // double-count the same tokens.
     totalTokens: inputTokens + outputTokens,
+    netNewInputTokens: netNew,
+    netNewTokens: netNew + outputTokens,
     runsReporting,
     runsMissing,
   };

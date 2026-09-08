@@ -17,6 +17,16 @@ export interface UsageTokenTotals {
   cachedInputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  /**
+   * Input processed fresh, with each Run's cache reads already removed.
+   *
+   * Runs resume a Codex thread and every turn re-sends the conversation so
+   * far, so `inputTokens` counts the same prefix once per turn. This counts it
+   * once.
+   */
+  netNewInputTokens: number;
+  /** Fresh input plus output: what the model actually worked through. */
+  netNewTokens: number;
   /** Runs that reported at least one counter. */
   runsReporting: number;
 }

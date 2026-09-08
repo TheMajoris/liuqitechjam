@@ -81,7 +81,7 @@ const store: Storage = config.persistenceBackend === "postgres"
   : new JsonStore(legacyJsonPath);
 applicationHealth.attachStorage(store);
 const auditStore = new StorageAuditStoreAdapter(store);
-const audit = new AuditService(auditStore, auditStore);
+const audit = new AuditService(auditStore, auditStore, config.modelContextWindows);
 const telemetry = createRuntimeTelemetry(config);
 const workspaces = new WorkspaceManager(config.workspaceRoot);
 // `containerHealthSampler` is only set for the container runtime provider.

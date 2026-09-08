@@ -1,4 +1,4 @@
-import type { RunStatus, RunUsage } from "../types.js";
+import type { RunStatus, RunUsage, ModelRef } from "../types.js";
 import { normalizeRunUsage, type UsageAvailability } from "../telemetry/telemetry-usage.js";
 import { AUDIT_CATEGORIES, type AuditCategory, type AuditEvent, type AuditQuery } from "./audit-types.js";
 import { queryAuditEvents } from "./audit-query.js";
@@ -24,6 +24,8 @@ export interface AuditRunSnapshot {
   agentName?: string;
   agentDeletedAt?: string;
   traceId?: string;
+  /** The model this Run actually ran on; needed to look up its context window. */
+  modelUsed?: ModelRef;
 }
 
 export interface AuditRunReader {

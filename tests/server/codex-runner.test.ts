@@ -244,3 +244,61 @@ describe("Codex terminal failure classification", () => {
     ).toThrow("timed out");
   });
 });
+
+describe("parseCodexEventLine usage", () => {
+  // Captured verbatim from `codex exec --json` (codex-cli 0.151.0). Each
+  // turn.completed carries that turn's own counters, not a running total.
+  const TURN_ONE =
+    '{"type":"turn.completed","usage":{"input_tokens":21391,' +
+    '"cached_input_tokens":12032,"cache_write_input_tokens":0,' +
+    '"output_tokens":5,"reasoning_output_tokens":0}}';
+  const TURN_TWO =
+    '{"type":"turn.completed","usage":{"input_tokens":28008,' +
+    '"cached_input_tokens":12032,"cache_write_input_tokens":0,' +
+    '"output_tokens":5,"reasoning_output_tokens":0}}';
+
+  it("keeps every counter the provider reported", () => {
+    const parsed = emptyParsed();
+    parseCodexEventLine(TURN_ONE, parsed);
+
+    expect(parsed.usage).toEqual({
+      inputTokens: 21_391,
+      cachedInputTokens: 12_032,
+      cacheWriteInputTokens: 0,
+      outputTokens: 5,
+      reasoningOutputTokens: 0,
+    });
+  });
+
+  // Turn counters are per-turn, so a run that completes several turns spent
+  // all of them. Overwriting would silently drop every turn but the last.
+  it("sums a run that completed more than one turn", () => {
+    const parsed = emptyParsed();
+    parseCodexEventLine(TURN_ONE, parsed);
+    parseCodexEventLine(TURN_TWO, parsed);
+
+    expect(parsed.usage).toMatchObject({
+      inputTokens: 49_399,
+      cachedInputTokens: 24_064,
+      outputTokens: 10,
+    });
+  });
+
+  it("leaves usage unreported when no turn carried counters", () => {
+    const parsed = emptyParsed();
+    parseCodexEventLine('{"type":"turn.completed"}', parsed);
+
+    expect(parsed.usage).toBeNull();
+  });
+
+  it("ignores a counter that is not a real count", () => {
+    const parsed = emptyParsed();
+    parseCodexEventLine(
+      '{"type":"turn.completed","usage":{"input_tokens":-5,' +
+        '"output_tokens":"many","cached_input_tokens":7}}',
+      parsed,
+    );
+
+    expect(parsed.usage).toEqual({ cachedInputTokens: 7 });
+  });
+});
