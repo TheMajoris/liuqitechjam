@@ -1,8 +1,6 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import { transitions, variants } from "../../motion/motion-tokens";
-import type { Agent, OrchestrationSessionDetail } from "../../types";
-import type { Agent, OrchestrationSessionDetail, ToolApproval } from "../../types";
 import type { Agent, AgentRole, OrchestrationSessionDetail, ToolApproval } from "../../types";
 import { OrchestrationConversation } from "./OrchestrationConversation";
 import { OrchestrationGraph } from "./OrchestrationGraph";
@@ -189,15 +187,15 @@ export function OrchestrationRunTabs({
           // The log is the reading order. The raw journal stays one disclosure
           // away, so the tab opens at one row per turn rather than two charts.
           <>
-              <OrchestrationGraph
-                detail={detail}
-                agents={agents}
-                approvals={approvals}
-                approvalPendingId={approvalPendingId}
-                approvalPendingAction={approvalPendingAction}
-                approvalErrors={approvalErrors}
-                onApprovalDecision={onApprovalDecision}
-                onRetry={onRetry}
+            <OrchestrationGraph
+              detail={detail}
+              agents={agents}
+              approvals={approvals}
+              approvalPendingId={approvalPendingId}
+              approvalPendingAction={approvalPendingAction}
+              approvalErrors={approvalErrors}
+              onApprovalDecision={onApprovalDecision}
+              onRetry={onRetry}
               retryPending={action === "retry"}
               // A retry starts a fresh cycle, so the run must be settled.
               retryBlocked={

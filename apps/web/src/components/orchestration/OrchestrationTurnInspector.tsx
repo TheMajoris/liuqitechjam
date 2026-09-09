@@ -1,8 +1,7 @@
 import { useMemo } from "react";
-import type { Agent, OrchestrationParticipant, WorkspaceCheckpointView } from "../../types";
+import type { Agent, OrchestrationParticipant, WorkspaceCheckpointView, ToolApproval } from "../../types";
 import { MarkdownMessage } from "../MarkdownMessage";
 
-import type { Agent, ToolApproval, WorkspaceCheckpointView } from "../../types";
 import {
   agentName,
   eventLabel,

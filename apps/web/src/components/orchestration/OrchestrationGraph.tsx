@@ -1,6 +1,4 @@
 import { useMemo, useRef, useState, type CSSProperties } from "react";
-import type { Agent, OrchestrationSessionDetail } from "../../types";
-import { useMemo, useState, type CSSProperties } from "react";
 import type { Agent, OrchestrationSessionDetail, ToolApproval } from "../../types";
 import { AgentAvatar } from "./AgentAvatar";
 import {
