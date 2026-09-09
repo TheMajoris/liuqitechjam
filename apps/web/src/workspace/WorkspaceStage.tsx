@@ -1,17 +1,37 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { canvasSupported } from "./pixi/canvas-support";
 import { useReducedMotion } from "./pixi/use-reduced-motion";
 import { useDepartures } from "./use-departures";
+import { useAgentDrag } from "./use-agent-drag";
 import type { WorkspaceCrew } from "./pixi/art/avatar-look";
 import type { PerkId } from "./pixi/art/perks";
-import type { WorldPoint } from "./workspace-layout";
+import type { DropTarget, WorldPoint } from "./workspace-layout";
 import {
   MAX_SEATS,
-  seatLayout,
+  POST_STATIONS,
+  POST_ZONES,
+  ZONES,
+  officeSeats,
   stageTransform,
   worldToScreen,
   WORLD,
 } from "./workspace-layout";
+import {
+  AREA_LABEL,
+  dropTargetLabel,
+  placeAgents,
+  seatingOf,
+  type AgentPlacement,
+} from "./workspace-placement";
 import {
   WORKSPACE_ACTIVITY,
   type WorkspaceViewModel,
@@ -47,10 +67,21 @@ interface WorkspaceStageProps {
   perks?: ReadonlySet<PerkId>;
   /** People or robots, for the whole room. */
   crew?: WorkspaceCrew;
+  /** How this browser has arranged the room. Cosmetic, like the furniture. */
+  placement?: AgentPlacement;
+  /** Called when an Agent is put down somewhere new. */
+  onPlaceAgent?: (
+    seating: ReadonlyMap<string, number>,
+    agentId: string,
+    target: DropTarget,
+    at: WorldPoint,
+  ) => void;
   onSelectAgent: (agentId: string) => void;
   onOpenConversation: () => void;
   onOpenPreview: () => void;
 }
+
+const NO_PLACEMENT: AgentPlacement = { seats: {}, posts: {} };
 
 /**
  * The stage owns everything the canvas must not: size, focus, and words.
@@ -59,12 +90,19 @@ interface WorkspaceStageProps {
  * room is operable by keyboard and readable by a screen reader even though the
  * picture behind it is a canvas. If the renderer is unavailable the same
  * information is still here — the buttons simply stand on their own.
+ *
+ * It also owns picking Agents up. The drag is deliberately not the canvas's
+ * job: the pointer arrives in stage pixels, the areas are HTML-labelled, and
+ * the keyboard equivalent runs on the same name plates that already carry
+ * focus. The canvas is told who is in the air and draws it.
  */
 export function WorkspaceStage({
   viewModel,
   replies,
   perks,
   crew = "people",
+  placement = NO_PLACEMENT,
+  onPlaceAgent,
   onSelectAgent,
   onOpenConversation,
   onOpenPreview,
@@ -119,15 +157,20 @@ export function WorkspaceStage({
     () => stageTransform(size.width, size.height),
     [size.height, size.width],
   );
-  const seatCount = Math.min(viewModel.agents.length, MAX_SEATS);
-  const seats = useMemo(() => seatLayout(seatCount), [seatCount]);
-  const seated = useMemo(
-    () => viewModel.agents.slice(0, seats.length).map((agent, index) => ({
-      agent,
-      seat: seats[index]!,
-    })),
-    [seats, viewModel.agents],
+  /*
+   * Every workstation, not only the taken ones.
+   *
+   * The room draws six desks whether or not anyone sits at them, so two Agents
+   * in a six-desk office may sit at any two of them. Capping the seats at the
+   * roster size would have made four of the drawn desks refuse a drop for no
+   * reason a viewer could see.
+   */
+  const seats = useMemo(() => officeSeats(), []);
+  const placed = useMemo(
+    () => placeAgents(viewModel.agents, seats, placement),
+    [placement, seats, viewModel.agents],
   );
+  const seating = useMemo(() => seatingOf(placed), [placed]);
 
   /*
    * The plates follow the sprites.
@@ -139,26 +182,27 @@ export function WorkspaceStage({
    * the Pixi ticker and must never cost a React render.
    */
   const plateRefs = useRef(new Map<string, HTMLButtonElement | null>());
-  const liveRef = useRef({ transform, seated });
-  liveRef.current = { transform, seated };
+  const liveRef = useRef({ transform });
+  liveRef.current = { transform };
 
   /**
    * Where each Agent last stood.
    *
    * Written from the ticker, so it is the live position rather than the desk —
    * an Agent that wanders off and is then deleted should start its goodbye
-   * from wherever it actually was.
+   * from wherever it actually was, and one that is picked up should be lifted
+   * from where it was standing rather than from its chair.
    */
   const lastPositions = useRef(new Map<string, WorldPoint>());
   useEffect(() => {
-    // Seed from the seats, so an Agent deleted before its first drawn frame
-    // still leaves from its own desk rather than from the origin.
-    for (const { agent, seat } of seated) {
+    // Seed from the placement, so an Agent deleted before its first drawn
+    // frame still leaves from its own desk rather than from the origin.
+    for (const { agent, anchor } of placed) {
       if (!lastPositions.current.has(agent.agentId)) {
-        lastPositions.current.set(agent.agentId, { ...seat.anchor });
+        lastPositions.current.set(agent.agentId, { ...anchor });
       }
     }
-  }, [seated]);
+  }, [placed]);
 
   const positionOf = useCallback(
     (agentId: string): WorldPoint | null => lastPositions.current.get(agentId) ?? null,
@@ -191,7 +235,88 @@ export function WorkspaceStage({
 
   const onFailure = useCallback(() => setRenderFailed(true), []);
   const canRender = supported && !renderFailed && size.width > 0 && size.height > 0;
-  const overflow = viewModel.agents.length - seats.length;
+  const overflow = viewModel.agents.length - MAX_SEATS;
+
+  /** Which area an Agent occupies now, so a keyboard move starts from home. */
+  const areaOf = useCallback(
+    (agentId: string): DropTarget | null => {
+      const entry = placed.find((candidate) => candidate.agent.agentId === agentId);
+      if (!entry) return null;
+      return entry.posting
+        ? { kind: "station", station: entry.posting.station }
+        : { kind: "desk", seatIndex: entry.seat.index };
+    },
+    [placed],
+  );
+
+  const handleDrop = useCallback(
+    (agentId: string, target: DropTarget, at: WorldPoint) => {
+      onPlaceAgent?.(seating, agentId, target, at);
+    },
+    [onPlaceAgent, seating],
+  );
+
+  const dragging = useAgentDrag({
+    transform,
+    hostRef,
+    seats,
+    enabled: canRender && onPlaceAgent !== undefined,
+    positionOf,
+    areaOf,
+    onDrop: handleDrop,
+  });
+  const { drag, carry, justCarried } = dragging;
+  const carriedAgent = drag
+    ? placed.find((entry) => entry.agent.agentId === drag.agentId) ?? null
+    : null;
+
+  /**
+   * What the move is doing, in words.
+   *
+   * The canvas can show a highlighted zone and a ring on the floor; neither of
+   * those reaches anyone using a screen reader, and the zones have no drawn
+   * names at all. One polite live region carries the same three facts: who is
+   * being moved, where they would land, and how to finish.
+   */
+  const dragMessage = carriedAgent
+    ? drag?.target
+      ? `Moving ${carriedAgent.agent.name} to ${dropTargetLabel(drag.target)}.`
+      : `Moving ${carriedAgent.agent.name}. No area under the pointer; releasing here puts them back.`
+    : "";
+
+  const handlePlateKeyDown = useCallback(
+    (agentId: string, event: ReactKeyboardEvent<HTMLButtonElement>) => {
+      const carrying = drag?.agentId === agentId;
+      if (event.key === " ") {
+        // Space would otherwise fire the button's click and open the Agent.
+        event.preventDefault();
+        if (carrying) dragging.commit();
+        else dragging.grabByKeyboard(agentId);
+        return;
+      }
+      if (!carrying) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        dragging.cancel();
+        return;
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        dragging.commit();
+        return;
+      }
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+        event.preventDefault();
+        dragging.step(1);
+        return;
+      }
+      if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+        event.preventDefault();
+        dragging.step(-1);
+      }
+    },
+    [drag?.agentId, dragging],
+  );
 
   return (
     <div className="ws-stage" ref={hostRef}>
@@ -200,13 +325,17 @@ export function WorkspaceStage({
           <WorkspaceCanvas
             onFailure={onFailure}
             viewModel={viewModel}
-            seats={seats}
+            placed={placed}
             transform={transform}
             hoveredAgentId={hovered}
             replies={replies}
             perks={perks}
             crew={crew}
             departures={departures}
+            carriedAgentId={drag?.agentId ?? null}
+            carriedTarget={drag?.target ?? null}
+            carry={carry}
+            onGrabAgent={dragging.grab}
             onSelectAgent={onSelectAgent}
             onHoverAgent={hover}
             onOpenConversation={onOpenConversation}
@@ -233,7 +362,10 @@ export function WorkspaceStage({
           (canRender ? "is-mapped" : "is-listed") +
           // While one plate is open it is the subject; the rest step back so
           // the overlap reads as depth rather than as two broken cards.
-          (hovered === null ? "" : " is-focusing")
+          (hovered === null ? "" : " is-focusing") +
+          // Nothing in the overlay may swallow the pointer mid-carry: the
+          // plates sit directly over the room the Agent is being moved across.
+          (drag?.via === "pointer" ? " is-carrying" : "")
         }
         style={
           canRender
@@ -246,11 +378,38 @@ export function WorkspaceStage({
             : undefined
         }
       >
-        {seated.map(({ agent, seat }) => {
+        {/* The zones have no drawn names, so a move names them — and only
+            during a move, when knowing what each partitioned room is called is
+            suddenly the question. */}
+        {canRender &&
+          drag !== null &&
+          POST_STATIONS.map((station) => {
+            const zone = ZONES[POST_ZONES[station]];
+            const point = worldToScreen(transform, {
+              x: zone.x + zone.width / 2,
+              y: zone.y + 7,
+            });
+            const active = drag.target?.kind === "station" && drag.target.station === station;
+            return (
+              <span
+                key={station}
+                className={"ws-drop-label" + (active ? " is-active" : "")}
+                aria-hidden="true"
+                style={{
+                  left: point.x - transform.offsetX,
+                  top: point.y - transform.offsetY,
+                }}
+              >
+                {AREA_LABEL[station]}
+              </span>
+            );
+          })}
+
+        {placed.map(({ agent, anchor }) => {
           const descriptor = WORKSPACE_ACTIVITY[agent.activity];
           const point = worldToScreen(transform, {
-            x: seat.anchor.x + PLATE_OFFSET.x,
-            y: seat.anchor.y + PLATE_OFFSET.y,
+            x: anchor.x + PLATE_OFFSET.x,
+            y: anchor.y + PLATE_OFFSET.y,
           });
           const capacityLabel = agent.modelResource
             ? modelResourceCapacityLabel(agent.modelResource)
@@ -261,6 +420,7 @@ export function WorkspaceStage({
           const showCapacity = hovered === agent.agentId;
           const capacityPercent = modelResourceQuotaPercent(agent.modelResource);
           const capacityTone = modelResourceQuotaTone(agent.modelResource);
+          const carrying = drag?.agentId === agent.agentId;
           // Desks sit closer together than a fully-written plate is wide, so a
           // plate states only its name at rest and opens its detail while it is
           // being pointed at or focused — and only then. Selection and the
@@ -282,6 +442,7 @@ export function WorkspaceStage({
                 (agent.isSelected ? " is-selected" : "") +
                 (agent.isCurrentParticipant ? " is-active" : "") +
                 (expanded ? " is-expanded" : "") +
+                (carrying ? " is-carrying" : "") +
                 (raised === agent.agentId ? " is-raised" : "")
               }
               data-tone={descriptor.tone}
@@ -292,15 +453,36 @@ export function WorkspaceStage({
               }
               aria-pressed={agent.isSelected}
               aria-describedby={showCapacity ? capacityCardId : undefined}
+              aria-grabbed={carrying || undefined}
               title={capacityLabel}
+              onPointerDown={
+                onPlaceAgent
+                  ? (event) => dragging.grab(agent.agentId, event)
+                  : undefined
+              }
+              onKeyDown={
+                onPlaceAgent ? (event) => handlePlateKeyDown(agent.agentId, event) : undefined
+              }
               onClick={() => {
+                // The press that just ended was a move, and a move is not also
+                // a request to open the Agent's details.
+                if (justCarried.current) {
+                  justCarried.current = false;
+                  return;
+                }
                 setRaised(agent.agentId);
                 onSelectAgent(agent.agentId);
               }}
               onMouseEnter={() => hover(agent.agentId)}
               onMouseLeave={() => setHovered(null)}
               onFocus={() => hover(agent.agentId)}
-              onBlur={() => setHovered(null)}
+              onBlur={() => {
+                setHovered(null);
+                // Focus is the only thing holding a keyboard move together.
+                if (drag?.agentId === agent.agentId && drag.via === "keyboard") {
+                  dragging.cancel();
+                }
+              }}
             >
               <span className="ws-plate-heading">
                 <span className="ws-plate-dot" aria-hidden="true" />
@@ -365,6 +547,18 @@ export function WorkspaceStage({
         })}
 
       </div>
+
+      {canRender && onPlaceAgent && (
+        <p
+          className={"ws-drag-hint" + (drag !== null ? " is-carrying" : "")}
+          role="status"
+          aria-live="polite"
+        >
+          {drag !== null
+            ? dragMessage
+            : "Drag an Agent to move them. With a name plate focused, press Space to pick up, arrows to choose an area, Space again to drop."}
+        </p>
+      )}
 
       {overflow > 0 && (
         <p className="ws-overflow" role="note">

@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { AgentAppearance } from "../types";
 import type { ConversationFailure } from "../components/orchestration/failure-diagnosis";
 import { AgentInspector, type AgentLifecycleAction } from "./AgentInspector";
 import { WorkspaceDecorPanel } from "./WorkspaceDecorPanel";
 import { WorkspaceStage } from "./WorkspaceStage";
+import { useAgentPlacement } from "./use-agent-placement";
 import { useWorkspaceDecor } from "./use-workspace-decor";
 import { PREVIEW_ACTIVITY_LABEL, type WorkspaceViewModel } from "./workspace-view-model";
 import type { PreviewAction } from "./use-project-preview";
@@ -59,6 +60,13 @@ export function WorkspaceView({
   const [decorOpen, setDecorOpen] = useState(false);
   // Keyed by Workspace so two teams can keep two very different offices.
   const decor = useWorkspaceDecor(viewModel.projectId);
+  // Where this browser has put everyone. Keyed the same way, and for the same
+  // reason: an arrangement belongs to the room, not to the Team.
+  const agentIds = useMemo(
+    () => viewModel.agents.map((agent) => agent.agentId),
+    [viewModel.agents],
+  );
+  const placement = useAgentPlacement(viewModel.projectId, agentIds);
   const selected =
     viewModel.agents.find((agent) => agent.agentId === viewModel.selectedAgentId) ?? null;
   const previewRunning = viewModel.previewStatus === "running";
@@ -137,7 +145,11 @@ export function WorkspaceView({
               Room
             </button>
             {decorOpen && (
-              <WorkspaceDecorPanel decor={decor} onClose={() => setDecorOpen(false)} />
+              <WorkspaceDecorPanel
+                decor={decor}
+                placement={placement}
+                onClose={() => setDecorOpen(false)}
+              />
             )}
           </div>
           <button
@@ -159,6 +171,8 @@ export function WorkspaceView({
           replies={replies}
           perks={decor.perks}
           crew={decor.crew}
+          placement={placement.placement}
+          onPlaceAgent={placement.drop}
           onSelectAgent={selectAgent}
           onOpenConversation={onOpenConversation}
           onOpenPreview={onOpenPreview}

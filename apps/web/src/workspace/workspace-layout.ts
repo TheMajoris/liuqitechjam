@@ -176,6 +176,173 @@ function buildSeats(count: number): WorkspaceSeat[] {
   });
 }
 
+/* ------------------------------------------------------------------ *
+ * Picking an Agent up and putting it somewhere else.
+ *
+ * The room is already partitioned into zones, so "where can I drop this" has
+ * an answer the art already draws: a workstation, or one of the four open
+ * zones. Everything below turns a world point into that answer, and back into
+ * a spot to stand on. It is pure geometry — who may be moved, and whether the
+ * move is remembered, is decided well above this file.
+ * ------------------------------------------------------------------ */
+
+export type ZoneName = keyof typeof ZONES;
+
+/** Somewhere an Agent can be posted: any station that is not its own desk. */
+export type PostStation = Exclude<StationName, "desk">;
+
+/** The zone each posting stands in. Desk pods are reached by seat, not by zone. */
+export const POST_ZONES: Record<PostStation, ZoneName> = {
+  board: "meeting",
+  library: "library",
+  server: "server",
+  lounge: "lounge",
+};
+
+/** Postings, in the order a keyboard move steps through them. */
+export const POST_STATIONS: readonly PostStation[] = ["board", "library", "server", "lounge"];
+
+/**
+ * Where an Agent may actually stand inside each zone.
+ *
+ * Narrower than the zone itself, because a zone is mostly furniture: the
+ * library is shelves, the meeting room is a table under the board, the lounge
+ * is a couch. These bands are the clear floor in front of each, so an Agent
+ * dropped anywhere in a zone lands somewhere it could plausibly be standing
+ * rather than inside a bookcase.
+ */
+export const STATION_STAND: Record<PostStation, WorldRect> = {
+  board: { x: 124, y: 94, width: 112, height: 8 },
+  library: { x: 14, y: 78, width: 82, height: 22 },
+  server: { x: 296, y: 172, width: 90, height: 20 },
+  lounge: { x: 192, y: 168, width: 72, height: 24 },
+};
+
+/** How much floor around a workstation counts as "at that desk". */
+const DESK_DROP = { width: 44, height: 38 } as const;
+
+/**
+ * Somewhere an Agent can be dropped: a workstation of its own, or a zone it
+ * stands in. Deliberately not a `StationName` — a desk is identified by which
+ * one, and no zone is.
+ */
+export type DropTarget =
+  | { kind: "desk"; seatIndex: number }
+  | { kind: "station"; station: PostStation };
+
+/** The floor a workstation claims, centred on the desk and reaching behind it. */
+export function deskDropRect(seat: WorkspaceSeat): WorldRect {
+  return {
+    x: seat.desk.x - DESK_DROP.width / 2,
+    y: seat.anchor.y - 22,
+    width: DESK_DROP.width,
+    height: DESK_DROP.height,
+  };
+}
+
+/** Every place something can be dropped, built once: this runs per pointer move. */
+const DROP_TARGETS: ReadonlyArray<{ target: DropTarget; rect: WorldRect }> = [
+  ...officeSeats().map((seat) => ({
+    target: { kind: "desk", seatIndex: seat.index } as DropTarget,
+    rect: deskDropRect(seat),
+  })),
+  ...POST_STATIONS.map((station) => ({
+    target: { kind: "station", station } as DropTarget,
+    rect: ZONES[POST_ZONES[station]],
+  })),
+];
+
+export function dropTargets(): ReadonlyArray<{ target: DropTarget; rect: WorldRect }> {
+  return DROP_TARGETS;
+}
+
+export function dropTargetRect(target: DropTarget): WorldRect {
+  return target.kind === "desk"
+    ? deskDropRect(officeSeats()[target.seatIndex]!)
+    : ZONES[POST_ZONES[target.station]];
+}
+
+export function sameDropTarget(a: DropTarget | null, b: DropTarget | null): boolean {
+  if (a === null || b === null) return a === b;
+  if (a.kind === "desk" && b.kind === "desk") return a.seatIndex === b.seatIndex;
+  if (a.kind === "station" && b.kind === "station") return a.station === b.station;
+  return false;
+}
+
+function contains(rect: WorldRect, point: WorldPoint): boolean {
+  return (
+    point.x >= rect.x &&
+    point.x <= rect.x + rect.width &&
+    point.y >= rect.y &&
+    point.y <= rect.y + rect.height
+  );
+}
+
+/** Manhattan gap from a point to a rectangle; zero once the point is inside. */
+function gapTo(rect: WorldRect, point: WorldPoint): number {
+  const dx = Math.max(rect.x - point.x, 0, point.x - (rect.x + rect.width));
+  const dy = Math.max(rect.y - point.y, 0, point.y - (rect.y + rect.height));
+  return dx + dy;
+}
+
+/**
+ * What is under the pointer, or near enough to count.
+ *
+ * Containment first, so a point genuinely inside a zone always picks that
+ * zone. Only when the pointer is over bare corridor does `tolerance` reach for
+ * the nearest area — forgiving about aim without ever overruling a deliberate
+ * drop. Nothing within reach means nothing: the caller sends the Agent back.
+ */
+export function dropTargetAt(point: WorldPoint, tolerance = 0): DropTarget | null {
+  for (const { target, rect } of DROP_TARGETS) {
+    if (contains(rect, point)) return target;
+  }
+  if (tolerance <= 0) return null;
+  let best: DropTarget | null = null;
+  let bestGap = tolerance;
+  for (const { target, rect } of DROP_TARGETS) {
+    const gap = gapTo(rect, point);
+    if (gap <= bestGap) {
+      best = target;
+      bestGap = gap;
+    }
+  }
+  return best;
+}
+
+function clampTo(rect: WorldRect, point: WorldPoint): WorldPoint {
+  return {
+    x: Math.round(Math.min(Math.max(point.x, rect.x), rect.x + rect.width)),
+    y: Math.round(Math.min(Math.max(point.y, rect.y), rect.y + rect.height)),
+  };
+}
+
+/**
+ * Where an Agent dropped at `point` ends up standing.
+ *
+ * A desk has one seat, so a desk drop always lands on it. A zone has floor, so
+ * a zone drop keeps the spot that was chosen — clamped into the standing band
+ * so nobody is left inside the shelving. Keeping the chosen spot is what makes
+ * the room arrangeable rather than merely sortable: two Agents posted to the
+ * lounge stand where they were put, not on top of each other.
+ */
+export function dropLandingPoint(target: DropTarget, point: WorldPoint): WorldPoint {
+  if (target.kind === "desk") {
+    const seat = officeSeats()[target.seatIndex];
+    return seat ? { ...seat.anchor } : { ...point };
+  }
+  return clampTo(STATION_STAND[target.station], point);
+}
+
+/** The middle of a posting's standing band: where a keyboard move puts an Agent. */
+export function stationStandCentre(station: PostStation): WorldPoint {
+  const band = STATION_STAND[station];
+  return {
+    x: Math.round(band.x + band.width / 2),
+    y: Math.round(band.y + band.height / 2),
+  };
+}
+
 /**
  * Which corridor a point exits onto. Every zone opens downward, so anything
  * at or above the top corridor leaves via the top, and everything else via
@@ -191,6 +358,27 @@ export function stationPoint(seat: WorkspaceSeat, station: StationName): WorldPo
 }
 
 /**
+ * The open zones, where crossing the floor needs no corridor.
+ *
+ * Deliberately excludes the desk pods: a re-seated Agent squeezing sideways
+ * behind the desk row reads as clipping through the furniture, so it walks out
+ * to the corridor and back in like anyone carrying a laptop would.
+ */
+const OPEN_ZONES: ReadonlySet<ZoneName> = new Set<ZoneName>([
+  "library",
+  "meeting",
+  "lounge",
+  "server",
+]);
+
+function zoneAt(point: WorldPoint): ZoneName | null {
+  for (const [name, zone] of Object.entries(ZONES) as Array<[ZoneName, WorldRect]>) {
+    if (contains(zone, point)) return name;
+  }
+  return null;
+}
+
+/**
  * A route along the corridor ring.
  *
  * Legs are axis-aligned and always leave the pod before travelling, so no leg
@@ -202,8 +390,33 @@ export function walkRoute(
   from: WorldPoint,
   station: StationName,
 ): WorldPoint[] {
-  const target = stationPoint(seat, station);
+  return routeToPoint(from, stationPoint(seat, station));
+}
+
+/**
+ * The same corridor route, to an arbitrary spot on the floor.
+ *
+ * `walkRoute` answers "go to your station"; this answers "go exactly there",
+ * which is what a drop needs — an Agent put down in the corner of the lounge
+ * stays in that corner rather than sliding to the zone's one canonical tile.
+ * Crossing an open zone is a straight walk: stepping out to the corridor and
+ * back in to reach the other side of the same room looks like a bug.
+ */
+export function routeToPoint(from: WorldPoint, target: WorldPoint): WorldPoint[] {
   if (from.x === target.x && from.y === target.y) return [];
+
+  const room = zoneAt(from);
+  const sameRoom = room !== null && room === zoneAt(target);
+  // A step across the same open room, or a step of any kind that is barely a
+  // step: an Agent set down beside its own chair shuffling out to the corridor
+  // and back to cover four pixels is the kind of detail that reads as broken.
+  const near = Math.abs(target.x - from.x) + Math.abs(target.y - from.y) <= 26;
+  if (sameRoom && (OPEN_ZONES.has(room) || near)) {
+    const route: WorldPoint[] = [];
+    if (target.x !== from.x) route.push({ x: target.x, y: from.y });
+    if (target.y !== from.y) route.push({ x: target.x, y: target.y });
+    return route;
+  }
 
   const startLane = laneFor(from.y);
   const targetLane = laneFor(target.y);
@@ -286,5 +499,20 @@ export function worldToScreen(transform: StageTransform, point: WorldPoint): Wor
   return {
     x: transform.offsetX + point.x * transform.scale,
     y: transform.offsetY + point.y * transform.scale,
+  };
+}
+
+/**
+ * The inverse, for pointers.
+ *
+ * A drag arrives in stage pixels and every drop rule is written in world
+ * units, so exactly one conversion happens, here, and both directions share
+ * the same transform — the highlighted zone can never disagree with the zone
+ * the Agent is actually dropped into.
+ */
+export function screenToWorld(transform: StageTransform, point: WorldPoint): WorldPoint {
+  return {
+    x: (point.x - transform.offsetX) / transform.scale,
+    y: (point.y - transform.offsetY) / transform.scale,
   };
 }

@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef } from "react";
-import type { Container } from "pixi.js";
+import { useEffect, useMemo, useRef, type RefObject } from "react";
+import type { Container, FederatedPointerEvent } from "pixi.js";
 import { useApplication } from "@pixi/react";
 import "./pixi-elements";
 import { AgentSprite } from "./AgentSprite";
 import { Desk, DeskChair } from "./Desk";
+import { DropZones } from "./DropZones";
 import { HandoffToken } from "./HandoffToken";
 import { BoardStation, PreviewStation } from "./Stations";
 import { DepartingAgent, type DepartingAgentModel } from "./DepartingAgent";
@@ -12,16 +13,28 @@ import { Room } from "./Room";
 import { avatarLook, type WorkspaceCrew } from "./art/avatar-look";
 import type { PerkId } from "./art/perks";
 import { agentPresentation } from "./agent-presentation";
-import { officeSeats, type StageTransform, type WorkspaceSeat } from "../workspace-layout";
+import {
+  officeSeats,
+  type DropTarget,
+  type StageTransform,
+  type WorldPoint,
+} from "../workspace-layout";
+import type { PlacedAgent } from "../workspace-placement";
 import { PREVIEW_ACTIVITY_LABEL } from "../workspace-view-model";
 import type { WorkspaceViewModel } from "../workspace-view-model";
 
 export interface WorkspaceSceneProps {
   viewModel: WorkspaceViewModel;
-  seats: WorkspaceSeat[];
+  /** The seated roster, already placed. The stage decides who sits where. */
+  placed: readonly PlacedAgent[];
   transform: StageTransform;
   hoveredAgentId: string | null;
   replies: number;
+  /** The Agent currently in the air, if any, and where it would land. */
+  carriedAgentId?: string | null;
+  carriedTarget?: DropTarget | null;
+  carry?: RefObject<WorldPoint>;
+  onGrabAgent?: (agentId: string, event: FederatedPointerEvent) => void;
   onSelectAgent: (agentId: string) => void;
   onHoverAgent: (agentId: string | null) => void;
   onOpenConversation: () => void;
@@ -48,10 +61,14 @@ const BUSY_ACTIVITIES = new Set(["working", "reviewing", "testing", "thinking"])
  */
 export function WorkspaceScene({
   viewModel,
-  seats,
+  placed,
   transform,
   hoveredAgentId,
   replies,
+  carriedAgentId = null,
+  carriedTarget = null,
+  carry,
+  onGrabAgent,
   onSelectAgent,
   onHoverAgent,
   onOpenConversation,
@@ -61,19 +78,11 @@ export function WorkspaceScene({
   departures,
   onAgentPosition,
 }: WorkspaceSceneProps) {
-  const seated = useMemo(
-    () => viewModel.agents.slice(0, seats.length).map((agent, index) => ({
-      agent,
-      seat: seats[index]!,
-    })),
-    [seats, viewModel.agents],
-  );
-
   /** The built office, with whoever happens to be sitting at each desk. */
   const workstations = useMemo(() => {
-    const occupants = new Map(seated.map(({ agent, seat }) => [seat.index, agent]));
+    const occupants = new Map(placed.map((entry) => [entry.seat.index, entry.agent]));
     return officeSeats().map((seat) => ({ seat, agent: occupants.get(seat.index) ?? null }));
-  }, [seated]);
+  }, [placed]);
 
   const rootRef = useRef<Container>(null);
   const { app, isInitialised } = useApplication();
@@ -109,14 +118,14 @@ export function WorkspaceScene({
   const handoffPoints = useMemo(() => {
     if (!handoff) return { from: null, to: null };
     const seatFor = (agentId: string | null) =>
-      seated.find((entry) => entry.agent.agentId === agentId)?.seat ?? null;
+      placed.find((entry) => entry.agent.agentId === agentId)?.seat ?? null;
     const fromSeat = seatFor(handoff.fromAgentId);
     const toSeat = seatFor(handoff.toAgentId);
     return {
       from: fromSeat ? { x: fromSeat.desk.x, y: fromSeat.desk.y - 14 } : null,
       to: toSeat ? { x: toSeat.desk.x, y: toSeat.desk.y - 14 } : null,
     };
-  }, [handoff, seated]);
+  }, [handoff, placed]);
 
   return (
     <pixiContainer ref={rootRef}>
@@ -127,6 +136,11 @@ export function WorkspaceScene({
         onActivate={onOpenPreview}
         label={`Shared preview — ${PREVIEW_ACTIVITY_LABEL[viewModel.previewStatus]}`}
       />
+      {/* Painted on the floor, under the furniture and under the Agent being
+          carried over it — which is where a marking on the floor belongs. */}
+      {carry && (
+        <DropZones active={carriedTarget} carrying={carriedAgentId !== null} carry={carry} />
+      )}
       {/* One sorted layer, so walking in front of furniture just works. */}
       <pixiContainer sortableChildren>
         <BoardStation
@@ -154,15 +168,20 @@ export function WorkspaceScene({
             />
           </pixiContainer>
         ))}
-        {seated.map(({ agent, seat }) => (
+        {placed.map(({ agent, seat, anchor, station }) => (
           <AgentSprite
             key={agent.agentId}
             agent={agent}
             seat={seat}
+            anchor={anchor}
+            station={station}
             hovered={hoveredAgentId === agent.agentId}
+            carried={carriedAgentId === agent.agentId}
             crew={crew}
             onSelect={onSelectAgent}
             onHoverChange={onHoverAgent}
+            {...(carry ? { carry } : {})}
+            {...(onGrabAgent ? { onGrab: onGrabAgent } : {})}
             {...(onAgentPosition ? { onPositionChange: onAgentPosition } : {})}
           />
         ))}
