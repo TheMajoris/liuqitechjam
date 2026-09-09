@@ -31,6 +31,8 @@ import {
   type TraceModelEvidence,
 } from "./trace-tree";
 import { BackIcon, ChevronLeftIcon, ChevronRightIcon } from "./icons";
+import { ToolApprovalList } from "../approvals/ToolApprovalCard";
+import { useToolApprovals } from "../approvals/use-tool-approvals";
 import {
   CACHED_TOKENS_HELP,
   TokenHotspots,
@@ -264,6 +266,10 @@ export function TraceDetailView({
   const nodeRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const pendingScroll = useRef<string | null>(null);
   const requestSequence = useRef(0);
+  const directApprovalState = useToolApprovals({
+    runId: runId ?? null,
+    active: run?.status === "queued" || run?.status === "running",
+  });
 
   const load = useCallback(async () => {
     const requestId = ++requestSequence.current;
@@ -564,6 +570,21 @@ export function TraceDetailView({
           </div>
         </div>
       </header>
+
+      {runId && directApprovalState.approvals.length > 0 && (
+        <ToolApprovalList
+          approvals={directApprovalState.approvals}
+          getAgentName={(agentId) => (run?.agentId === agentId ? run.agentName : null)}
+          runLabel={run ? `Run ${shortId(run.runId)}` : null}
+          pendingDecisionId={directApprovalState.pendingDecisionId}
+          pendingDecision={directApprovalState.pendingDecision}
+          decisionErrors={directApprovalState.decisionErrors}
+          onDecision={(approvalId, approved) => {
+            void directApprovalState.decide(approvalId, approved);
+          }}
+          className="tool-approval-list-trace"
+        />
+      )}
 
       {error && <p className="trace-error">{error}</p>}
       {run?.error && (

@@ -12,6 +12,11 @@ function matchesFilter(event: AuditEvent, filter: AuditQuery): boolean {
     (filter.agentId === undefined || event.agentId === filter.agentId) &&
     (filter.projectId === undefined || event.projectId === filter.projectId) &&
     (filter.runId === undefined || event.runId === filter.runId) &&
+    (filter.turnId === undefined || event.turnId === filter.turnId) &&
+    (filter.sessionId === undefined || event.sessionId === filter.sessionId) &&
+    (filter.invocationId === undefined || event.invocationId === filter.invocationId) &&
+    (filter.approvalId === undefined || event.approvalId === filter.approvalId) &&
+    (filter.workflowRunId === undefined || event.workflowRunId === filter.workflowRunId) &&
     (filter.type === undefined || event.type === filter.type) &&
     (filter.traceId === undefined || event.traceId === filter.traceId) &&
     (filter.category === undefined || event.category === filter.category) &&

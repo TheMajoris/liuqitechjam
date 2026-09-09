@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../../apps/server/src/config.js";
 import {
   CodexRunner,
+  buildCodexArgs,
   finalizeCodexRun,
   parseCodexEventLine,
   type ParsedEvents,
@@ -83,6 +84,44 @@ function controlError(name: "AbortError" | "TimeoutError"): Error {
   error.name = name;
   return error;
 }
+
+describe("Codex MCP timeout configuration", () => {
+  it("uses the bounded server default and accepts a shorter configured value", () => {
+    const request = {
+      agentId: "agent",
+      workspacePath: "/tmp/workspace",
+      prompt: "call the preview tool",
+      threadId: null,
+      mcp: {
+        url: "http://127.0.0.1:3000/mcp",
+        token: "opaque-token",
+      },
+    };
+    const defaultConfig = loadConfig({ NODE_ENV: "test", CODEX_HOME: "/tmp/codex-home" });
+    expect(
+      buildCodexArgs(
+        request,
+        defaultConfig.codexSandboxMode,
+        request.workspacePath,
+        defaultConfig.mcpToolTimeoutSec,
+      ),
+    ).toContain("mcp_servers.launchpad.tool_timeout_sec=180");
+
+    const shorterConfig = loadConfig({
+      NODE_ENV: "test",
+      CODEX_HOME: "/tmp/codex-home",
+      MCP_TOOL_TIMEOUT_SEC: "45",
+    });
+    expect(
+      buildCodexArgs(
+        request,
+        shorterConfig.codexSandboxMode,
+        request.workspacePath,
+        shorterConfig.mcpToolTimeoutSec,
+      ),
+    ).toContain("mcp_servers.launchpad.tool_timeout_sec=45");
+  });
+});
 
 describe("Codex terminal failure classification", () => {
   it("preserves runner cancellation and deadline errors before model fallback", async () => {

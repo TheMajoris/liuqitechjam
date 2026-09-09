@@ -5,6 +5,7 @@ import type { Storage } from "../store.js";
 import type { CheckpointResumeState } from "./checkpoint-resume-state.js";
 import type { OrchestrationWorkspaceRecovery } from "../projects/workspace-recovery-facade.js";
 import type { WorkspaceExecutionContext } from "../projects/workspace-checkpoint-types.js";
+import type { ToolApprovalInvalidator } from "../tools/tool-approval-store.js";
 import { MastraOrchestrator } from "./mastra/mastra-orchestrator.js";
 import {
   PlatformAgentInvoker,
@@ -84,6 +85,8 @@ export interface OrchestrationServiceDependencies {
   orchestratorFactory?: () => Orchestrator;
   /** Server-owned audit sink for orchestration lifecycle spans. */
   audit?: AuditRecorder;
+  /** Optional central approval fence for accepted child Run cancellation. */
+  toolApprovalInvalidator?: ToolApprovalInvalidator;
   /** Source checkpointing and operator recovery; absent keeps legacy behavior. */
   workspaceRecovery?: OrchestrationWorkspaceRecovery;
 }
@@ -165,6 +168,7 @@ export interface NormalizedOrchestrationDependencies {
   orchestratorFactory: () => Orchestrator;
   projectBinding: OrchestrationProjectBinding | undefined;
   audit: AuditRecorder | undefined;
+  toolApprovalInvalidator: ToolApprovalInvalidator | undefined;
   workspaceRecovery: OrchestrationWorkspaceRecovery | undefined;
 }
 
@@ -209,6 +213,7 @@ export function normalizeOrchestrationDependencies(
       orchestratorFactory,
       projectBinding: configured.projectBinding,
       audit: configured.audit,
+      toolApprovalInvalidator: configured.toolApprovalInvalidator,
       workspaceRecovery: configured.workspaceRecovery,
     };
   }
@@ -232,6 +237,7 @@ export function normalizeOrchestrationDependencies(
     orchestratorFactory: () => new MastraOrchestrator(),
     projectBinding: undefined,
     audit: undefined,
+    toolApprovalInvalidator: undefined,
     workspaceRecovery: undefined,
   };
 }

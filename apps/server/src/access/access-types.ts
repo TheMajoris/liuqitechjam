@@ -8,7 +8,11 @@ export const DEMO_HUMAN_PRINCIPAL = {
 
 export type HumanPrincipal = {
   kind: "human";
-  id: "demo-owner";
+  /**
+   * The local/demo owner remains the default, but trusted control-plane
+   * decisions may carry the authenticated human actor that made them.
+   */
+  id: string;
 };
 
 export type AgentPrincipal = {
@@ -35,8 +39,10 @@ export function agentPrincipal(id: string): AgentPrincipal {
   return { kind: "agent", id };
 }
 
-export function humanPrincipal(): HumanPrincipal {
-  return DEMO_HUMAN_PRINCIPAL;
+export function humanPrincipal(id = DEMO_HUMAN_PRINCIPAL.id): HumanPrincipal {
+  return id === DEMO_HUMAN_PRINCIPAL.id
+    ? DEMO_HUMAN_PRINCIPAL
+    : { kind: "human", id };
 }
 
 export function systemPrincipal(): SystemPrincipal {

@@ -541,4 +541,23 @@ describe("Shared Project collaboration", () => {
     expect(runner.requests).toHaveLength(0);
     await expect(lstat(workspacePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  it("fences native tool approvals before permanently deleting a Project", async () => {
+    const { projectService } = await makeStack();
+    const project = await projectService.create({ name: "Approval fence" });
+    const invalidated: string[] = [];
+    projectService.setToolApprovalInvalidator({
+      async invalidateForAgent() {
+        return 0;
+      },
+      async invalidateForProject(projectId) {
+        invalidated.push(projectId);
+        return 1;
+      },
+    });
+
+    await projectService.deletePermanently(project.id);
+
+    expect(invalidated).toEqual([project.id]);
+  });
 });

@@ -418,6 +418,12 @@ export interface AgentRun {
   error: string | null;
   /** Stable typed failure code for a terminal runtime failure. */
   errorCode?: AgentRunErrorCode;
+  /** Shared Project scope for Team/Project-backed direct Runs, when present. */
+  projectId?: string;
+  /** Parent Team conversation for participant Runs, when present. */
+  orchestrationId?: string;
+  /** Safe approval projections may be embedded by newer Run endpoints. */
+  approvals?: ToolApprovalPublicDto[];
   usage: {
     inputTokens?: number;
     cachedInputTokens?: number;
@@ -427,6 +433,76 @@ export interface AgentRun {
   completedAt?: string | null;
   createdAt: string;
 }
+
+/** Public projection returned by the native Mastra tool-approval routes. */
+export const TOOL_APPROVAL_STATUSES = [
+  "requested",
+  "waiting",
+  "approved",
+  "resuming",
+  "executing",
+  "succeeded",
+  "rejected",
+  "failed_pre_execution",
+  "failed",
+  "expired",
+  "cancelled",
+  "revoked",
+  "uncertain",
+] as const;
+
+export type ToolApprovalStatus = (typeof TOOL_APPROVAL_STATUSES)[number];
+export type ToolApprovalDecision = "approved" | "rejected";
+
+export interface ToolApprovalActor {
+  kind: "human" | "agent" | "system";
+  id: string;
+}
+
+export interface ToolApprovalTraceRefs {
+  traceId?: string;
+  spanId?: string;
+  parentSpanId?: string;
+  requestId?: string;
+}
+
+export interface ToolApprovalPublicDto {
+  approvalId: string;
+  invocationId: string;
+  workflowRunId: string;
+  agentId: string;
+  projectId: string | null;
+  runId: string;
+  orchestrationId: string | null;
+  turnId: string | null;
+  sessionId: string | null;
+  toolId: string;
+  policyVersion: string;
+  safeSummary: string;
+  deadlineAt: string;
+  status: ToolApprovalStatus;
+  version: number;
+  ownerEpoch: number;
+  decision: ToolApprovalDecision | null;
+  decisionActor: ToolApprovalActor | null;
+  decisionAt: string | null;
+  decisionReason: string | null;
+  traceRefs: ToolApprovalTraceRefs;
+  executionStartedAt: string | null;
+  completedAt: string | null;
+  terminalReason: string | null;
+  cancellationRequestedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** Optional eligibility projection added by newer control-plane responses. */
+  decisionEligible?: boolean;
+  canDecide?: boolean;
+  eligible?: boolean;
+  eligibility?: { allowed: boolean; reason?: string | null } | null;
+}
+
+/** Shorter name for consumers that render the projection as an approval. */
+export type ToolApproval = ToolApprovalPublicDto;
 
 /**
  * A historical Run rollup from the observability API.
@@ -780,6 +856,8 @@ export interface OrchestrationSessionDetail {
   turns: OrchestrationTurn[];
   events: OrchestrationEvent[];
   continuationPrompts: OrchestrationContinuationPrompt[];
+  /** Optional safe approval projections from newer orchestration responses. */
+  approvals?: ToolApprovalPublicDto[];
   /** Absent when checkpoints are disabled or the Conversation has no Project. */
   checkpoints?: WorkspaceCheckpointView[];
   /** The latest recovery operation, when checkpoints are enabled. */

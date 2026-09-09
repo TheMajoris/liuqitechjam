@@ -18,6 +18,7 @@ import {
   WorkspaceExecutionCycleSchema,
   WorkspaceOperationSchema,
 } from "./projects/workspace-checkpoint-types.js";
+import { normalizeToolApprovalInvocations } from "./tools/tool-approval-store.js";
 import type { Database } from "./types.js";
 
 /** Create a fresh, normalized application database snapshot. */
@@ -46,6 +47,7 @@ export const emptyDatabase = (): Database => ({
   workspaceCheckpoints: [],
   workspaceExecutionCycles: [],
   workspaceOperations: [],
+  toolApprovalInvocations: [],
 });
 
 const ORCHESTRATION_COLLECTIONS = [
@@ -67,6 +69,7 @@ const WORKSPACE_CHECKPOINT_COLLECTIONS = [
   "workspaceExecutionCycles",
   "workspaceOperations",
 ] as const;
+const TOOL_APPROVAL_COLLECTIONS = ["toolApprovalInvocations"] as const;
 // Core Agent data, validated by shape like agents/messages/runs rather than
 // by a Zod projection, so additive fields survive a round trip.
 const AGENT_COLLECTIONS = ["agentConversations"] as const;
@@ -78,6 +81,7 @@ const ADDITIVE_COLLECTIONS = [
   ...ROLE_COLLECTIONS,
   ...AGENT_COLLECTIONS,
   ...WORKSPACE_CHECKPOINT_COLLECTIONS,
+  ...TOOL_APPROVAL_COLLECTIONS,
 ] as const;
 
 type UnknownRecord = Record<string, unknown>;
@@ -207,6 +211,9 @@ export function normalizeDatabase(value: unknown): Database {
   const validOperations = WorkspaceOperationSchema.array().safeParse(
     normalized.workspaceOperations,
   );
+  const validToolApprovalInvocations = normalizeToolApprovalInvocations(
+    normalized.toolApprovalInvocations as unknown,
+  );
   if (
     !validSessions.success ||
     !validTurns.success ||
@@ -218,10 +225,16 @@ export function normalizeDatabase(value: unknown): Database {
     !validProjectLeases.success ||
     !validCheckpoints.success ||
     !validCycles.success ||
-    !validOperations.success
+    !validOperations.success ||
+    validToolApprovalInvocations.length !==
+      (normalized.toolApprovalInvocations as unknown[]).length
   ) {
     throw new Error("Unsupported database format");
   }
+
+  // Keep additive/unknown fields on the rest of the Database while replacing
+  // only this new projection with its validated, redacted shape.
+  normalized.toolApprovalInvocations = validToolApprovalInvocations;
 
   return normalized as unknown as Database;
 }
@@ -242,11 +255,12 @@ function needsDatabaseMigration(value: UnknownRecord): boolean {
     return true;
   }
   const attachments = Array.isArray(value.projectAgents) ? value.projectAgents : [];
-  return attachments.some(
+  if (attachments.some(
     (attachment) =>
       isRecord(attachment) &&
       (!("role" in attachment) || !("toolGrants" in attachment) || !("updatedAt" in attachment)),
-  );
+  )) return true;
+  return !Object.prototype.hasOwnProperty.call(value, "toolApprovalInvocations");
 }
 
 export type AuditRetentionPolicy = "bounded" | "append-only";

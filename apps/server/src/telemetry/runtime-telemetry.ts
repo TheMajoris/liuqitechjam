@@ -26,9 +26,21 @@ import {
 const TRACER_NAME = "launchpad.server";
 const MAX_ATTRIBUTE_TEXT = 160;
 const MAX_ATTRIBUTE_KEY = 80;
+const SAFE_USAGE_ATTRIBUTES = new Set([
+  "gen_ai.usage.availability",
+  "gen_ai.usage.input_tokens",
+  "gen_ai.usage.cached_input_tokens",
+  "gen_ai.usage.output_tokens",
+]);
+const UNSAFE_ATTRIBUTE_SEGMENT =
+  /(?:^|[._-])(?:prompt|raw[_ -]?input|input|output|reason|binding|handle|header|headers|secret|token|password|credential|authorization|body|message)(?:$|[._-])/i;
 
 function safeAttributeKey(value: string): string | null {
   if (!/^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$/.test(value)) return null;
+  // Traces are a second observability sink. Keep the same no-content
+  // contract as audit, while allowing numeric provider usage counters whose
+  // names necessarily contain input/output/token.
+  if (UNSAFE_ATTRIBUTE_SEGMENT.test(value) && !SAFE_USAGE_ATTRIBUTES.has(value)) return null;
   return value;
 }
 

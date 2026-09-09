@@ -153,6 +153,7 @@ describe("MCP per-run advertisement snapshots", () => {
       agentId: "agent-1",
       projectId: "project-1",
       runId: "run-1",
+      sessionId: "session-1",
       traceparent: "traceparent",
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
       advertisedToolIds: ["visible.tool"],
@@ -200,6 +201,7 @@ describe("MCP per-run advertisement snapshots", () => {
       principal: agentPrincipal("agent-1"),
       agentId: "agent-1",
       runId: "run-legacy",
+      sessionId: "session-legacy",
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     };
     const server = createMcpServer(context, toolService);
@@ -228,6 +230,7 @@ describe("MCP per-run advertisement snapshots", () => {
       principal: agentPrincipal("agent-1"),
       agentId: "agent-1",
       runId: "run-failed-resolution",
+      sessionId: "session-failed-resolution",
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
       diagnostics: { resolutionStatus: "failed" },
     };

@@ -51,6 +51,8 @@ interface UsageAccumulator {
   latencies: number[];
   messages: number;
   lastActiveAt: string | null;
+  /** Prevent a compatibility marker and native admission event double-count. */
+  approvalKeys: Set<string>;
 }
 
 function createAccumulator(): UsageAccumulator {
@@ -75,6 +77,7 @@ function createAccumulator(): UsageAccumulator {
     latencies: [],
     messages: 0,
     lastActiveAt: null,
+    approvalKeys: new Set(),
   };
 }
 
@@ -131,8 +134,23 @@ function addAuditEvent(accumulator: UsageAccumulator, event: AuditEvent): void {
       accumulator.activity.toolFailures += 1;
       break;
     case "tool_approval_required":
-      accumulator.activity.approvalsRequired += 1;
+    case "approval_requested": {
+      // Native approval admission emits `approval_requested`; the legacy
+      // direct ToolService fence emits `tool_approval_required`. They are
+      // mutually exclusive in the normal path, but a shared invocation ID
+      // makes the usage projection idempotent if both compatibility markers
+      // are ever present in a migrated journal.
+      const key = event.invocationId !== undefined
+        ? "invocation:" + event.invocationId
+        : event.approvalId !== undefined
+          ? "approval:" + event.approvalId
+          : "event:" + event.id;
+      if (!accumulator.approvalKeys.has(key)) {
+        accumulator.approvalKeys.add(key);
+        accumulator.activity.approvalsRequired += 1;
+      }
       break;
+    }
     case "skill_invoked":
       accumulator.activity.skillInvocations += 1;
       break;

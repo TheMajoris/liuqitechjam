@@ -9,6 +9,7 @@ import type { ApplicationLifecycleFailureSink } from "../application-health.js";
 import type { RuntimeReconciliationResult } from "../types.js";
 import type { Storage } from "../store.js";
 import type { Agent, Database, OperationOptions } from "../types.js";
+import type { ToolApprovalInvalidator } from "../tools/tool-approval-store.js";
 import type { SkillService } from "../skills/skill-service.js";
 import { ProjectError } from "./project-errors.js";
 import { ProjectWorkspaceManager } from "./project-workspace.js";
@@ -167,6 +168,7 @@ export class ProjectService {
   private skillService: SkillService | undefined;
   private conversationLifecycle: ProjectConversationLifecycleCleanup | undefined;
   private lifecycleFailureSink: ApplicationLifecycleFailureSink | undefined;
+  private toolApprovalInvalidator: ToolApprovalInvalidator | undefined;
   private startupReconciliation: RuntimeReconciliationResult | undefined;
   private checkpoints: WorkspaceCheckpointService | undefined;
   private operations: WorkspaceOperationCoordinator | undefined;
@@ -214,6 +216,14 @@ export class ProjectService {
   /** Attach the application-owned lifecycle failure sink after app assembly. */
   setLifecycleFailureSink(sink: ApplicationLifecycleFailureSink): void {
     this.lifecycleFailureSink = sink;
+  }
+
+  /**
+   * Attach the native tool-approval lifecycle fence after composition. The
+   * type-only seam avoids a dependency on AgentService or a concrete store.
+   */
+  setToolApprovalInvalidator(invalidator: ToolApprovalInvalidator): void {
+    this.toolApprovalInvalidator = invalidator;
   }
 
   /**
@@ -758,6 +768,13 @@ export class ProjectService {
         // the recoverable filesystem move. The final mutation below remains
         // authoritative for callers that do not provide that seam.
         await this.conversationLifecycle?.removeForProject?.(projectId);
+        // Close approval-backed invocations before the Project row and its
+        // attachments are removed. A failed later cleanup remains fail-closed
+        // and cannot leave an executable approval for a deleted Project.
+        await this.toolApprovalInvalidator?.invalidateForProject(
+          projectId,
+          "Project was deleted",
+        );
         await this.store.mutate((database) => {
           this.leaseCoordinator.assertDatabaseLeaseFree(database, projectId);
           // Include IDs from the post-stop snapshot even when an injected

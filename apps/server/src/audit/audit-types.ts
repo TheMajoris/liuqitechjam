@@ -33,6 +33,16 @@ export const AUDIT_EVENT_TYPES = [
   "project_lease_acquired",
   "project_lease_released",
   "approval_decided",
+  // Native Mastra approval lifecycle. These are application events, not
+  // additional tool executions; the guarded executor still owns the single
+  // tool_started/tool_succeeded|tool_failed pair.
+  "approval_requested",
+  "approval_waiting",
+  "approval_resumed",
+  "approval_expired",
+  "approval_cancelled",
+  "approval_revoked",
+  "approval_failed",
   "mcp_session_issued",
   "mcp_session_rejected",
   "mcp_session_expired",
@@ -56,6 +66,29 @@ export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number];
 export type AuditEventStatus = "success" | "failure";
 export type AuditMetadataValue = string | number | boolean | null;
 export type AuditMetadata = Readonly<Record<string, AuditMetadataValue>>;
+
+/** Versioned source marker for the native workflow approval projection. */
+export const NATIVE_APPROVAL_AUDIT_SCHEMA_VERSION = 1 as const;
+export const NATIVE_APPROVAL_AUDIT_SOURCE = "native-workflow" as const;
+export const AUDIT_EVENT_SOURCES = [
+  NATIVE_APPROVAL_AUDIT_SOURCE,
+  "application",
+  "codex-runtime",
+] as const;
+export type AuditEventSource = (typeof AUDIT_EVENT_SOURCES)[number];
+
+export const NATIVE_APPROVAL_AUDIT_EVENT_TYPES = [
+  "approval_requested",
+  "approval_waiting",
+  "approval_decided",
+  "approval_resumed",
+  "approval_expired",
+  "approval_cancelled",
+  "approval_revoked",
+  "approval_failed",
+] as const;
+export type NativeApprovalAuditEventType =
+  (typeof NATIVE_APPROVAL_AUDIT_EVENT_TYPES)[number];
 
 export const AUDIT_CATEGORIES = [
   "orchestration",
@@ -101,6 +134,14 @@ export const AUDIT_EVENT_CATEGORY: Record<AuditEventType, AuditCategory> = {
   tool_approval_required: "tool_call",
   mcp_tool_call: "tool_call",
   skill_invoked: "tool_call",
+  approval_requested: "human_approval",
+  approval_waiting: "human_approval",
+  approval_decided: "human_approval",
+  approval_resumed: "human_approval",
+  approval_expired: "human_approval",
+  approval_cancelled: "human_approval",
+  approval_revoked: "human_approval",
+  approval_failed: "human_approval",
   sandbox_started: "sandbox_execution",
   sandbox_exited: "sandbox_execution",
   sandbox_command: "sandbox_execution",
@@ -120,7 +161,6 @@ export const AUDIT_EVENT_CATEGORY: Record<AuditEventType, AuditCategory> = {
   authorization_decision: "policy_decision",
   permit_project_access_transition: "policy_decision",
   permit_approval_transition: "human_approval",
-  approval_decided: "human_approval",
   mcp_session_issued: "session",
   mcp_session_rejected: "session",
   mcp_session_expired: "session",
@@ -134,6 +174,13 @@ export interface AuditCorrelation {
   projectId?: string;
   runId?: string;
   orchestrationId?: string;
+  /** Team turn and authenticated MCP session references. */
+  turnId?: string;
+  sessionId?: string;
+  /** Native approval bridge references. */
+  invocationId?: string;
+  approvalId?: string;
+  workflowRunId?: string;
   permitRequestId?: string;
   approvalRequestId?: string;
   grantId?: string;
@@ -152,6 +199,10 @@ export interface AuditEventInput extends AuditCorrelation {
   status: AuditEventStatus;
   summary: string;
   principal: Principal;
+  /** Present on versioned native approval lifecycle events. */
+  schemaVersion?: number;
+  /** Bounded source marker; native approval events use `native-workflow`. */
+  source?: string;
   permission?: string;
   resource?: ResourceRef;
   metadata?: Readonly<Record<string, unknown>>;
@@ -172,6 +223,8 @@ export interface AuditEvent extends AuditCorrelation {
   summary: string;
   createdAt: string;
   principal: Principal;
+  schemaVersion?: number;
+  source?: string;
   permission?: string;
   resource?: ResourceRef;
   metadata: AuditMetadata;
@@ -198,6 +251,11 @@ export interface AuditQuery {
   agentId?: string | undefined;
   projectId?: string | undefined;
   runId?: string | undefined;
+  turnId?: string | undefined;
+  sessionId?: string | undefined;
+  invocationId?: string | undefined;
+  approvalId?: string | undefined;
+  workflowRunId?: string | undefined;
   type?: AuditEventType | undefined;
   limit?: number | undefined;
   traceId?: string | undefined;

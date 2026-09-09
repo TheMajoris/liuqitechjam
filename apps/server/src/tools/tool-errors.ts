@@ -5,6 +5,10 @@ export type ToolErrorCode =
   | "TOOL_INVALID_INPUT"
   | "TOOL_OUTPUT_INVALID"
   | "TOOL_EXECUTION_FAILED"
+  | "APPROVAL_REQUIRED"
+  | "TOOL_INVOCATION_INVALIDATED"
+  | "TOOL_EXECUTION_CLAIM_FAILED"
+  | "TOOL_EXECUTION_EXPIRED"
   | "PERMISSION_DENIED"
   | "MCP_AUTHENTICATION_REQUIRED";
 
@@ -36,6 +40,11 @@ export function toolErrorStatus(code: ToolErrorCode): number {
       return 403;
     case "MCP_AUTHENTICATION_REQUIRED":
       return 401;
+    case "APPROVAL_REQUIRED":
+    case "TOOL_INVOCATION_INVALIDATED":
+    case "TOOL_EXECUTION_CLAIM_FAILED":
+    case "TOOL_EXECUTION_EXPIRED":
+      return 409;
     default:
       return 500;
   }

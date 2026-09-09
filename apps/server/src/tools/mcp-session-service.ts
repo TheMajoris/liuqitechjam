@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { AgentPrincipal } from "../access/access-types.js";
 import { agentPrincipal } from "../access/access-types.js";
 import { DEFAULT_MCP_TOKEN_TTL_MS } from "../config.js";
@@ -37,18 +37,47 @@ export interface McpSessionDiagnostics {
   readonly toolsListRequestCountStatus?: McpToolsListRequestCountStatus;
 }
 
+/**
+ * A server-owned session has become unusable. Token material is deliberately
+ * absent; lifecycle consumers should use the trusted run/orchestration fields
+ * to close any approval continuation they own.
+ */
+export interface McpSessionLifecycleEvent {
+  readonly reason: "revoked" | "expired";
+  readonly context: McpSessionContext;
+}
+
+export type McpSessionLifecycleHandler =
+  (event: McpSessionLifecycleEvent) => void | Promise<void>;
+
 export interface McpSessionContext {
   readonly principal: AgentPrincipal;
   readonly agentId: string;
   readonly projectId?: string;
   readonly runId: string;
+  /** Server-minted opaque identifier; never derived from bearer token material. */
+  readonly sessionId: string;
   readonly orchestrationId?: string;
   readonly traceparent?: string;
   readonly expiresAt: string;
+  /** Trusted absolute outer Run/Codex deadline, when one is known. */
+  readonly deadlineAt?: number;
   /** Undefined means legacy full advertisement; [] is an explicit empty snapshot. */
   readonly advertisedToolIds?: readonly string[];
   /** Non-secret catalogue facts; raw requests and transport headers never enter this object. */
   readonly diagnostics?: Readonly<McpSessionDiagnostics>;
+}
+
+/**
+ * Non-secret scope facts accepted by the opaque session liveness lookup.
+ * Callers may pass an approval projection to ensure a recycled session id
+ * cannot satisfy a check for a different Agent Run or Project.
+ */
+export interface McpSessionLivenessScope {
+  readonly agentId?: string;
+  readonly projectId?: string | null;
+  readonly runId?: string;
+  readonly orchestrationId?: string | null;
 }
 
 type SessionRecord = Omit<McpSessionContext, "diagnostics"> & {
@@ -62,6 +91,8 @@ type SessionRecord = Omit<McpSessionContext, "diagnostics"> & {
 export interface McpSessionServiceOptions {
   audit?: AuditRecorder;
   now?: () => number;
+  /** Called once when a token is revoked or expires. */
+  onLifecycle?: McpSessionLifecycleHandler;
 }
 
 export type ResolveMcpSessionResult =
@@ -72,8 +103,12 @@ export interface MintMcpSessionInput {
   agentId: string;
   projectId?: string;
   runId: string;
+  /** Optional trusted correlation id; otherwise a fresh opaque id is minted. */
+  sessionId?: string;
   orchestrationId?: string;
   traceparent?: string;
+  /** Trusted absolute outer Run/Codex deadline, when one is known. */
+  deadlineAt?: number;
   /** Omitted preserves the legacy full catalogue; an empty array is fail-closed. */
   advertisedToolIds?: readonly string[];
   diagnostics?: McpSessionDiagnostics;
@@ -183,9 +218,11 @@ function contextFromRecord(record: SessionRecord): McpSessionContext {
     agentId: record.agentId,
     ...(record.projectId === undefined ? {} : { projectId: record.projectId }),
     runId: record.runId,
+    sessionId: record.sessionId,
     ...(record.orchestrationId === undefined ? {} : { orchestrationId: record.orchestrationId }),
     ...(record.traceparent === undefined ? {} : { traceparent: record.traceparent }),
     expiresAt: record.expiresAt,
+    ...(record.deadlineAt === undefined ? {} : { deadlineAt: record.deadlineAt }),
     ...(advertisedToolIds === undefined ? {} : { advertisedToolIds }),
     ...(diagnostics === undefined ? {} : { diagnostics }),
   });
@@ -199,11 +236,18 @@ export class McpSessionService {
   private readonly ttlMs: number;
   private readonly audit?: AuditRecorder;
   private readonly now: () => number;
+  private lifecycleHandler: McpSessionLifecycleHandler | undefined;
 
   constructor(ttlMs = DEFAULT_MCP_TOKEN_TTL_MS, options: McpSessionServiceOptions = {}) {
     this.ttlMs = Number.isInteger(ttlMs) && ttlMs > 0 ? ttlMs : DEFAULT_MCP_TOKEN_TTL_MS;
     if (options.audit !== undefined) this.audit = options.audit;
     this.now = options.now ?? Date.now;
+    this.lifecycleHandler = options.onLifecycle;
+  }
+
+  /** Attach or replace the lifecycle owner after the app graph is assembled. */
+  setLifecycleHandler(handler: McpSessionLifecycleHandler | undefined): void {
+    this.lifecycleHandler = handler;
   }
 
   private emit(input: Parameters<AuditRecorder["record"]>[0]): void {
@@ -220,6 +264,12 @@ export class McpSessionService {
     const token = randomBytes(32).toString("base64url");
     const expiresAt = new Date(this.now() + this.ttlMs).toISOString();
     const tokenHash = hashToken(token);
+    const sessionId = typeof input.sessionId === "string" && input.sessionId.trim().length > 0
+      ? input.sessionId.trim()
+      : randomUUID();
+    const deadlineAt = typeof input.deadlineAt === "number" && Number.isFinite(input.deadlineAt)
+      ? input.deadlineAt
+      : undefined;
     const advertisedToolIds = cloneAdvertisedToolIds(input.advertisedToolIds);
     const diagnostics = normalizeDiagnostics(input.diagnostics);
     const record: SessionRecord = {
@@ -227,9 +277,11 @@ export class McpSessionService {
       agentId: input.agentId,
       ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
       runId: input.runId,
+      sessionId,
       ...(input.orchestrationId === undefined ? {} : { orchestrationId: input.orchestrationId }),
       ...(input.traceparent === undefined ? {} : { traceparent: input.traceparent }),
       expiresAt,
+      ...(deadlineAt === undefined ? {} : { deadlineAt }),
       ...(advertisedToolIds === undefined ? {} : { advertisedToolIds }),
       ...(diagnostics === undefined ? {} : { diagnostics }),
       tokenHash,
@@ -279,6 +331,57 @@ export class McpSessionService {
       return { context: null, reason: "expired" };
     }
     return { context: contextFromRecord(record) };
+  }
+
+  /**
+   * Async counterpart used by lifecycle-owning HTTP callers. The token is
+   * removed before awaiting the invalidator, so expiry closes authentication
+   * synchronously while the approval fence/native cancellation is awaited.
+   */
+  async resolveDetailedAndAwait(token: string): Promise<ResolveMcpSessionResult> {
+    if (!token) return { context: null, reason: "missing" };
+    if (token.length > 512) return { context: null, reason: "invalid" };
+    const tokenHash = hashToken(token);
+    const record = this.sessions.get(tokenHash);
+    if (!record || !sameHash(record.tokenHash, tokenHash) || record.revokedAt) {
+      return { context: null, reason: "invalid" };
+    }
+    if (Date.parse(record.expiresAt) <= this.now()) {
+      this.sessions.delete(tokenHash);
+      await this.reportExpiryAndWait(record);
+      return { context: null, reason: "expired" };
+    }
+    return { context: contextFromRecord(record) };
+  }
+
+  /** Alias for callers that prefer an explicit async lifecycle name. */
+  async resolveAsync(token: string): Promise<ResolveMcpSessionResult> {
+    return this.resolveDetailedAndAwait(token);
+  }
+
+  /**
+   * Check a server-owned MCP session by its opaque session id.  Token material
+   * is never accepted here and no context is returned; this is a narrow
+   * liveness witness for approval/control-plane callers.  Optional scope
+   * facts are matched against the session so an id collision cannot turn into
+   * an approval authorization.
+   */
+  isLive(sessionId: string, scope: McpSessionLivenessScope = {}): boolean {
+    const normalized = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (normalized.length === 0 || normalized.length > 256) return false;
+    this.prune();
+    for (const record of this.sessions.values()) {
+      if (record.sessionId !== normalized || record.revokedAt) continue;
+      if (scope.agentId !== undefined && record.agentId !== scope.agentId) return false;
+      if (scope.projectId !== undefined && (record.projectId ?? null) !== scope.projectId) return false;
+      if (scope.runId !== undefined && record.runId !== scope.runId) return false;
+      if (
+        scope.orchestrationId !== undefined &&
+        (record.orchestrationId ?? null) !== scope.orchestrationId
+      ) return false;
+      return Date.parse(record.expiresAt) > this.now();
+    }
+    return false;
   }
 
   /**
@@ -363,7 +466,7 @@ export class McpSessionService {
     }
   }
 
-  private reportExpiry(record: SessionRecord): void {
+  private markExpiry(record: SessionRecord): void {
     if (record.expiryReported) return;
     record.expiryReported = true;
     this.emit({
@@ -379,14 +482,84 @@ export class McpSessionService {
     });
   }
 
-  revoke(token: string): boolean {
-    if (!token) return false;
+  private reportExpiry(record: SessionRecord): void {
+    if (record.expiryReported) return;
+    this.markExpiry(record);
+    this.notifyLifecycle(record, "expired");
+  }
+
+  private async reportExpiryAndWait(record: SessionRecord): Promise<void> {
+    if (record.expiryReported) return;
+    this.markExpiry(record);
+    await this.notifyLifecycleAndWait(record, "expired");
+  }
+
+  /**
+   * Lifecycle callbacks are best effort and never reopen a token. The session
+   * fence is applied synchronously by resolve/revoke; asynchronous consumers
+   * are only asked to cancel their owned approval continuation.
+   */
+  private notifyLifecycle(record: SessionRecord, reason: McpSessionLifecycleEvent["reason"]): void {
+    const handler = this.lifecycleHandler;
+    if (handler === undefined) return;
+    const event = this.lifecycleEvent(record, reason);
+    try {
+      void Promise.resolve(handler(event)).catch(() => undefined);
+    } catch {
+      // The token fence is already closed; a lifecycle observer cannot make it
+      // usable again and must not turn revoke/expiry into an HTTP failure.
+    }
+  }
+
+  private lifecycleEvent(
+    record: SessionRecord,
+    reason: McpSessionLifecycleEvent["reason"],
+  ): McpSessionLifecycleEvent {
+    return Object.freeze({ reason, context: contextFromRecord(record) });
+  }
+
+  private async notifyLifecycleAndWait(
+    record: SessionRecord,
+    reason: McpSessionLifecycleEvent["reason"],
+  ): Promise<void> {
+    const handler = this.lifecycleHandler;
+    if (handler === undefined) return;
+    try {
+      await handler(this.lifecycleEvent(record, reason));
+    } catch {
+      // Authentication is already fenced. Lifecycle cleanup is best effort and
+      // must not turn a revoked/expired token into a usable one.
+    }
+  }
+
+  private takeForRevoke(token: string): SessionRecord | null {
+    if (!token) return null;
     const tokenHash = hashToken(token);
     const record = this.sessions.get(tokenHash);
-    if (!record || !sameHash(record.tokenHash, tokenHash) || record.revokedAt) return false;
+    if (!record || !sameHash(record.tokenHash, tokenHash) || record.revokedAt) return null;
     this.sessions.delete(tokenHash);
     this.clearWebToolPermissionDenied(record.runId);
+    return record;
+  }
+
+  revoke(token: string): boolean {
+    const record = this.takeForRevoke(token);
+    if (record === null) return false;
+    this.notifyLifecycle(record, "revoked");
     return true;
+  }
+
+  /** Revoke synchronously at the auth boundary, then await approval cleanup. */
+  async revokeAndAwait(token: string): Promise<boolean> {
+    const record = this.takeForRevoke(token);
+    if (record === null) return false;
+    await this.notifyLifecycleAndWait(record, "revoked");
+    return true;
+  }
+
+  /** Alias for lifecycle owners using an async naming convention. */
+  async revokeAsync(token: string): Promise<boolean> {
+    return this.revokeAndAwait(token);
   }
 
   /** Record a trusted web-tool denial for the authenticated Run. */
@@ -419,6 +592,23 @@ export class McpSessionService {
         this.sessions.delete(tokenHash);
       }
     }
+  }
+
+  /** Await all expiry lifecycle fences observed during one prune pass. */
+  async pruneAndAwait(): Promise<void> {
+    const timestamp = this.now();
+    const expired: SessionRecord[] = [];
+    for (const [tokenHash, record] of this.sessions) {
+      if (record.revokedAt) {
+        this.sessions.delete(tokenHash);
+        continue;
+      }
+      if (Date.parse(record.expiresAt) <= timestamp) {
+        this.sessions.delete(tokenHash);
+        expired.push(record);
+      }
+    }
+    await Promise.all(expired.map((record) => this.reportExpiryAndWait(record)));
   }
 
   size(): number {

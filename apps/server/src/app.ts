@@ -25,11 +25,17 @@ import {
 } from "./agent-authoring.js";
 import { registerAgentMiddlewareRoutes } from "./http/agent-middleware-routes.js";
 import { registerAgentMetricsRoutes } from "./http/agent-metrics-routes.js";
+import {
+  listVisibleToolApprovals,
+  registerToolApprovalRoutes,
+  type ToolApprovalRouteDependencies,
+} from "./http/tool-approval-routes.js";
 import type { AgentMetricsService } from "./usage/agent-metrics.js";
 import { recordHumanAction } from "./http/human-action-audit.js";
 import { agentIdParams, auditQuery, runIdParams } from "./http/route-schemas.js";
 import { registerMcpRoute, type McpRouteDependencies } from "./mcp-server.js";
 import { ToolError } from "./tools/tool-errors.js";
+import { approvalDecisionAuthorityForTool } from "./tools/tool-types.js";
 import { isSkillError } from "./skills/skill-service.js";
 import { isRoleError } from "./roles/role-service.js";
 import { isPreviewError } from "./preview/preview-service.js";
@@ -1047,6 +1053,61 @@ export async function createApp(
     ...(mcp === undefined ? {} : { mcp }),
   });
 
+  // Approval control is an optional HTTP projection. The composition root
+  // decides when the bridge and its Project policy authority are available;
+  // this app boundary never constructs either dependency. The route module
+  // fails closed with 503 while approval mode is not wired.
+  const approvalToolService = mcp?.toolService;
+  const approvalRoutes: ToolApprovalRouteDependencies = {
+    ...(mcp?.approvalService === undefined ? {} : { approvalService: mcp.approvalService }),
+    ...(mcp?.authorizationService === undefined
+      ? {}
+      : { authorizationService: mcp.authorizationService }),
+    getRun: (runId) => service.getRun(runId),
+    ...(mcp?.sessions === undefined
+      ? {}
+      : {
+          isSessionLive: (sessionId, record) =>
+            mcp.sessions.isLive(sessionId, {
+              agentId: record.agentId,
+              projectId: record.projectId,
+              runId: record.runId,
+              orchestrationId: record.orchestrationId,
+            }),
+        }),
+    ...(approvalToolService === undefined
+      ? {}
+      : {
+          resolveDecisionAuthority: (toolId: string) => {
+            // A few read-only app fixtures provide only a structural tool
+            // service. Keep their known built-in projections readable while
+            // the production composition always takes the registry branch.
+            const registry = typeof (approvalToolService as unknown as { getRegistry?: unknown }).getRegistry === "function"
+              ? approvalToolService.getRegistry()
+              : undefined;
+            if (registry === undefined) return approvalDecisionAuthorityForTool(toolId);
+            const definition = registry.get(toolId);
+            // A current registered required policy is the authority source.
+            // The helper only supplies the immutable built-in compatibility
+            // mapping when that policy has no explicit authority metadata.
+            if (definition?.approvalPolicy?.mode !== "required") return null;
+            return approvalDecisionAuthorityForTool(toolId, definition.approvalPolicy);
+          },
+          authorizeAgent: async (record) => {
+            await approvalToolService.assertCurrentAgentToolAuthorized({
+              agentId: record.agentId,
+              runId: record.runId,
+              toolId: record.toolId,
+              ...(record.projectId === null ? {} : { projectId: record.projectId }),
+              ...(record.orchestrationId === null
+                ? {}
+                : { orchestrationId: record.orchestrationId }),
+            });
+          },
+        }),
+  };
+  registerToolApprovalRoutes(app, approvalRoutes);
+
   if (agentMetrics) {
     registerAgentMetricsRoutes(app, {
       metrics: agentMetrics,
@@ -1095,8 +1156,15 @@ export async function createApp(
     const { id } = projectIdParams.parse(request.params);
     const query = auditQuery.parse(request.query);
     await requireProjectService(projectService).get(id);
+    const approvals = mcp?.approvalService === undefined
+      ? []
+      : await listVisibleToolApprovals(approvalRoutes, {
+          projectId: id,
+          includeTerminal: true,
+        });
     return {
       events: requireAuditService(mcp).query({ ...query, projectId: id }),
+      approvals,
     };
   });
 
@@ -1326,8 +1394,15 @@ export async function createApp(
     const { id } = runIdParams.parse(request.params);
     service.getRun(id);
     const query = auditQuery.parse(request.query);
+    const approvals = mcp?.approvalService === undefined
+      ? []
+      : await listVisibleToolApprovals(approvalRoutes, {
+          runId: id,
+          includeTerminal: true,
+        });
     return {
       events: requireAuditService(mcp).query({ ...query, runId: id }),
+      approvals,
     };
   });
 

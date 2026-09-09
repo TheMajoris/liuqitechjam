@@ -5,6 +5,10 @@ import { emptyDatabase, normalizeDatabase } from "../store.js";
 import type { Database } from "../types.js";
 import { normalizeAuditEvent } from "../audit/audit-normalize.js";
 import type { AuditEvent } from "../audit/audit-types.js";
+import type {
+  ToolApprovalConditionalUpdate,
+  ToolApprovalInvocationRecord,
+} from "../tools/tool-approval-store.js";
 import { LATEST_SCHEMA_VERSION } from "./schema-version.js";
 
 /** The runtime adapter deliberately has no migration side effects. */
@@ -304,6 +308,38 @@ const TABLES: readonly TableDescriptor[] = [
     ],
   },
   {
+    collection: "toolApprovalInvocations",
+    table: "tool_approval_invocations",
+    columns: [
+      "approval_id", "invocation_id", "workflow_run_id", "agent_id", "project_id", "run_id",
+      "orchestration_id", "turn_id", "session_id", "tool_id", "policy_version", "input_binding",
+      "private_input_handle", "safe_summary", "deadline_at", "status", "version", "owner_epoch",
+      "decision", "decision_actor", "decision_at", "decision_reason", "trace_refs",
+      "execution_started_at", "completed_at", "terminal_reason", "cancellation_requested_at",
+      "cancellation_reason", "uncertain_reason", "created_at", "updated_at", "ordinal", "record",
+    ].join(", "),
+    keyColumns: ["approval_id"],
+    keyValues: (record) => [requiredString(record, "approvalId")],
+    values: (record, ordinal) => [
+      requiredString(record, "approvalId"), requiredString(record, "invocationId"),
+      requiredString(record, "workflowRunId"), requiredString(record, "agentId"),
+      nullableString(record, "projectId"), requiredString(record, "runId"),
+      nullableString(record, "orchestrationId"), nullableString(record, "turnId"),
+      nullableString(record, "sessionId"), requiredString(record, "toolId"),
+      requiredString(record, "policyVersion"), requiredString(record, "inputBinding"),
+      requiredString(record, "privateInputHandle"), requiredString(record, "safeSummary"),
+      time(record, "deadlineAt"), requiredString(record, "status"),
+      requiredNumber(record, "version"), requiredNumber(record, "ownerEpoch"),
+      nullableString(record, "decision"), record.decisionActor ?? null,
+      nullableString(record, "decisionAt"), nullableString(record, "decisionReason"),
+      record.traceRefs ?? {}, nullableString(record, "executionStartedAt"),
+      nullableString(record, "completedAt"), nullableString(record, "terminalReason"),
+      nullableString(record, "cancellationRequestedAt"), nullableString(record, "cancellationReason"),
+      nullableString(record, "uncertainReason"), time(record, "createdAt"),
+      time(record, "updatedAt"), ordinal, record,
+    ],
+  },
+  {
     collection: "capabilityGrants",
     table: "capability_grants",
     columns: "id, agent_id, project_id, tool_id, scope, uses_remaining, expires_at, revoked_at, created_at, ordinal, record",
@@ -380,7 +416,7 @@ const TABLES: readonly TableDescriptor[] = [
 const DELETE_TABLES = [
   "workspace_operations", "workspace_checkpoints", "workspace_execution_cycles",
   "orchestration_continuation_prompts", "orchestration_events", "orchestration_turns",
-  "permit_approval_correlations", "approval_requests", "capability_grants", "previews",
+  "permit_approval_correlations", "tool_approval_invocations", "approval_requests", "capability_grants", "previews",
   "project_leases", "project_agents", "messages", "runs", "agent_conversations",
   "orchestrations", "installed_skills", "roles", "projects", "agents",
 ] as const;
@@ -388,7 +424,7 @@ const DELETE_TABLES = [
 const INSERT_TABLES = [
   "roles", "agents", "projects", "agent_conversations", "runs", "orchestrations", "messages",
   "orchestration_turns", "orchestration_events", "orchestration_continuation_prompts", "previews",
-  "project_agents", "project_leases", "approval_requests", "capability_grants",
+  "project_agents", "project_leases", "approval_requests", "tool_approval_invocations", "capability_grants",
   "permit_approval_correlations", "installed_skills",
   "workspace_execution_cycles", "workspace_checkpoints", "workspace_operations",
 ] as const;
@@ -400,7 +436,7 @@ const KNOWN_DATABASE_KEYS = new Set([
   "orchestrationTurns", "orchestrationEvents", "orchestrationContinuationPrompts", "previews", "projects",
   "projectAgents", "projectLeases", "approvalRequests", "capabilityGrants", "auditEvents", "auditChainAnchor",
   "permitApprovalCorrelations", "roles", "installedSkills",
-  "workspaceCheckpoints", "workspaceExecutionCycles", "workspaceOperations",
+  "workspaceCheckpoints", "workspaceExecutionCycles", "workspaceOperations", "toolApprovalInvocations",
 ]);
 
 function topLevelExtras(database: Database): JsonRecord {
@@ -646,6 +682,10 @@ async function persistDatabase(client: Queryable, previous: Database, next: Data
   await upsertMetadata(client, normalized, { allowAuditAnchorWrite: false });
 }
 
+function nullableJson(value: unknown): string | null {
+  return value === undefined || value === null ? null : JSON.stringify(value);
+}
+
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
@@ -760,6 +800,148 @@ export class PostgresStore implements Storage {
       } catch (error) {
         this.failClosed(error);
         throw this.unavailableError();
+      }
+    });
+    this.queue = operation.catch(() => undefined);
+    await operation;
+    return result;
+  }
+
+  /**
+   * Compare-and-set for the native approval projection.
+   *
+   * Normal `mutate` is sufficient for ordinary JSON-style changes, but a
+   * decision and an execution start are security fences. Keep their SQL
+   * predicate in the database so another connection cannot win the same
+   * version/status race between a snapshot read and a write.
+   */
+  async conditionalUpdateToolApproval(
+    input: ToolApprovalConditionalUpdate,
+  ): Promise<ToolApprovalInvocationRecord | null> {
+    this.requireReady();
+    if (input.expectedStatuses.length === 0) return null;
+    let result: ToolApprovalInvocationRecord | null = null;
+    const operation = this.queue.then(async () => {
+      this.requireReady();
+      const client = this.client!;
+      let transactionStarted = false;
+      let committed = false;
+      try {
+        await client.query("BEGIN");
+        transactionStarted = true;
+        const next = input.next;
+        const values: unknown[] = [
+          input.approvalId,
+          input.expectedVersion,
+          next.invocationId,
+          next.workflowRunId,
+          next.agentId,
+          next.projectId,
+          next.runId,
+          next.orchestrationId,
+          next.turnId,
+          next.sessionId,
+          next.toolId,
+          next.policyVersion,
+          next.inputBinding,
+          next.privateInputHandle,
+          next.safeSummary,
+          next.deadlineAt,
+          next.status,
+          next.version,
+          next.ownerEpoch,
+          next.decision,
+          nullableJson(next.decisionActor),
+          next.decisionAt,
+          next.decisionReason,
+          JSON.stringify(next.traceRefs),
+          next.executionStartedAt,
+          next.completedAt,
+          next.terminalReason,
+          next.cancellationRequestedAt,
+          next.cancellationReason,
+          next.uncertainReason,
+          next.createdAt,
+          next.updatedAt,
+          JSON.stringify(next),
+        ];
+        const ownerEpochParameter = values.length + 1;
+        values.push(input.expectedOwnerEpoch);
+        const statusParameters = input.expectedStatuses.map((_, index) => `$${values.length + index + 1}`);
+        values.push(...input.expectedStatuses);
+        const update = await client.query<{ record: unknown }>(
+          `UPDATE ${POSTGRES_SCHEMA}.tool_approval_invocations
+              SET invocation_id = $3,
+                  workflow_run_id = $4,
+                  agent_id = $5,
+                  project_id = $6,
+                  run_id = $7,
+                  orchestration_id = $8,
+                  turn_id = $9,
+                  session_id = $10,
+                  tool_id = $11,
+                  policy_version = $12,
+                  input_binding = $13,
+                  private_input_handle = $14,
+                  safe_summary = $15,
+                  deadline_at = $16,
+                  status = $17,
+                  version = $18,
+                  owner_epoch = $19,
+                  decision = $20,
+                  decision_actor = $21::jsonb,
+                  decision_at = $22,
+                  decision_reason = $23,
+                  trace_refs = $24::jsonb,
+                  execution_started_at = $25,
+                  completed_at = $26,
+                  terminal_reason = $27,
+                  cancellation_requested_at = $28,
+                  cancellation_reason = $29,
+                  uncertain_reason = $30,
+                  created_at = $31,
+                  updated_at = $32,
+                  record = $33::jsonb
+            WHERE approval_id = $1
+              AND version = $2
+              AND owner_epoch = $${ownerEpochParameter}
+              AND status IN (${statusParameters.join(", ")})
+            RETURNING record`,
+          values,
+        );
+        if (update.rows.length === 0) {
+          await client.query("ROLLBACK");
+          transactionStarted = false;
+          return;
+        }
+        await client.query("COMMIT");
+        transactionStarted = false;
+        committed = true;
+
+        const nextDatabase = structuredClone(this.data!);
+        const index = nextDatabase.toolApprovalInvocations.findIndex(
+          (record) => record.approvalId === input.approvalId,
+        );
+        if (index < 0) {
+          throw new Error("PostgreSQL approval row is missing from the in-memory snapshot");
+        }
+        nextDatabase.toolApprovalInvocations[index] = structuredClone(next);
+        this.data = normalizeDatabase(nextDatabase);
+        result = structuredClone(next);
+      } catch (error) {
+        if (!committed && transactionStarted) {
+          const rollbackSucceeded = await client.query("ROLLBACK").then(() => true).catch(() => false);
+          transactionStarted = false;
+          if (!rollbackSucceeded) {
+            this.failClosed(error);
+            throw this.unavailableError();
+          }
+        }
+        if (committed || isClientQueryTimeout(error)) {
+          this.failClosed(error);
+          throw this.unavailableError();
+        }
+        throw error;
       }
     });
     this.queue = operation.catch(() => undefined);

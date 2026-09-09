@@ -5,9 +5,11 @@ import type {
   OrchestrationSession,
   OrchestrationSessionDetail,
   Project,
+  ToolApproval,
 } from "../../types";
 import { diagnoseFailure } from "./failure-diagnosis";
 import { ParticipantBar } from "./ParticipantBar";
+import { ToolApprovalList } from "../approvals/ToolApprovalCard";
 import type { OrchestrationAction } from "./use-orchestration";
 import {
   agentName,
@@ -30,6 +32,12 @@ interface OrchestrationRunViewProps {
   modelProviders?: ModelProviderDescriptor[];
   /** Opens the room on the Agent whose turn failed; omitted hides the button. */
   onInspectFailure?: ((agentId: string | null) => void) | undefined;
+  /** Optional server-owned approval projections for this Team Run. */
+  approvals?: readonly ToolApproval[];
+  approvalPendingId?: string | null;
+  approvalPendingAction?: "approve" | "reject" | null;
+  approvalErrors?: Readonly<Record<string, string>>;
+  onApprovalDecision?: (approvalId: string, approved: boolean) => void;
 }
 
 function StatusMark({ status }: { status: OrchestrationSession["status"] }) {
@@ -79,6 +87,11 @@ export function OrchestrationRunView({
   onDelete,
   modelProviders = [],
   onInspectFailure,
+  approvals = [],
+  approvalPendingId = null,
+  approvalPendingAction = null,
+  approvalErrors = {},
+  onApprovalDecision,
 }: OrchestrationRunViewProps) {
   const confirm = useConfirm();
   const failure = diagnoseFailure(detail, agents);
@@ -185,6 +198,20 @@ export function OrchestrationRunView({
           </>
         )}
       </p>
+
+      {approvals.length > 0 && (
+        <ToolApprovalList
+          approvals={approvals}
+          getAgentName={(agentId) => agentName(agents, agentId)}
+          projectName={project?.name}
+          runLabel={session.name}
+          pendingDecisionId={approvalPendingId}
+          pendingDecision={approvalPendingAction}
+          decisionErrors={approvalErrors}
+          onDecision={onApprovalDecision}
+          className="tool-approval-list-orchestration"
+        />
+      )}
 
       {failed && (
         <div className="orch-alert orch-alert-danger orch-failure-alert" role="alert">

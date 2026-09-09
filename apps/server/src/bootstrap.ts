@@ -1,6 +1,9 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
+import { PostgresStore as MastraPostgresStore } from "@mastra/pg";
+import { InMemoryStore } from "@mastra/core/storage";
+import type { MastraCompositeStore } from "@mastra/core/storage";
 import { AgentService } from "./agent-service.js";
 import { createAgentAuthoringService } from "./agent-authoring.js";
 import { createApp } from "./app.js";
@@ -62,6 +65,13 @@ import type { RuntimeTelemetry } from "./telemetry/telemetry-types.js";
 import { AgentMetricsService } from "./usage/agent-metrics.js";
 import { ApplicationHealth } from "./application-health.js";
 import { reconcileLocalProcessStartup } from "./runtime-reconciliation.js";
+import {
+  ToolApprovalService,
+} from "./tools/tool-approval-service.js";
+import {
+  ToolApprovalStore,
+} from "./tools/tool-approval-store.js";
+import { ToolApprovalWorkflowService } from "./tools/tool-approval-workflow.js";
 
 const LIFECYCLE_SHUTDOWN_TIMEOUT_MS = 5_000;
 
@@ -74,6 +84,10 @@ export interface BootstrapOptions {
   runner?: AgentRunner | undefined;
   /** Replaces the live ModelArk-backed worker resolver (offline demos, tests). */
   workerModelResolver?: WorkerModelResolver | undefined;
+  /** Test/local injection seam for a verified native Mastra workflow store. */
+  approvalWorkflowStorage?: MastraCompositeStore | undefined;
+  /** Alias retained for callers that name the dependency after the feature. */
+  toolApprovalWorkflowStorage?: MastraCompositeStore | undefined;
 }
 
 export interface BootstrappedApplication {
@@ -88,6 +102,10 @@ export interface BootstrappedApplication {
   workspaceCheckpoints: WorkspaceCheckpointService;
   workspaceOperations: WorkspaceOperationCoordinator;
   projectWorkspaces: ProjectWorkspaceManager;
+  /** Present only when MCP tool approval is enabled and fully initialized. */
+  toolApprovalService?: ToolApprovalService;
+  /** Native workflow owner, exposed for bounded lifecycle tests/inspection. */
+  toolApprovalWorkflowService?: ToolApprovalWorkflowService;
   /** Quiesce Agents and Teams, then close the app, store, and telemetry. */
   shutdown: (signal: string) => Promise<void>;
 }
@@ -95,24 +113,24 @@ export interface BootstrappedApplication {
 async function boundedLifecycleWait(
   operation: Promise<unknown>,
   timeoutMs = LIFECYCLE_SHUTDOWN_TIMEOUT_MS,
-): Promise<void> {
+): Promise<boolean> {
   const boundedTimeout =
     Number.isFinite(timeoutMs) && timeoutMs >= 0
       ? timeoutMs
       : LIFECYCLE_SHUTDOWN_TIMEOUT_MS;
   let timer: NodeJS.Timeout | null = null;
-  const timeout = new Promise<void>((resolve) => {
-    timer = setTimeout(resolve, boundedTimeout);
+  const timeout = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), boundedTimeout);
     timer.unref();
   });
   // Observe rejection even when the unhealthy shutdown deadline wins. The
   // owned lifecycle operation continues its own best-effort settlement.
   const observed = operation.then(
-    () => undefined,
-    () => undefined,
+    () => true,
+    () => true,
   );
   try {
-    await Promise.race([observed, timeout]);
+    return await Promise.race([observed, timeout]);
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -141,7 +159,8 @@ const hasDatabaseData = (database: Database): boolean =>
   database.installedSkills.length > 0 ||
   database.workspaceCheckpoints.length > 0 ||
   database.workspaceExecutionCycles.length > 0 ||
-  database.workspaceOperations.length > 0;
+  database.workspaceOperations.length > 0 ||
+  database.toolApprovalInvocations.length > 0;
 
 /**
  * The composition root. Everything the server is made of is assembled here
@@ -389,6 +408,10 @@ export async function bootstrapApplication(
   toolService.setProjectRoleToolResolver(roleService);
   skillService.setProjectRoleSkillResolver(roleService);
   const effectiveToolResolver = new EffectiveToolResolver();
+  // Approval mode is fixed at startup for every newly minted MCP Run. Keep
+  // sensitive tools absent from new capability snapshots until the durable
+  // projection and native workflow provider have both passed readiness.
+  let approvalAvailable = !config.mcpToolApprovalEnabled;
   service.setEffectiveToolResolution((agent, projectId, projection) => {
     if (config.mcpScopedAdvertisement && projection === undefined) {
       return {
@@ -403,13 +426,30 @@ export async function bootstrapApplication(
       };
     }
     const effectiveRole = roleService.getEffectiveRole(agent.id, projectId, agent);
-    return effectiveToolResolver.resolve({
+    const resolution = effectiveToolResolver.resolve({
       registry: toolRegistry,
       ...(effectiveRole === undefined ? {} : { effectiveRole }),
       assignedSkills: projection?.skills ?? [],
       capabilities: projection?.toolCapabilities ?? [],
       legacyFullAdvertisement: !config.mcpScopedAdvertisement,
     });
+    if (!config.mcpToolApprovalEnabled || approvalAvailable) return resolution;
+    if (!resolution.ok) return resolution;
+    const sensitiveIds = new Set(
+      toolRegistry
+        .list()
+        .filter((definition) => definition.approvalPolicy?.mode === "required")
+        .map((definition) => definition.id),
+    );
+    const advertisedToolIds = resolution.advertisedToolIds.filter((id) => !sensitiveIds.has(id));
+    return {
+      ...resolution,
+      advertisedToolIds: Object.freeze(advertisedToolIds),
+      diagnostics: {
+        ...resolution.diagnostics,
+        advertisedToolCount: advertisedToolIds.length,
+      },
+    };
   });
   service.setSkillService(skillService);
   projectService.setSkillService(skillService);
@@ -583,6 +623,116 @@ export async function bootstrapApplication(
       await orchestrationService.removeSessionsForProject(projectId, { archiveOwned: true });
     },
   });
+
+  let toolApprovalService: ToolApprovalService | undefined;
+  let toolApprovalWorkflowService: ToolApprovalWorkflowService | undefined;
+  let approvalWorkflowStorage: MastraCompositeStore | undefined;
+
+  if (config.mcpToolApprovalEnabled) {
+    try {
+      const injectedStorage =
+        options.approvalWorkflowStorage ?? options.toolApprovalWorkflowStorage;
+      approvalWorkflowStorage = injectedStorage ?? (
+        config.mcpToolApprovalStorage === "memory"
+          ? new InMemoryStore({ id: `lqam-tool-approval-${config.runtimeInstanceId}` })
+          : new MastraPostgresStore({
+              id: `lqam-tool-approval-${config.runtimeInstanceId}`,
+              connectionString: config.databaseUrl,
+              schemaName: config.mcpToolApprovalSchema,
+              // The exact pinned @mastra/pg provider initializes this dedicated
+              // schema before the bridge is exposed. Its runtime role therefore
+              // needs CREATE privileges for the configured schema on first boot.
+              disableInit: false,
+            })
+      );
+
+      const approvalStore = new ToolApprovalStore(store, { audit });
+      const allowInMemoryStore =
+        (config.nodeEnv === "development" || config.nodeEnv === "test") &&
+        (config.mcpToolApprovalStorage === "memory" ||
+          approvalWorkflowStorage instanceof InMemoryStore);
+      const workflow = new ToolApprovalWorkflowService({
+        approvalStore,
+        toolService,
+        workflowStorage: approvalWorkflowStorage,
+        allowInMemoryStore,
+        environment: config.nodeEnv,
+      });
+      toolApprovalWorkflowService = workflow;
+      await workflow.initialize();
+      // A provider supplied by the application is still subject to the native
+      // workflow CAS check. The concrete Postgres path additionally verifies
+      // the configured schema and snapshot table with the same connection.
+      // This runs after provider init so every deployment verifies the same
+      // schema/table that the pinned provider will use for workflow snapshots.
+      if (approvalWorkflowStorage instanceof MastraPostgresStore) {
+        await approvalWorkflowStorage.pool.query("SELECT 1");
+        const schemaCheck = await approvalWorkflowStorage.pool.query<{ schema_name: string | null }>(
+          "SELECT to_regnamespace($1::text)::text AS schema_name",
+          [config.mcpToolApprovalSchema],
+        );
+        if (!schemaCheck.rows[0]?.schema_name) {
+          throw new Error("MCP tool approval schema is unavailable");
+        }
+        const tableCheck = await approvalWorkflowStorage.pool.query<{ relation_name: string | null }>(
+          "SELECT to_regclass($1::text)::text AS relation_name",
+          [`${config.mcpToolApprovalSchema}.mastra_workflow_snapshot`],
+        );
+        if (!tableCheck.rows[0]?.relation_name) {
+          throw new Error("MCP tool approval workflow snapshot table is unavailable");
+        }
+      }
+
+      const bridge = new ToolApprovalService({
+        approvalStore,
+        toolService,
+        workflowService: workflow,
+        approvalTimeoutMs: config.mcpToolApprovalTimeoutMs,
+        audit,
+        telemetry,
+        onAvailabilityChange: (available) => {
+          // Once a native or durable dependency fails, sensitive tools remain
+          // unavailable for newly minted Runs. Existing advertisements are
+          // still denied by the MCP dispatch guard.
+          approvalAvailable = available;
+        },
+      });
+      await bridge.initialize();
+      toolApprovalService = bridge;
+      approvalAvailable = true;
+    } catch {
+      // Startup is allowed to serve safe, already-authorized tools while an
+      // enabled approval deployment is unhealthy. Sensitive tools remain
+      // absent from new advertisements and dispatch always denies them.
+      approvalAvailable = false;
+      await toolApprovalWorkflowService?.close().catch(() => undefined);
+      if (toolApprovalWorkflowService === undefined) {
+        await approvalWorkflowStorage?.close().catch(() => undefined);
+      }
+      toolApprovalWorkflowService = undefined;
+      toolApprovalService = undefined;
+      console.warn("MCP tool approval is enabled but unavailable; sensitive tools are fail-closed");
+    }
+  }
+
+  if (toolApprovalService !== undefined) {
+    // Every lifecycle owner shares one durable fence. This is attached before
+    // orchestration initialization so stop/reconcile paths cannot race a
+    // newly accepted approval invocation.
+    service.setToolApprovalInvalidator(toolApprovalService);
+    projectService.setToolApprovalInvalidator(toolApprovalService);
+    orchestrationService.setToolApprovalInvalidator(toolApprovalService);
+    mcpSessions.setLifecycleHandler(async ({ context, reason }) => {
+      await toolApprovalService?.invalidateForSession(
+        context.sessionId,
+        reason === "expired"
+          ? "The originating MCP session expired"
+          : "The originating MCP session was revoked",
+      );
+    });
+  } else {
+    mcpSessions.setLifecycleHandler(undefined);
+  }
   await orchestrationService.initialize();
   orchestrationService.setTelemetry(telemetry);
 
@@ -597,6 +747,10 @@ export async function bootstrapApplication(
       sessions: mcpSessions,
       toolService,
       legacyFullAdvertisement: !config.mcpScopedAdvertisement,
+      approvalFeatureEnabled: config.mcpToolApprovalEnabled,
+      approvalAvailable,
+      ...(toolApprovalService === undefined ? {} : { approvalService: toolApprovalService }),
+      authorizationService: authorization,
       skillService,
       roleService,
       auditService: audit,
@@ -617,17 +771,47 @@ export async function bootstrapApplication(
     if (shutdownInProgress) return;
     shutdownInProgress = true;
     app.log.info({ signal }, "Shutting down");
+    // This is deliberately synchronous and happens before any async quiesce or
+    // fence work. A request arriving during shutdown can no longer create a
+    // sensitive invocation while the durable/native resources are draining.
+    toolApprovalService?.disableAdmissions();
     // Normal signals must quiesce direct Agent runs as well as Team sessions
     // before app/store close. Storage-fatal shutdown already started the same
     // memory-first Agent sweep in the fatal listener below.
     if (signal !== "STORAGE_FATAL") {
-      await boundedLifecycleWait(
+      const quiesced = await boundedLifecycleWait(
         service.quiesceForStorageFailure({ timeoutMs: LIFECYCLE_SHUTDOWN_TIMEOUT_MS }),
       );
+      if (!quiesced) {
+        app.log.error("Agent quiesce exceeded the shutdown bound; leaving dependent stores open");
+        return;
+      }
     }
-    await boundedLifecycleWait(orchestrationService.shutdown());
-    await boundedLifecycleWait(app.close());
-    await boundedLifecycleWait(store.close());
+    const orchestrationStopped = await boundedLifecycleWait(orchestrationService.shutdown());
+    if (!orchestrationStopped) {
+      app.log.error("Orchestration shutdown exceeded the bound; leaving dependent stores open");
+      return;
+    }
+    // Approval handles are tied to live MCP responses. Fence and settle them
+    // before closing the native Mastra provider or the application store.
+    const approvalsStopped = await boundedLifecycleWait(
+      toolApprovalService?.shutdown("Server shutdown cancelled the approval invocation") ??
+        Promise.resolve(),
+    );
+    if (!approvalsStopped) {
+      app.log.error("Tool approval drain exceeded the shutdown bound; leaving dependent stores open");
+      return;
+    }
+    const appClosed = await boundedLifecycleWait(app.close());
+    if (!appClosed) {
+      app.log.error("HTTP application close exceeded the shutdown bound; leaving storage open");
+      return;
+    }
+    const storeClosed = await boundedLifecycleWait(store.close());
+    if (!storeClosed) {
+      app.log.error("Application storage close exceeded the shutdown bound");
+      return;
+    }
     await boundedLifecycleWait(telemetry.shutdown());
   };
 
@@ -635,17 +819,23 @@ export async function bootstrapApplication(
   // in-memory Agent and Team handles first, then give the normal supervisor a
   // bounded unhealthy shutdown signal. No storage snapshot is consulted here.
   applicationHealth.onStorageFatal(() => {
-    void boundedLifecycleWait(
-      Promise.all([
-        service.quiesceForStorageFailure({ timeoutMs: LIFECYCLE_SHUTDOWN_TIMEOUT_MS }),
-        orchestrationService.quiesceForStorageFailure({
-          timeoutMs: LIFECYCLE_SHUTDOWN_TIMEOUT_MS,
-        }),
-      ]),
-    ).then(async () => {
+    toolApprovalService?.disableAdmissions();
+    void (async () => {
+      const quiesced = await boundedLifecycleWait(
+        Promise.all([
+          service.quiesceForStorageFailure({ timeoutMs: LIFECYCLE_SHUTDOWN_TIMEOUT_MS }),
+          orchestrationService.quiesceForStorageFailure({
+            timeoutMs: LIFECYCLE_SHUTDOWN_TIMEOUT_MS,
+          }),
+        ]),
+      );
+      if (!quiesced) {
+        app.log.error("Storage-fatal quiesce exceeded the bound; leaving dependent stores open");
+        return;
+      }
       await shutdown("STORAGE_FATAL");
       process.exit(0);
-    });
+    })();
   });
 
   return {
@@ -660,6 +850,10 @@ export async function bootstrapApplication(
     workspaceCheckpoints,
     workspaceOperations,
     projectWorkspaces,
+    ...(toolApprovalService === undefined ? {} : { toolApprovalService }),
+    ...(toolApprovalWorkflowService === undefined
+      ? {}
+      : { toolApprovalWorkflowService }),
     shutdown,
   };
 }

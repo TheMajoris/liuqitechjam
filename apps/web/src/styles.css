@@ -2770,6 +2770,272 @@ textarea:focus {
   margin: 12px clamp(20px, 5vw, 56px) 0;
 }
 
+/* Tool approvals --------------------------------------------------------- */
+/*
+ * The approval projection is a small control surface inside existing Run
+ * views. It uses the same warm paper, hairlines, and semantic accent colors;
+ * the status text is always present so color is never the only signal.
+ */
+.tool-approval-list {
+  display: grid;
+  gap: 10px;
+  width: min(820px, calc(100% - 2 * clamp(20px, 5vw, 40px)));
+  margin: 0 auto 14px;
+}
+
+.tool-approval-list-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tool-approval-list-heading h2 {
+  margin: 4px 0 0;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.tool-approval-list-count {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-approval-list-items {
+  display: grid;
+  gap: 8px;
+}
+
+.tool-approval-card {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  background: var(--paper);
+  box-shadow: var(--elevation-1);
+}
+
+.tool-approval-card-waiting,
+.tool-approval-card-requested {
+  border-color: rgba(105, 84, 217, 0.34);
+  background: #fff;
+}
+
+.tool-approval-card-expired,
+.tool-approval-card-rejected,
+.tool-approval-card-cancelled,
+.tool-approval-card-revoked,
+.tool-approval-card-failed,
+.tool-approval-card-failed_pre_execution,
+.tool-approval-card-uncertain {
+  background: rgba(120, 120, 128, 0.035);
+}
+
+.tool-approval-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tool-approval-card-title {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tool-approval-eyebrow {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.tool-approval-card h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.tool-approval-status {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 4px 9px;
+  color: var(--muted);
+  background: rgba(120, 120, 128, 0.1);
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.2;
+  text-align: right;
+}
+
+.tool-approval-status-dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.tool-approval-status-waiting,
+.tool-approval-status-requested,
+.tool-approval-status-approved,
+.tool-approval-status-resuming,
+.tool-approval-status-executing {
+  color: var(--purple-dark);
+  background: var(--purple-soft);
+}
+
+.tool-approval-status-executing .tool-approval-status-dot,
+.tool-approval-status-resuming .tool-approval-status-dot {
+  animation: orch-pulse 1.4s ease-in-out infinite;
+}
+
+.tool-approval-status-succeeded {
+  color: var(--green);
+  background: rgba(51, 144, 109, 0.12);
+}
+
+.tool-approval-status-rejected,
+.tool-approval-status-failed,
+.tool-approval-status-failed_pre_execution,
+.tool-approval-status-expired,
+.tool-approval-status-cancelled,
+.tool-approval-status-revoked {
+  color: var(--red);
+  background: rgba(197, 83, 83, 0.12);
+}
+
+.tool-approval-status-uncertain {
+  color: #8a5a00;
+  background: rgba(191, 130, 0, 0.14);
+}
+
+.tool-approval-summary {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.tool-approval-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  margin: 0;
+}
+
+.tool-approval-facts dt {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.tool-approval-facts dd {
+  margin: 2px 0 0;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.tool-approval-action {
+  min-height: 36px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 7px 13px;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, opacity 160ms ease;
+}
+
+.tool-approval-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.tool-approval-action-approve {
+  color: #fff;
+  background: var(--purple);
+}
+
+.tool-approval-action-approve:hover:not(:disabled) {
+  background: var(--purple-dark);
+}
+
+.tool-approval-action-reject {
+  border-color: rgba(197, 83, 83, 0.36);
+  color: var(--red);
+  background: rgba(197, 83, 83, 0.07);
+}
+
+.tool-approval-action-reject:hover:not(:disabled) {
+  background: rgba(197, 83, 83, 0.14);
+}
+
+.tool-approval-note,
+.tool-approval-error {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.tool-approval-note {
+  color: var(--muted);
+}
+
+.tool-approval-error {
+  border-radius: var(--radius-sm);
+  padding: 7px 9px;
+  color: var(--red);
+  background: rgba(197, 83, 83, 0.08);
+}
+
+@media (max-width: 720px) {
+  .tool-approval-list {
+    width: calc(100% - 2 * 18px);
+  }
+
+  .tool-approval-card-heading {
+    flex-direction: column;
+  }
+
+  .tool-approval-status {
+    text-align: left;
+  }
+
+  .tool-approval-action {
+    flex: 1 1 140px;
+    min-height: 44px;
+  }
+}
+
 /* Session status */
 .orch-status {
   flex-shrink: 0;

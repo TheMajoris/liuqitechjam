@@ -35,6 +35,7 @@ const IMPORT_TABLES = [
   "project_agents",
   "project_leases",
   "approval_requests",
+  "tool_approval_invocations",
   "capability_grants",
   "permit_approval_correlations",
   "installed_skills",

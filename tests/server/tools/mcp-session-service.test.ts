@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { McpSessionService } from "../../../apps/server/src/tools/mcp-session-service.js";
+import {
+  McpSessionService,
+  type McpSessionLifecycleEvent,
+} from "../../../apps/server/src/tools/mcp-session-service.js";
 import type {
   AuditEvent,
   AuditEventInput,
@@ -103,6 +106,31 @@ describe("McpSessionService audit lifecycle", () => {
 
     expect(service.revoke(token)).toBe(true);
     expect(audit.inputs).toHaveLength(0);
+  });
+
+  it("notifies the lifecycle owner once for expiry and revoke without token material", () => {
+    const lifecycle: McpSessionLifecycleEvent[] = [];
+    let now = 1_000;
+    const service = new McpSessionService(1_000, { now: () => now });
+    service.setLifecycleHandler((event) => lifecycle.push(event));
+
+    const expiring = service.mint({ agentId: "agent-expiring", runId: "run-expiring" });
+    now += 2_000;
+    expect(service.resolveDetailed(expiring.token)).toMatchObject({
+      context: null,
+      reason: "expired",
+    });
+
+    const revoked = service.mint({ agentId: "agent-revoked", runId: "run-revoked" });
+    expect(service.revoke(revoked.token)).toBe(true);
+
+    expect(lifecycle).toHaveLength(2);
+    expect(lifecycle).toMatchObject([
+      { reason: "expired", context: { agentId: "agent-expiring", runId: "run-expiring" } },
+      { reason: "revoked", context: { agentId: "agent-revoked", runId: "run-revoked" } },
+    ]);
+    expect(JSON.stringify(lifecycle)).not.toContain(expiring.token);
+    expect(JSON.stringify(lifecycle)).not.toContain(revoked.token);
   });
 
   it("clones and freezes the advertised snapshot while refreshing each next run", () => {

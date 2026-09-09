@@ -33,6 +33,7 @@ import { useWorkspaceActivity } from "../../workspace/use-workspace-activity";
 import { useAgentMetrics } from "../../workspace/use-agent-metrics";
 import type { AgentLifecycleAction } from "../../workspace/AgentInspector";
 import { WorkspaceRoster, type WorkspaceRosterMember } from "../../workspace/WorkspaceRoster";
+import { useToolApprovals } from "../approvals/use-tool-approvals";
 
 const AGENT_STATUS_LABEL: Record<string, string> = {
   busy: "Working",
@@ -105,6 +106,12 @@ export function OrchestrationWorkspace({
   const sessionActive = detail ? isOrchestrationActive(detail.session.status) : false;
   const previewController = useProjectPreview(projectId);
   const activity = useWorkspaceActivity(projectId, sessionActive);
+  const orchestrationApprovals = useToolApprovals({
+    orchestrationId: detail?.session.id ?? null,
+    projectId: detail?.session.projectId ?? null,
+    active: sessionActive,
+    initialApprovals: detail?.approvals,
+  });
 
   const roomAgentIds = useMemo(() => {
     const ids = new Set<string>();
@@ -555,6 +562,13 @@ export function OrchestrationWorkspace({
               modelProviders={modelProviders}
               project={workspaceProject}
               onInspectFailure={inspectFailure}
+              approvals={orchestrationApprovals.approvals}
+              approvalPendingId={orchestrationApprovals.pendingDecisionId}
+              approvalPendingAction={orchestrationApprovals.pendingDecision}
+              approvalErrors={orchestrationApprovals.decisionErrors}
+              onApprovalDecision={(approvalId, approved) => {
+                void orchestrationApprovals.decide(approvalId, approved);
+              }}
             />
             {showRecoveryPanel && recovery && (
               <WorkspaceRecoveryPanel
@@ -567,6 +581,13 @@ export function OrchestrationWorkspace({
             <OrchestrationRunTabs
               detail={detail}
               agents={agents}
+              approvals={orchestrationApprovals.approvals}
+              approvalPendingId={orchestrationApprovals.pendingDecisionId}
+              approvalPendingAction={orchestrationApprovals.pendingDecision}
+              approvalErrors={orchestrationApprovals.decisionErrors}
+              onApprovalDecision={(approvalId, approved) => {
+                void orchestrationApprovals.decide(approvalId, approved);
+              }}
               action={orchestration.action}
               onContinue={handleContinue}
               onRetry={handleRetry}

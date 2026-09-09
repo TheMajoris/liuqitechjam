@@ -8,8 +8,14 @@ import type { WebFetchResult } from "./web-fetch-adapter.js";
 import { ToolRegistry } from "./tool-registry.js";
 import { ToolError } from "./tool-errors.js";
 import type {
+  ToolApprovalPolicy,
   ToolDefinition,
   ToolExecutionContext,
+} from "./tool-types.js";
+import {
+  TOOL_APPROVAL_POLICY_VERSION,
+  WEB_SEARCH_TOOL_APPROVAL_POLICY_VERSION,
+  type ToolApprovalDecisionAuthority,
 } from "./tool-types.js";
 
 const MAX_SAFE_REASON_LENGTH = 512;
@@ -64,6 +70,28 @@ const PreviewViewSchema = z.object({
 });
 const EmptyInputSchema = z.object({});
 
+const NO_APPROVAL: ToolApprovalPolicy = Object.freeze({
+  mode: "none",
+  version: TOOL_APPROVAL_POLICY_VERSION,
+});
+const PREVIEW_RESTART_APPROVAL: ToolApprovalPolicy = Object.freeze({
+  mode: "required",
+  version: TOOL_APPROVAL_POLICY_VERSION,
+  decisionAuthority: Object.freeze({
+    kind: "project-owner",
+    permission: "project.preview.restart",
+  } satisfies ToolApprovalDecisionAuthority),
+});
+const WEB_SEARCH_APPROVAL: ToolApprovalPolicy = Object.freeze({
+  mode: "required",
+  // Changing web.search from direct execution to HITL is a policy revision.
+  version: WEB_SEARCH_TOOL_APPROVAL_POLICY_VERSION,
+  decisionAuthority: Object.freeze({
+    kind: "project-owner",
+    permission: "tool.execute:web.search",
+  } satisfies ToolApprovalDecisionAuthority),
+});
+
 export interface ToolPreviewService {
   get(owner: PreviewOwnerRef, principal?: Principal): Promise<PreviewView>;
   restart(owner: PreviewOwnerRef, principal?: Principal): Promise<PreviewView>;
@@ -104,6 +132,7 @@ export function createBuiltInToolDefinitions(
       description: "Read the current status and URL of the shared Project preview.",
       risk: "read",
       requiredPermission: "tool.execute:project.preview.inspect",
+      approvalPolicy: NO_APPROVAL,
       inputSchema: EmptyInputSchema,
       outputSchema: PreviewViewSchema,
       async execute(context) {
@@ -126,6 +155,7 @@ export function createBuiltInToolDefinitions(
       description: "Restart the shared Project preview server.",
       risk: "write",
       requiredPermission: "tool.execute:project.preview.restart",
+      approvalPolicy: PREVIEW_RESTART_APPROVAL,
       inputSchema: EmptyInputSchema,
       outputSchema: PreviewViewSchema,
       async execute(context) {
@@ -148,6 +178,7 @@ export function createBuiltInToolDefinitions(
       description: "Search the public web through the platform's bounded Brave adapter.",
       risk: "network",
       requiredPermission: "tool.execute:web.search",
+      approvalPolicy: WEB_SEARCH_APPROVAL,
       inputSchema: SearchInputSchema,
       outputSchema: SearchOutputSchema,
       async execute(context, input) {
@@ -162,6 +193,7 @@ export function createBuiltInToolDefinitions(
       description: "Read a bounded public HTTP(S) page supplied by the caller.",
       risk: "network",
       requiredPermission: "tool.execute:web.fetch",
+      approvalPolicy: NO_APPROVAL,
       inputSchema: FetchInputSchema,
       outputSchema: FetchOutputSchema,
       async execute(_context, input) {

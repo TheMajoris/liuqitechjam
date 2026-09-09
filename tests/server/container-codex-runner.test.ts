@@ -140,6 +140,29 @@ describe("Container Codex runner", () => {
     expect(args).not.toContain("secret-that-must-not-appear-in-argv");
   });
 
+  it("inherits the configured MCP tool timeout from the shared Codex args", () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      CODEX_HOME: "/tmp/codex-home",
+      RUNTIME_PROVIDER: "container",
+      CONTAINER_ENGINE: "podman",
+      CONTAINER_RUNTIME_IMAGE: "runtime:test",
+      MCP_TOOL_TIMEOUT_SEC: "75",
+    });
+    const args = buildContainerRunArgs(
+      {
+        ...baseRequest,
+        mcp: {
+          url: "http://host.docker.internal:3000/mcp",
+          token: "opaque-token",
+        },
+      },
+      config,
+    );
+
+    expect(args).toContain("mcp_servers.launchpad.tool_timeout_sec=75");
+  });
+
   it("probes the host-facing MCP URL before starting a container", async () => {
     const config = loadConfig({
       NODE_ENV: "test",

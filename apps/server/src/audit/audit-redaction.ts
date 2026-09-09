@@ -6,8 +6,13 @@ import type {
   AuditMetadataValue,
   AuditEventInput,
   AuditSpan,
+  AuditEventSource,
 } from "./audit-types.js";
-import { AUDIT_ACTOR_TYPES, AUDIT_CATEGORIES } from "./audit-types.js";
+import {
+  AUDIT_ACTOR_TYPES,
+  AUDIT_CATEGORIES,
+  AUDIT_EVENT_SOURCES,
+} from "./audit-types.js";
 import type { Principal, ResourceRef } from "../access/access-types.js";
 
 const auditSpanIdPattern = /^[A-Za-z0-9_.:-]{1,64}$/;
@@ -16,9 +21,27 @@ export const MAX_AUDIT_SUMMARY_LENGTH = 240;
 export const MAX_AUDIT_ID_LENGTH = 160;
 export const MAX_AUDIT_METADATA_KEYS = 16;
 export const MAX_AUDIT_METADATA_VALUE_LENGTH = 160;
+export const MAX_AUDIT_SOURCE_LENGTH = 64;
+export const MAX_AUDIT_SCHEMA_VERSION = 100;
 
-const unsafeText = /\b(?:prompt|raw\s+output|provider\s+body|response\s+body|headers?|environment|env|workspace\s+path|cwd|working\s+directory|command)\b/i;
-const unsafeKey = /(?:prompt|output|body|header|secret|token|password|credential|authorization|environment|env|path|cwd|command)/i;
+const unsafeText = /\b(?:prompt|raw\s+output|provider\s+body|response\s+body|headers?|environment|env|workspace\s+path|cwd|working\s+directory|command|reason|input|output|binding|handle)\b/i;
+/**
+ * Audit metadata is an allowlist in spirit: identifiers and enum-like
+ * counters are retained, while request contents, decision explanations and
+ * process/transport handles are discarded even when a caller uses a new key.
+ */
+const unsafeKey = /(?:^|_)(?:prompt|raw|input|output|body|header|headers|secret|token|password|credential|authorization|environment|env|path|cwd|command|reason|binding|handle)(?:_|$)/;
+
+function unsafeMetadataKey(key: string): boolean {
+  // Normalize camelCase before applying segment boundaries. This avoids
+  // rejecting the legitimate `reasoningItems` counter while still dropping
+  // `decisionReason`, `inputBinding`, and `completionHandle`.
+  const normalized = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .toLowerCase();
+  return unsafeKey.test(normalized);
+}
 /** Numeric usage counters are safe evidence even though their names match the deny-list. */
 const allowedMetadataKeys = new Set([
   "inputTokens",
@@ -120,7 +143,7 @@ export function safeAuditMetadata(
   const entries: [string, AuditMetadataValue][] = [];
   for (const [key, value] of Object.entries(metadata)) {
     if (entries.length >= MAX_AUDIT_METADATA_KEYS) continue;
-    if (unsafeKey.test(key) && !allowedMetadataKeys.has(key)) continue;
+    if (unsafeMetadataKey(key) && !allowedMetadataKeys.has(key)) continue;
     const safeKey = key.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 64);
     if (!safeKey) continue;
     const safeValue = safeMetadataValue(value);
@@ -132,17 +155,24 @@ export function safeAuditMetadata(
 
 function safeCorrelation(input: AuditEventInput): Pick<
   AuditEventInput,
-  "agentId" | "projectId" | "runId" | "orchestrationId" | "permitRequestId" | "approvalRequestId" | "grantId"
+  "agentId" | "projectId" | "runId" | "orchestrationId" | "turnId" | "sessionId" |
+  "invocationId" | "approvalId" | "workflowRunId" | "permitRequestId" | "approvalRequestId" | "grantId"
 > {
   const correlation = {} as Pick<
     AuditEventInput,
-    "agentId" | "projectId" | "runId" | "orchestrationId" | "permitRequestId" | "approvalRequestId" | "grantId"
+    "agentId" | "projectId" | "runId" | "orchestrationId" | "turnId" | "sessionId" |
+    "invocationId" | "approvalId" | "workflowRunId" | "permitRequestId" | "approvalRequestId" | "grantId"
   >;
   for (const key of [
     "agentId",
     "projectId",
     "runId",
     "orchestrationId",
+    "turnId",
+    "sessionId",
+    "invocationId",
+    "approvalId",
+    "workflowRunId",
     "permitRequestId",
     "approvalRequestId",
     "grantId",
@@ -183,9 +213,31 @@ function safeCategory(value: unknown): AuditCategory | undefined {
   return AUDIT_CATEGORIES.includes(value as AuditCategory) ? (value as AuditCategory) : undefined;
 }
 
+function safeSchemaVersion(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= MAX_AUDIT_SCHEMA_VERSION
+    ? value
+    : undefined;
+}
+
+function safeSource(value: unknown): AuditEventSource | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  if (
+    normalized.length === 0 ||
+    normalized.length > MAX_AUDIT_SOURCE_LENGTH ||
+    !/^[A-Za-z][A-Za-z0-9_.:-]*$/.test(normalized)
+  ) {
+    return undefined;
+  }
+  return AUDIT_EVENT_SOURCES.includes(normalized as AuditEventSource)
+    ? (normalized as AuditEventSource)
+    : undefined;
+}
+
 export type SafeAuditEventInput = Omit<
   AuditEventInput,
-  "metadata" | "principal" | "span" | "durationMs" | "agentVersion" | "actorType" | "category"
+  "metadata" | "principal" | "span" | "durationMs" | "agentVersion" | "actorType" | "category" |
+  "schemaVersion" | "source"
 > & {
   metadata: AuditMetadata;
   principal: Principal;
@@ -194,6 +246,8 @@ export type SafeAuditEventInput = Omit<
   agentVersion?: string;
   actorType?: AuditActorType;
   category?: AuditCategory;
+  schemaVersion?: number;
+  source?: string;
 };
 
 export function safeAuditInput(input: AuditEventInput): SafeAuditEventInput {
@@ -202,13 +256,15 @@ export function safeAuditInput(input: AuditEventInput): SafeAuditEventInput {
     ? { kind: "agent", id: principalId }
     : input.principal.kind === "system"
       ? { kind: "system", id: "runtime" }
-      : { kind: "human", id: "demo-owner" };
+      : { kind: "human", id: principalId };
   const permission = safeAuditIdentifier(input.permission);
   const span = safeAuditSpan(input.span);
   const durationMs = safeDurationMs(input.durationMs);
   const agentVersion = safeAuditIdentifier(input.agentVersion);
   const actorType = safeActorType(input.actorType);
   const category = safeCategory(input.category);
+  const schemaVersion = safeSchemaVersion(input.schemaVersion);
+  const source = safeSource(input.source);
   const resource: ResourceRef | undefined = input.resource === undefined
     ? undefined
     : input.resource.kind === "preview"
@@ -236,5 +292,7 @@ export function safeAuditInput(input: AuditEventInput): SafeAuditEventInput {
     ...(agentVersion === undefined ? {} : { agentVersion }),
     ...(actorType === undefined ? {} : { actorType }),
     ...(category === undefined ? {} : { category }),
+    ...(schemaVersion === undefined ? {} : { schemaVersion }),
+    ...(source === undefined ? {} : { source }),
   };
 }
