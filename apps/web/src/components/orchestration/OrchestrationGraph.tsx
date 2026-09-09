@@ -4,6 +4,7 @@ import { AgentAvatar } from "./AgentAvatar";
 import {
   agentHue,
   agentName,
+  checkpointForTurn,
   formatDateTime,
   formatDuration,
   turnStatusLabel,
@@ -25,6 +26,11 @@ interface OrchestrationGraphProps {
   retryBlocked?: boolean;
   /** True while another lifecycle action is in flight. */
   retryDisabled?: boolean;
+  /** Omitted when the caller cannot restore a checkpoint, which hides the action. */
+  onRecover?: ((checkpointId: string) => void) | undefined;
+  recoverPending?: boolean;
+  recoverBlocked?: boolean;
+  recoverDisabled?: boolean;
 }
 
 /**
@@ -192,8 +198,13 @@ export function OrchestrationGraph({
   retryPending = false,
   retryBlocked = false,
   retryDisabled = false,
+  onRecover,
+  recoverPending = false,
+  recoverBlocked = false,
+  recoverDisabled = false,
 }: OrchestrationGraphProps) {
   const [openIds, setOpenIds] = useState<Set<string>>(new Set());
+  const checkpointsEnabled = detail?.checkpoints !== undefined;
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [showAll, setShowAll] = useState(false);
 
@@ -418,6 +429,14 @@ export function OrchestrationGraph({
                         retryPending={retryPending}
                         retryBlocked={retryBlocked}
                         retryDisabled={retryDisabled}
+                        // Joined by this turn's own checkpoint ID, never by
+                        // Agent or lane: the same Agent can speak many times.
+                        checkpoint={checkpointForTurn(detail, row.turn)}
+                        checkpointsEnabled={checkpointsEnabled}
+                        onRecover={onRecover}
+                        recoverPending={recoverPending}
+                        recoverBlocked={recoverBlocked}
+                        recoverDisabled={recoverDisabled}
                         onClose={() => toggleRow(row.id)}
                       />
                     </div>

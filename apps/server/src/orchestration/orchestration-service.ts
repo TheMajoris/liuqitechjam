@@ -1,9 +1,12 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { HttpError } from "../errors.js";
-import type { Agent } from "../types.js";
+import type { Agent, Database } from "../types.js";
 import type { Storage } from "../store.js";
 import {
   ContinueOrchestrationSchema,
+  RecoverOrchestrationSchema,
+  RestoreSafetySchema,
+  ResumeRecoverySchema,
   RetryOrchestrationSchema,
   CreateOrchestrationSchema,
   ORCHESTRATION_LIMITS,
@@ -18,7 +21,34 @@ import type {
   OrchestrationParticipant,
   OrchestrationSession,
   OrchestrationSessionDetail,
+  RecoverOrchestrationInput,
+  RestoreSafetyInput,
+  ResumeRecoveryInput,
 } from "./types.js";
+import {
+  buildInitialResumeState,
+  buildRecoveryExecutionInput,
+  checkResumeBudget,
+  contextFromAcceptedCheckpoint,
+  rosterMatches,
+  type CheckpointResumeState,
+} from "./checkpoint-resume-state.js";
+import type { SharedConversationTurn } from "./handoff.js";
+import type { OrchestrationExecutionTurn } from "./orchestrator.js";
+import {
+  DEMO_HUMAN_PRINCIPAL,
+  type Principal,
+} from "../access/access-types.js";
+import {
+  WorkspaceCheckpointError,
+  isRecoveryPending,
+  isWorkspaceCheckpointError,
+  toWorkspaceRecoveryView,
+  type WorkspaceExecutionContext,
+  type WorkspaceOperation,
+  type WorkspaceRecoveryView,
+} from "../projects/workspace-checkpoint-types.js";
+import type { OrchestrationWorkspaceRecovery } from "../projects/workspace-recovery-facade.js";
 import type {
   OrchestrationExecutionHooks,
   OrchestrationExecutionInput,
@@ -62,6 +92,7 @@ import {
   type OrchestrationInvokerFactory,
   type OrchestrationProjectBinding,
   type OrchestrationServiceDependencies,
+  type OrchestrationWorkspaceCycle,
   type SupervisorModelAssignment,
 } from "./orchestration-runtime.js";
 import { SupervisorError, createAbortError } from "./supervisor/errors.js";
@@ -109,6 +140,51 @@ async function settleWithin(
   }
 }
 
+/** Stable digest of the mutable part of an idempotent recovery request. */
+function requestFingerprint(value: Record<string, string>): string {
+  return createHash("sha256")
+    .update(JSON.stringify(Object.fromEntries(Object.entries(value).sort())))
+    .digest("hex");
+}
+
+function applySupervisorModel(
+  session: OrchestrationSession,
+  supervisorModel: SupervisorModelAssignment | undefined,
+): void {
+  if (supervisorModel === undefined) return;
+  session.supervisorModelRef = structuredClone(supervisorModel.modelRef);
+  if (supervisorModel.catalogRevision === undefined) {
+    delete session.supervisorModelCatalogRevision;
+  } else {
+    session.supervisorModelCatalogRevision = supervisorModel.catalogRevision;
+  }
+}
+
+/** Everything one checkpoint-enabled cycle needs before it is reserved. */
+interface CheckpointedCyclePlan {
+  kind: "start" | "continue" | "retry" | "recovery";
+  cyclePrompt: string;
+  cycleIndex: number;
+  startStepIndex: number;
+  contextTurns: readonly SharedConversationTurn[];
+  parentCheckpointId: string | null;
+  sourceCheckpointId: string | null;
+  seedTurns?: readonly OrchestrationExecutionTurn[] | undefined;
+  lastRunId?: string | null | undefined;
+  lastOutput?: string | null | undefined;
+  contextBeforeStepIndex?: number | undefined;
+  retryAgentId?: string | undefined;
+  retryParticipantId?: string | undefined;
+  allowErroredAgents?: boolean | undefined;
+  /** Queue the session inside the acceptance mutation; returns the step offset. */
+  commit: (database: Database, cycleId: string) => { stepOffset: number };
+  audit: {
+    type: AuditEventInput["type"];
+    summary: string;
+    metadata: Readonly<Record<string, unknown>>;
+  };
+}
+
 function participantsMatch(
   left: readonly OrchestrationParticipant[],
   right: readonly OrchestrationParticipant[],
@@ -146,6 +222,9 @@ export class OrchestrationService {
   private readonly supervisorTimeoutMs: number | undefined;
   private readonly orchestratorFactory: () => Orchestrator;
   private readonly projectBinding: OrchestrationProjectBinding | undefined;
+  private readonly workspaceRecovery: OrchestrationWorkspaceRecovery | undefined;
+  /** Background recovery operations keyed by operation ID. */
+  private readonly recoveryTasks = new Map<string, Promise<void>>();
   private telemetry: RuntimeTelemetry | undefined;
   private readonly audit: AuditRecorder | undefined;
   /** Trace roots keyed by orchestration ID; participants parent under these. */
@@ -173,6 +252,7 @@ export class OrchestrationService {
     this.supervisorTimeoutMs = normalized.supervisorTimeoutMs;
     this.orchestratorFactory = normalized.orchestratorFactory;
     this.projectBinding = normalized.projectBinding;
+    this.workspaceRecovery = normalized.workspaceRecovery;
     this.audit = normalized.audit;
   }
 
@@ -226,6 +306,21 @@ export class OrchestrationService {
   async initialize(): Promise<void> {
     await this.cancelActiveSessions();
     await this.journal.initialize();
+    // A cycle that was active at shutdown is interrupted, never resumed on
+    // its own: the reservation coordinator has already decided whether its
+    // Project stays gated.
+    await this.store.mutate((database) => {
+      const interruptedAt = now();
+      for (const cycle of database.workspaceExecutionCycles) {
+        if (cycle.status === "queued" || cycle.status === "running") {
+          cycle.status = "interrupted";
+          cycle.completedAt = interruptedAt;
+        }
+      }
+      for (const session of database.orchestrations) {
+        if (session.activeExecutionCycleId) session.activeExecutionCycleId = null;
+      }
+    });
   }
 
   /** Abort and settle every in-process child run before server shutdown. */
@@ -370,7 +465,15 @@ export class OrchestrationService {
   }
 
   async getSession(id: string): Promise<OrchestrationSessionDetail> {
-    return this.journal.getSessionDetail(id);
+    const detail = await this.journal.getSessionDetail(id);
+    if (!this.checkpointsEnabledFor(detail.session) || !this.workspaceRecovery) return detail;
+    const recovery = this.workspaceRecovery;
+    const latest = recovery.latestOperationForSession(id, "recovery");
+    return {
+      ...detail,
+      checkpoints: recovery.listSessionCheckpoints(id).map((checkpoint) => recovery.checkpointView(checkpoint)),
+      recovery: latest === null ? null : toWorkspaceRecoveryView(latest),
+    };
   }
 
   async startSession(
@@ -397,7 +500,7 @@ export class OrchestrationService {
 
     await this.preflightRoster(prepared);
     const supervisorModel = await this.preflightSupervisor(prepared);
-    const accepted = await this.store.mutate((database) => {
+    const queueStart = (database: Database): OrchestrationSession => {
       const session = database.orchestrations.find((item) => item.id === id);
       if (!session) throw new HttpError(404, "Orchestration not found");
       if (session.projectId !== undefined && session.projectId !== null) {
@@ -418,12 +521,7 @@ export class OrchestrationService {
       session.originalPrompt = prepared.originalPrompt;
       session.participants = structuredClone(prepared.participants);
       if (supervisorModel !== undefined) {
-        session.supervisorModelRef = structuredClone(supervisorModel.modelRef);
-        if (supervisorModel.catalogRevision === undefined) {
-          delete session.supervisorModelCatalogRevision;
-        } else {
-          session.supervisorModelCatalogRevision = supervisorModel.catalogRevision;
-        }
+        applySupervisorModel(session, supervisorModel);
       } else {
         delete session.supervisorModelRef;
         delete session.supervisorModelCatalogRevision;
@@ -443,7 +541,32 @@ export class OrchestrationService {
         safeSummary: "Orchestration queued",
       });
       return structuredClone(session);
-    });
+    };
+    if (this.checkpointsEnabledFor(prepared)) {
+      return this.acceptCheckpointedCycle(prepared, {
+        kind: "start",
+        cyclePrompt: prepared.originalPrompt,
+        cycleIndex: 0,
+        startStepIndex: 0,
+        contextTurns: [],
+        parentCheckpointId: null,
+        sourceCheckpointId: null,
+        commit: (database) => {
+          queueStart(database);
+          return { stepOffset: 0 };
+        },
+        audit: {
+          type: "orchestration_started",
+          summary: "Orchestration queued",
+          metadata: {
+            mode: prepared.mode ?? "sequential",
+            participantCount: prepared.participants.length,
+            maxSteps: prepared.maxSteps,
+          },
+        },
+      });
+    }
+    const accepted = await this.store.mutate(queueStart);
 
     await this.recordLifecycle(accepted.id, "orchestration_started", "Orchestration queued", {
       metadata: {
@@ -489,7 +612,7 @@ export class OrchestrationService {
       ORCHESTRATION_LIMITS.maxPromptLength,
       "[PROMPT TRUNCATED]",
     );
-    const accepted = await this.store.mutate((database) => {
+    const queueContinue = (database: Database) => {
       const session = database.orchestrations.find((item) => item.id === id);
       if (!session) throw new HttpError(404, "Orchestration not found");
       if (session.projectId !== undefined && session.projectId !== null) {
@@ -505,14 +628,7 @@ export class OrchestrationService {
             : "Stop the active orchestration before continuing it",
         );
       }
-      if (supervisorModel !== undefined) {
-        session.supervisorModelRef = structuredClone(supervisorModel.modelRef);
-        if (supervisorModel.catalogRevision === undefined) {
-          delete session.supervisorModelCatalogRevision;
-        } else {
-          session.supervisorModelCatalogRevision = supervisorModel.catalogRevision;
-        }
-      }
+      applySupervisorModel(session, supervisorModel);
       if (database.orchestrationContinuationPrompts.filter(
         (item) => item.sessionId === id,
       ).length >= ORCHESTRATION_LIMITS.maxContinuationPromptsPerSession) {
@@ -562,7 +678,38 @@ export class OrchestrationService {
         cycleIndex,
         stepOffset,
       };
-    });
+    };
+    if (this.checkpointsEnabledFor(current)) {
+      // The cycle number is fixed from the snapshot; the reservation excludes
+      // any competing continuation, and the commit recomputes it identically.
+      const expectedCycleIndex = this.store
+        .snapshot()
+        .orchestrationContinuationPrompts.filter((item) => item.sessionId === id)
+        .reduce((maximum, item) => Math.max(maximum, item.cycleIndex), 0) + 1;
+      const context = this.acceptedContext(current);
+      return this.acceptCheckpointedCycle(current, {
+        kind: "continue",
+        cyclePrompt: normalizedPrompt,
+        cycleIndex: expectedCycleIndex,
+        startStepIndex: 0,
+        contextTurns: context.contextTurns,
+        parentCheckpointId: context.parentCheckpointId,
+        sourceCheckpointId: null,
+        commit: (database) => {
+          const queued = queueContinue(database);
+          if (queued.cycleIndex !== expectedCycleIndex) {
+            throw lifecycleConflict("Another follow-up was accepted first; retry");
+          }
+          return { stepOffset: queued.stepOffset };
+        },
+        audit: {
+          type: "orchestration_continued",
+          summary: "Orchestration continued",
+          metadata: { cycleIndex: expectedCycleIndex },
+        },
+      });
+    }
+    const accepted = await this.store.mutate(queueContinue);
 
     await this.recordLifecycle(
       accepted.session.id,
@@ -630,7 +777,7 @@ export class OrchestrationService {
     await this.preflightRoster(current, { allowErroredAgentId: participant.agentId });
     const supervisorModel = await this.preflightSupervisor(current);
 
-    const accepted = await this.store.mutate((database) => {
+    const queueRetry = (database: Database) => {
       const session = database.orchestrations.find((item) => item.id === id);
       if (!session) throw new HttpError(404, "Orchestration not found");
       if (session.projectId !== undefined && session.projectId !== null) {
@@ -646,14 +793,7 @@ export class OrchestrationService {
             : "Stop the active orchestration before retrying it",
         );
       }
-      if (supervisorModel !== undefined) {
-        session.supervisorModelRef = structuredClone(supervisorModel.modelRef);
-        if (supervisorModel.catalogRevision === undefined) {
-          delete session.supervisorModelCatalogRevision;
-        } else {
-          session.supervisorModelCatalogRevision = supervisorModel.catalogRevision;
-        }
-      }
+      applySupervisorModel(session, supervisorModel);
 
       // The retry re-runs the newest user intent, which is the last follow-up
       // when one exists. A retry authors no prompt of its own, so the
@@ -706,7 +846,39 @@ export class OrchestrationService {
         stepOffset,
         startStepIndex,
       };
-    });
+    };
+    if (this.checkpointsEnabledFor(current)) {
+      // A retry keeps its legacy meaning — rerun using the files as they are
+      // now — but still runs as a checkpointed cycle, so its own baseline and
+      // successful turns become recoverable boundaries.
+      const snapshot = this.store.snapshot();
+      const cycles = snapshot.orchestrationContinuationPrompts
+        .filter((item) => item.sessionId === id)
+        .sort((left, right) => left.cycleIndex - right.cycleIndex);
+      const latest = cycles.at(-1);
+      const deterministic = (current.mode ?? "sequential") !== "supervisor";
+      const startStepIndex = deterministic ? participant.position : 0;
+      const context = this.acceptedContext(current);
+      return this.acceptCheckpointedCycle(current, {
+        kind: "retry",
+        cyclePrompt: latest?.prompt ?? current.originalPrompt,
+        cycleIndex: latest?.cycleIndex ?? 0,
+        startStepIndex,
+        contextTurns: this.journal.contextTurns(id, current.maxSteps, step),
+        parentCheckpointId: context.parentCheckpointId,
+        sourceCheckpointId: null,
+        contextBeforeStepIndex: step,
+        retryAgentId: participant.agentId,
+        ...(current.mode === "supervisor" ? { retryParticipantId: participant.id } : {}),
+        commit: (database) => ({ stepOffset: queueRetry(database).stepOffset }),
+        audit: {
+          type: "orchestration_continued",
+          summary: "Orchestration retried from a recorded step using current files",
+          metadata: { retryFromStepIndex: step, cycleIndex: latest?.cycleIndex ?? 0 },
+        },
+      });
+    }
+    const accepted = await this.store.mutate(queueRetry);
 
     await this.recordLifecycle(
       accepted.session.id,
@@ -975,6 +1147,785 @@ export class OrchestrationService {
     return (await this.getSession(id)).session;
   }
 
+
+  // ------------------------------------------------- checkpointed cycles
+
+  private checkpointsEnabledFor(session: OrchestrationSession): boolean {
+    return (
+      typeof session.projectId === "string" &&
+      session.projectId.length > 0 &&
+      this.workspaceRecovery?.enabled() === true
+    );
+  }
+
+  private requireWorkspaceRecovery(): OrchestrationWorkspaceRecovery {
+    if (!this.workspaceRecovery) {
+      throw new WorkspaceCheckpointError(
+        "CHECKPOINT_UNAVAILABLE",
+        "Workspace checkpoints are not configured on this server",
+      );
+    }
+    return this.workspaceRecovery;
+  }
+
+  /**
+   * The bounded shared context a new cycle inherits from the accepted branch
+   * head. Abandoned turns are absent by construction; a legacy session with
+   * no head falls back to the journal's numeric projection.
+   */
+  private acceptedContext(session: OrchestrationSession): {
+    contextTurns: SharedConversationTurn[];
+    parentCheckpointId: string | null;
+  } {
+    const headId = session.acceptedContextCheckpointId ?? null;
+    const head = headId === null ? null : this.workspaceRecovery?.getCheckpoint(headId) ?? null;
+    if (head && head.state === "ready" && head.resume !== null) {
+      return {
+        contextTurns: contextFromAcceptedCheckpoint(head.resume, (runId) =>
+          this.journal.globalStepIndexByRunId(session.id, runId),
+        ),
+        parentCheckpointId: head.id,
+      };
+    }
+    return {
+      contextTurns: this.journal.contextTurns(session.id, session.maxSteps),
+      parentCheckpointId: null,
+    };
+  }
+
+  /**
+   * Accept one checkpoint-enabled cycle: reserve the Project, silence every
+   * other writer, record the cycle and its exact initial state, capture the
+   * baseline, and only then queue the session. Any failure before launch
+   * releases the reservation without dispatching anything.
+   */
+  private async acceptCheckpointedCycle(
+    session: OrchestrationSession,
+    plan: CheckpointedCyclePlan,
+    reserve?: (cycleId: string) => Promise<WorkspaceOperation>,
+  ): Promise<OrchestrationSession> {
+    const recovery = this.requireWorkspaceRecovery();
+    const projectId = session.projectId as string;
+    recovery.assertRuntimeSupported();
+    const epoch = recovery.workspaceEpoch(projectId);
+    const cycleId = randomUUID();
+    const expectDraft = plan.kind === "start";
+    const guard = (database: Database): void => {
+      const stored = database.orchestrations.find((item) => item.id === session.id);
+      if (!stored) throw new HttpError(404, "Orchestration not found");
+      if (expectDraft ? stored.status !== "draft" : !statusIsTerminal(stored.status)) {
+        throw lifecycleConflict("Orchestration lifecycle changed; retry the request");
+      }
+      if (this.activeSessions.has(session.id)) {
+        throw lifecycleConflict("Orchestration is still settling");
+      }
+    };
+    const operation = reserve
+      ? await reserve(cycleId)
+      : await recovery.reserveCycle(
+          {
+            projectId,
+            orchestrationId: session.id,
+            actorPrincipalId: DEMO_HUMAN_PRINCIPAL.id,
+            expectedEpoch: epoch,
+          },
+          guard,
+        );
+    const workspace: WorkspaceExecutionContext = {
+      projectId,
+      orchestrationId: session.id,
+      workspaceOperationId: operation.id,
+      executionCycleId: cycleId,
+      workspaceEpoch: epoch,
+    };
+    try {
+      await recovery.quiescePreviews(projectId);
+      recovery.requireNoPhysicalWriter(projectId);
+      const initialState = buildInitialResumeState(
+        {
+          sourceCycleId: cycleId,
+          mode: session.mode ?? "sequential",
+          originalPrompt: plan.cyclePrompt,
+          cycleIndex: plan.cycleIndex,
+          participants: session.participants.map(safeParticipant),
+          clarifyFirst: session.clarifyFirst === true,
+          perAgentTimeoutMs: session.perAgentTimeoutMs,
+          maxSteps: session.maxSteps,
+        },
+        {
+          startEngineStepIndex: plan.startStepIndex,
+          contextTurns: plan.contextTurns,
+          parentCheckpointId: plan.parentCheckpointId,
+          ...(plan.seedTurns === undefined ? {} : { turns: plan.seedTurns }),
+          lastRunId: plan.lastRunId ?? null,
+          lastOutput: plan.lastOutput ?? null,
+        },
+      );
+      const timestamp = now();
+      await this.store.mutate((database) => {
+        guard(database);
+        database.workspaceExecutionCycles.push({
+          id: cycleId,
+          projectId,
+          orchestrationId: session.id,
+          operationId: operation.id,
+          sourceCheckpointId: plan.sourceCheckpointId,
+          baselineCheckpointId: null,
+          initialState: structuredClone(initialState),
+          acceptedTurnIds: [],
+          status: "queued",
+          createdAt: timestamp,
+          completedAt: null,
+        });
+        recovery.transitionOperationIn(database, operation.id, "preparing", {
+          executionCycleId: cycleId,
+        });
+      });
+      const baseline = await recovery.captureBaseline({
+        projectId,
+        operationId: operation.id,
+        workspaceEpoch: epoch,
+        orchestrationId: session.id,
+        executionCycleId: cycleId,
+        parentCheckpointId: plan.parentCheckpointId,
+        resume: initialState,
+      });
+      const accepted = await this.store.mutate((database) => {
+        guard(database);
+        const cycle = database.workspaceExecutionCycles.find((item) => item.id === cycleId);
+        if (!cycle) throw lifecycleConflict("The execution cycle record disappeared");
+        cycle.baselineCheckpointId = baseline.id;
+        const { stepOffset } = plan.commit(database, cycleId);
+        const stored = database.orchestrations.find((item) => item.id === session.id);
+        if (!stored) throw new HttpError(404, "Orchestration not found");
+        stored.activeExecutionCycleId = cycleId;
+        stored.acceptedContextCheckpointId = baseline.id;
+        appendEvent(database, stored, "workspace_checkpoint_created", {
+          checkpointId: baseline.id,
+          safeSummary: "Workspace checkpoint #" + String(baseline.ordinal) + " saved before the first turn",
+        });
+        return { session: structuredClone(stored), stepOffset };
+      });
+      await this.recordLifecycle(session.id, plan.audit.type, plan.audit.summary, {
+        metadata: {
+          ...plan.audit.metadata,
+          executionCycleId: cycleId,
+          baselineCheckpointId: baseline.id,
+          stepOffset: accepted.stepOffset,
+        },
+      });
+      this.launch(accepted.session, {
+        cyclePrompt: plan.cyclePrompt,
+        cycleIndex: plan.cycleIndex,
+        stepOffset: accepted.stepOffset,
+        startStepIndex: plan.startStepIndex,
+        ...(plan.contextBeforeStepIndex === undefined
+          ? {}
+          : { contextBeforeStepIndex: plan.contextBeforeStepIndex }),
+        ...(plan.retryAgentId === undefined ? {} : { retryAgentId: plan.retryAgentId }),
+        ...(plan.retryParticipantId === undefined
+          ? {}
+          : { retryParticipantId: plan.retryParticipantId }),
+        workspace: { context: workspace, cycleId },
+        seed: initialState,
+        allowErroredAgents: plan.allowErroredAgents === true,
+      });
+      return cloneSession(accepted.session);
+    } catch (error) {
+      const code = isWorkspaceCheckpointError(error) ? error.code : null;
+      await this.store
+        .mutate((database) => {
+          const cycle = database.workspaceExecutionCycles.find((item) => item.id === cycleId);
+          if (cycle && (cycle.status === "queued" || cycle.status === "running")) {
+            cycle.status = "failed";
+            cycle.completedAt = now();
+          }
+          const stored = database.orchestrations.find((item) => item.id === session.id);
+          if (stored && stored.activeExecutionCycleId === cycleId) {
+            stored.activeExecutionCycleId = null;
+          }
+          recovery.releaseOperationIn(database, operation.id, "failed", code);
+        })
+        .catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /**
+   * Close the cycle after execution settled. The reservation is released
+   * only when no physical writer remains; a retained lease keeps the Project
+   * gated and marks the operation as needing recovery.
+   */
+  private settleCycleIn(
+    database: Database,
+    context: ActiveOrchestrationSession,
+    status: OrchestrationSession["status"],
+  ): void {
+    const workspace = context.workspace;
+    const recovery = this.workspaceRecovery;
+    if (!workspace || !recovery) return;
+    context.cycleSettled = true;
+    const cycle = database.workspaceExecutionCycles.find(
+      (item) => item.id === workspace.cycleId,
+    );
+    if (cycle && (cycle.status === "queued" || cycle.status === "running")) {
+      cycle.status =
+        status === "completed" ? "completed"
+          : status === "stopped" ? "stopped"
+            : status === "interrupted" ? "interrupted"
+              : "failed";
+      cycle.completedAt = now();
+    }
+    const session = database.orchestrations.find((item) => item.id === context.id);
+    if (session && session.activeExecutionCycleId === workspace.cycleId) {
+      session.activeExecutionCycleId = null;
+    }
+    const operation = database.workspaceOperations.find(
+      (item) => item.id === workspace.context.workspaceOperationId,
+    );
+    if (!operation || !operation.reservationHeld) return;
+    const leaseHeld = database.projectLeases.some(
+      (lease) => lease.projectId === workspace.context.projectId,
+    );
+    if (leaseHeld) {
+      recovery.transitionOperationIn(database, operation.id, "recovery_required", {
+        errorCode: "CHECKPOINT_WRITER_UNSETTLED",
+      });
+    } else {
+      recovery.releaseOperationIn(database, operation.id, "settled");
+    }
+  }
+
+  /** Fallback for a cycle whose terminal write happened outside finalize. */
+  private async settleCycle(context: ActiveOrchestrationSession): Promise<void> {
+    if (!context.workspace || !this.workspaceRecovery) return;
+    let status: OrchestrationSession["status"];
+    try {
+      status = this.findSession(context.id).status;
+    } catch {
+      status = "failed";
+    }
+    await this.store
+      .mutate((database) => this.settleCycleIn(database, context, status))
+      .catch(() => undefined);
+  }
+
+  // ---------------------------------------------------------- recovery
+
+  /**
+   * Accept a source restore-and-resume from one ready checkpoint. The
+   * response is returned once the durable intent exists; the physical
+   * protocol continues in the background and stays observable by operation
+   * ID. A repeated request with the same ID and body returns the original.
+   */
+  async recoverFromCheckpoint(
+    id: string,
+    input: RecoverOrchestrationInput,
+    principal: Principal = DEMO_HUMAN_PRINCIPAL,
+  ): Promise<{ recovery: WorkspaceRecoveryView; duplicate: boolean }> {
+    const parsed = RecoverOrchestrationSchema.safeParse(input);
+    if (!parsed.success) {
+      throw new WorkspaceCheckpointError("CHECKPOINT_INVALID_INPUT", "Invalid recovery request");
+    }
+    const recovery = this.requireWorkspaceRecovery();
+    const session = this.findSession(id);
+    if (!this.checkpointsEnabledFor(session)) {
+      throw new WorkspaceCheckpointError(
+        "CHECKPOINT_UNAVAILABLE",
+        "This conversation does not run on a checkpointed Workspace",
+      );
+    }
+    const projectId = session.projectId as string;
+    this.assertActiveProject(projectId);
+    await recovery.authorizeRecovery(projectId, principal);
+    const fingerprint = requestFingerprint({ action: "recover", checkpointId: parsed.data.checkpointId });
+    // Dedup precedes the lifecycle check so a transport retry after the
+    // original request queued execution still finds its operation.
+    const existing = recovery.findRecoveryRequest(projectId, parsed.data.requestId);
+    if (existing) {
+      if (existing.requestFingerprint !== fingerprint) {
+        throw new WorkspaceCheckpointError(
+          "CHECKPOINT_IDEMPOTENCY_CONFLICT",
+          "This request ID was already used for a different recovery action",
+        );
+      }
+      return { recovery: toWorkspaceRecoveryView(existing), duplicate: true };
+    }
+    const target = recovery.getCheckpoint(parsed.data.checkpointId);
+    if (!target || target.projectId !== projectId || target.orchestrationId !== id) {
+      throw new WorkspaceCheckpointError("CHECKPOINT_NOT_FOUND", "Checkpoint not found");
+    }
+    if (!recovery.checkpointView(target).recoverable || target.resume === null) {
+      throw new WorkspaceCheckpointError(
+        "CHECKPOINT_NOT_READY",
+        "This checkpoint cannot be restored: it is not a ready successful boundary",
+      );
+    }
+    if (!statusIsTerminal(session.status) || this.activeSessions.has(id)) {
+      throw lifecycleConflict("Stop the active orchestration before restoring a checkpoint");
+    }
+    this.assertResumable(session, target.resume);
+    await this.preflightRoster(session, { allowErroredAgents: true });
+    await this.preflightSupervisor(session);
+    recovery.assertRuntimeSupported();
+    const reserved = await recovery.reserveRecovery(
+      {
+        projectId,
+        orchestrationId: id,
+        actorPrincipalId: principal.id,
+        expectedEpoch: recovery.workspaceEpoch(projectId),
+        requestId: parsed.data.requestId,
+        requestFingerprint: fingerprint,
+        targetCheckpointId: target.id,
+      },
+      (database) => {
+        const stored = database.orchestrations.find((item) => item.id === id);
+        if (!stored || !statusIsTerminal(stored.status) || this.activeSessions.has(id)) {
+          throw lifecycleConflict("Stop the active orchestration before restoring a checkpoint");
+        }
+        appendEvent(database, stored, "workspace_checkpoint_restore_started", {
+          checkpointId: target.id,
+          safeSummary: "Restore to workspace checkpoint #" + String(target.ordinal) + " accepted",
+        });
+      },
+    );
+    if (reserved.duplicate) {
+      return { recovery: toWorkspaceRecoveryView(reserved.operation), duplicate: true };
+    }
+    await this.recordLifecycle(id, "workspace_checkpoint_restore_started", "Workspace restore accepted", {
+      metadata: {
+        checkpointId: target.id,
+        checkpointOrdinal: target.ordinal,
+        operationId: reserved.operation.id,
+        requestId: parsed.data.requestId,
+        eventKey: reserved.operation.id + ":reserved",
+      },
+    });
+    this.startRecoveryTask(reserved.operation.id);
+    return { recovery: toWorkspaceRecoveryView(reserved.operation), duplicate: false };
+  }
+
+  async getRecovery(id: string, operationId: string): Promise<WorkspaceRecoveryView> {
+    const recovery = this.requireWorkspaceRecovery();
+    this.findSession(id);
+    const operation = recovery.getOperation(operationId);
+    if (!operation || operation.orchestrationId !== id) {
+      throw new WorkspaceCheckpointError("CHECKPOINT_NOT_FOUND", "Recovery operation not found");
+    }
+    return toWorkspaceRecoveryView(operation);
+  }
+
+  /**
+   * Explicit operator continuation of a gated recovery. It resumes the
+   * physical protocol at its recorded stage; it never accepts a second
+   * resume cycle for an operation that already accepted one.
+   */
+  async resumeRecovery(
+    id: string,
+    operationId: string,
+    input: ResumeRecoveryInput,
+    principal: Principal = DEMO_HUMAN_PRINCIPAL,
+  ): Promise<WorkspaceRecoveryView> {
+    const parsed = ResumeRecoverySchema.safeParse(input);
+    if (!parsed.success) {
+      throw new WorkspaceCheckpointError("CHECKPOINT_INVALID_INPUT", "Invalid resume request");
+    }
+    const recovery = this.requireWorkspaceRecovery();
+    const session = this.findSession(id);
+    const operation = recovery.getOperation(operationId);
+    if (!operation || operation.orchestrationId !== id || operation.kind !== "recovery") {
+      throw new WorkspaceCheckpointError("CHECKPOINT_NOT_FOUND", "Recovery operation not found");
+    }
+    await recovery.authorizeRecovery(operation.projectId, principal);
+    const fingerprint = requestFingerprint({ action: "resume", operationId });
+    if (operation.resumeRequestId === parsed.data.requestId) {
+      if (operation.resumeRequestFingerprint !== fingerprint) {
+        throw new WorkspaceCheckpointError("CHECKPOINT_IDEMPOTENCY_CONFLICT", "This request ID was already used");
+      }
+      return toWorkspaceRecoveryView(operation);
+    }
+    if (operation.resumeCycleId !== null) {
+      throw new WorkspaceCheckpointError(
+        "CHECKPOINT_EXECUTION_ALREADY_ACCEPTED",
+        "This recovery already accepted a resume cycle; start a new recovery after it settles",
+      );
+    }
+    if (!operation.reservationHeld || !isRecoveryPending(operation.stage) || this.recoveryTasks.has(operationId)) {
+      throw new WorkspaceCheckpointError(
+        "CHECKPOINT_OPERATION_STAGE_INVALID",
+        "This recovery is not waiting for an operator",
+      );
+    }
+    if (!statusIsTerminal(session.status) || this.activeSessions.has(id)) {
+      throw lifecycleConflict("Stop the active orchestration before resuming a recovery");
+    }
+    const updated = await recovery.transitionOperation(operationId, operation.stage, {
+      resumeRequestId: parsed.data.requestId,
+      resumeRequestFingerprint: fingerprint,
+    });
+    this.startRecoveryTask(operationId);
+    return toWorkspaceRecoveryView(updated);
+  }
+
+  /**
+   * Operator escape hatch: put the eligible source back to the safety
+   * checkpoint taken before the interrupted restore, reset Project threads,
+   * and settle the operation without launching anything.
+   */
+  async restoreSafety(
+    id: string,
+    operationId: string,
+    input: RestoreSafetyInput,
+    principal: Principal = DEMO_HUMAN_PRINCIPAL,
+  ): Promise<WorkspaceRecoveryView> {
+    const parsed = RestoreSafetySchema.safeParse(input);
+    if (!parsed.success) {
+      throw new WorkspaceCheckpointError("CHECKPOINT_INVALID_INPUT", "Invalid safety restore request");
+    }
+    const recovery = this.requireWorkspaceRecovery();
+    const session = this.findSession(id);
+    const operation = recovery.getOperation(operationId);
+    if (!operation || operation.orchestrationId !== id || operation.kind !== "recovery") {
+      throw new WorkspaceCheckpointError("CHECKPOINT_NOT_FOUND", "Recovery operation not found");
+    }
+    await recovery.authorizeRecovery(operation.projectId, principal);
+    const fingerprint = requestFingerprint({ action: "restore-safety", operationId });
+    if (operation.safetyRequestId === parsed.data.requestId) {
+      if (operation.safetyRequestFingerprint !== fingerprint) {
+        throw new WorkspaceCheckpointError("CHECKPOINT_IDEMPOTENCY_CONFLICT", "This request ID was already used");
+      }
+      return toWorkspaceRecoveryView(operation);
+    }
+    if (operation.resumeCycleId !== null) {
+      throw new WorkspaceCheckpointError(
+        "CHECKPOINT_EXECUTION_ALREADY_ACCEPTED",
+        "This recovery already accepted a resume cycle",
+      );
+    }
+    if (
+      !operation.reservationHeld ||
+      operation.safetyCheckpointId === null ||
+      !["recovery_required", "restoring", "backed_up", "restored"].includes(operation.stage) ||
+      this.recoveryTasks.has(operationId)
+    ) {
+      throw new WorkspaceCheckpointError(
+        "CHECKPOINT_OPERATION_STAGE_INVALID",
+        "This recovery has no ready safety checkpoint to fall back to",
+      );
+    }
+    if (!statusIsTerminal(session.status) || this.activeSessions.has(id)) {
+      throw lifecycleConflict("Stop the active orchestration first");
+    }
+    const updated = await recovery.transitionOperation(operationId, operation.stage, {
+      safetyRequestId: parsed.data.requestId,
+      safetyRequestFingerprint: fingerprint,
+    });
+    const task = this.executeSafetyRestore(operationId).finally(() => {
+      if (this.recoveryTasks.get(operationId) === task) this.recoveryTasks.delete(operationId);
+    });
+    this.recoveryTasks.set(operationId, task);
+    return toWorkspaceRecoveryView(updated);
+  }
+
+  /** Test and lifecycle helper: wait for a background recovery to settle. */
+  async waitForRecovery(operationId: string): Promise<void> {
+    const task = this.recoveryTasks.get(operationId);
+    if (task) await task.catch(() => undefined);
+  }
+
+  private startRecoveryTask(operationId: string): void {
+    if (this.recoveryTasks.has(operationId)) return;
+    const task = this.executeRecovery(operationId).finally(() => {
+      if (this.recoveryTasks.get(operationId) === task) this.recoveryTasks.delete(operationId);
+    });
+    this.recoveryTasks.set(operationId, task);
+  }
+
+  private assertResumable(session: OrchestrationSession, resume: CheckpointResumeState): void {
+    if (!rosterMatches(resume.participants, session.participants) || resume.mode !== (session.mode ?? "sequential")) {
+      throw new WorkspaceCheckpointError(
+        "CHECKPOINT_CONTEXT_MISMATCH",
+        "The conversation's roster or mode no longer matches the one this checkpoint recorded",
+      );
+    }
+    const budget = checkResumeBudget(resume);
+    if (!budget.ok) {
+      throw new WorkspaceCheckpointError(
+        "CHECKPOINT_NO_REMAINING_STEPS",
+        "No participant work remains after this checkpoint; nothing would run",
+      );
+    }
+  }
+
+  /**
+   * The physical protocol, resumable at every durable stage. Nothing here
+   * dispatches an Agent until the source is verified and the epoch and
+   * thread resets are committed; then exactly one resume cycle is accepted.
+   */
+  private async executeRecovery(operationId: string): Promise<void> {
+    const recovery = this.requireWorkspaceRecovery();
+    let operation = recovery.getOperation(operationId);
+    if (!operation || operation.targetCheckpointId === null) return;
+    const { projectId, orchestrationId } = operation;
+    const targetId = operation.targetCheckpointId;
+    let filesTouched = operation.stage === "restoring" || operation.stage === "restored" || operation.restoredEpoch !== undefined;
+    try {
+      if (operation.resumeCycleId !== null) {
+        throw new WorkspaceCheckpointError("CHECKPOINT_EXECUTION_ALREADY_ACCEPTED", "Already resumed");
+      }
+      const target = recovery.getCheckpoint(targetId);
+      if (!target || target.state !== "ready" || target.resume === null) {
+        throw new WorkspaceCheckpointError("CHECKPOINT_NOT_READY", "The restore target is no longer ready");
+      }
+      if (operation.restoredEpoch === undefined) {
+        if (operation.stage === "reserved") {
+          operation = await recovery.transitionOperation(operationId, "preparing");
+        }
+        await recovery.quiescePreviews(projectId);
+        recovery.requireNoPhysicalWriter(projectId);
+        await recovery.validateCheckpoint(target.id);
+        let safety = operation.safetyCheckpointId === null ? null : recovery.getCheckpoint(operation.safetyCheckpointId);
+        if (!safety || safety.state !== "ready") {
+          if (operation.stage === "restoring") {
+            // Files may already be a mixture; a fresh safety snapshot would
+            // preserve nothing meaningful and the original one is gone.
+            throw new WorkspaceCheckpointError("CHECKPOINT_RESTORE_FAILED", "The safety checkpoint is missing");
+          }
+          const project = this.store.snapshot().projects.find((item) => item.id === projectId);
+          safety = await recovery.captureSafety({
+            projectId,
+            operationId,
+            workspaceEpoch: operation.expectedEpoch,
+            orchestrationId,
+            executionCycleId: null,
+            parentCheckpointId: project?.currentCheckpointId ?? null,
+          });
+        }
+        const resumingApply = operation.stage === "restoring";
+        const plan = await recovery.prepareRestore(target.id, safety.id, undefined, {
+          fromSafety: resumingApply,
+        });
+        if (resumingApply && operation.restorePlanHash !== undefined && operation.restorePlanHash !== plan.planHash) {
+          throw new WorkspaceCheckpointError("CHECKPOINT_RESTORE_FAILED", "The interrupted restore plan cannot be reproduced");
+        }
+        if (!resumingApply) {
+          operation = await recovery.transitionOperation(operationId, "backed_up", {
+            safetyCheckpointId: safety.id,
+            restorePlanHash: plan.planHash,
+          });
+          await this.recordLifecycle(orchestrationId, "workspace_checkpoint_created", "Safety checkpoint saved before restore", {
+            metadata: {
+              checkpointId: safety.id,
+              checkpointOrdinal: safety.ordinal,
+              checkpointKind: "safety",
+              operationId,
+              eventKey: operationId + ":backed_up",
+            },
+          });
+          operation = await recovery.transitionOperation(operationId, "restoring");
+        }
+        filesTouched = true;
+        await recovery.applyRestore(plan);
+        const restoredEpoch = await this.store.mutate((database) => {
+          const epoch = recovery.resetWorkspaceIn(database, projectId, target.id);
+          recovery.transitionOperationIn(database, operationId, "restored", { restoredEpoch: epoch });
+          const stored = database.orchestrations.find((item) => item.id === orchestrationId);
+          if (stored) {
+            appendEvent(database, stored, "workspace_checkpoint_restored", {
+              checkpointId: target.id,
+              recoveryOperationId: operationId,
+              safeSummary:
+                "Workspace source restored to checkpoint #" + String(target.ordinal) +
+                "; safety checkpoint #" + String(safety.ordinal) + " kept",
+            });
+          }
+          return epoch;
+        });
+        await this.recordLifecycle(orchestrationId, "workspace_checkpoint_restored", "Workspace source restored", {
+          metadata: {
+            checkpointId: target.id,
+            safetyCheckpointId: safety.id,
+            operationId,
+            workspaceEpoch: restoredEpoch,
+            eventKey: operationId + ":restored",
+          },
+        });
+      }
+      await this.acceptResume(operationId);
+    } catch (error) {
+      const code = isWorkspaceCheckpointError(error) ? error.code : "CHECKPOINT_RESTORE_FAILED";
+      if (code === "CHECKPOINT_EXECUTION_ALREADY_ACCEPTED") return;
+      await this.store
+        .mutate((database) => {
+          if (filesTouched) {
+            recovery.transitionOperationIn(database, operationId, "recovery_required", { errorCode: code });
+          } else {
+            recovery.releaseOperationIn(database, operationId, "failed", code);
+          }
+          const stored = database.orchestrations.find((item) => item.id === orchestrationId);
+          if (stored) {
+            appendEvent(database, stored, "workspace_checkpoint_restore_failed", {
+              checkpointId: targetId,
+              recoveryOperationId: operationId,
+              safeSummary: (filesTouched ? "Restore needs attention: " : "Restore could not start: ") + code,
+            });
+          }
+        })
+        .catch(() => undefined);
+      await this.recordLifecycle(orchestrationId, "workspace_checkpoint_restore_failed", "Workspace restore failed", {
+        status: "failure",
+        metadata: {
+          checkpointId: targetId,
+          operationId,
+          stage: filesTouched ? "recovery_required" : "failed",
+          errorCode: code,
+          eventKey: operationId + ":restore-failed",
+        },
+      });
+    }
+  }
+
+  /** Put the eligible source back to the safety checkpoint and settle. */
+  private async executeSafetyRestore(operationId: string): Promise<void> {
+    const recovery = this.requireWorkspaceRecovery();
+    const operation = recovery.getOperation(operationId);
+    if (!operation || operation.safetyCheckpointId === null) return;
+    const { projectId, orchestrationId } = operation;
+    const safetyId = operation.safetyCheckpointId;
+    try {
+      const safety = recovery.getCheckpoint(safetyId);
+      if (!safety || safety.state !== "ready") {
+        throw new WorkspaceCheckpointError("CHECKPOINT_NOT_READY", "The safety checkpoint is not ready");
+      }
+      await recovery.quiescePreviews(projectId);
+      recovery.requireNoPhysicalWriter(projectId);
+      await recovery.validateCheckpoint(safety.id);
+      await recovery.transitionOperation(operationId, "restoring");
+      const plan = await recovery.prepareRestore(safety.id, null);
+      await recovery.applyRestore(plan);
+      await this.store.mutate((database) => {
+        recovery.resetWorkspaceIn(database, projectId, safety.id);
+        recovery.releaseOperationIn(database, operationId, "settled");
+        const stored = database.orchestrations.find((item) => item.id === orchestrationId);
+        if (stored) {
+          appendEvent(database, stored, "workspace_checkpoint_restored", {
+            checkpointId: safety.id,
+            recoveryOperationId: operationId,
+            safeSummary: "Workspace source restored to safety checkpoint #" + String(safety.ordinal),
+          });
+        }
+      });
+      await this.recordLifecycle(orchestrationId, "workspace_checkpoint_restored", "Safety checkpoint restored", {
+        metadata: { checkpointId: safety.id, operationId, eventKey: operationId + ":safety-restored" },
+      });
+    } catch (error) {
+      const code = isWorkspaceCheckpointError(error) ? error.code : "CHECKPOINT_RESTORE_FAILED";
+      await recovery
+        .transitionOperation(operationId, "recovery_required", { errorCode: code })
+        .catch(() => undefined);
+      await this.recordLifecycle(orchestrationId, "workspace_checkpoint_restore_failed", "Safety restore failed", {
+        status: "failure",
+        metadata: { checkpointId: safetyId, operationId, errorCode: code, eventKey: operationId + ":safety-failed" },
+      });
+    }
+  }
+
+  /**
+   * Accept exactly one resume cycle from the target's recorded boundary. The
+   * recovery reservation is transferred to the new cycle inside the same
+   * mutation that records the accepted cycle ID, so a repeated request cannot
+   * accept a second one.
+   */
+  private async acceptResume(operationId: string): Promise<void> {
+    const recovery = this.requireWorkspaceRecovery();
+    const operation = recovery.getOperation(operationId);
+    if (!operation || operation.targetCheckpointId === null) return;
+    if (operation.resumeCycleId !== null) {
+      throw new WorkspaceCheckpointError("CHECKPOINT_EXECUTION_ALREADY_ACCEPTED", "Already resumed");
+    }
+    const target = recovery.getCheckpoint(operation.targetCheckpointId);
+    if (!target || target.resume === null) {
+      throw new WorkspaceCheckpointError("CHECKPOINT_NOT_READY", "The restore target is no longer ready");
+    }
+    const resume = target.resume;
+    const session = this.findSession(operation.orchestrationId);
+    if (!statusIsTerminal(session.status) || this.activeSessions.has(session.id)) {
+      throw lifecycleConflict("Orchestration is not settled");
+    }
+    this.assertResumable(session, resume);
+    await this.preflightRoster(session, { allowErroredAgents: true });
+    const supervisorModel = await this.preflightSupervisor(session);
+    const epoch = recovery.workspaceEpoch(operation.projectId);
+    const plan: CheckpointedCyclePlan = {
+      kind: "recovery",
+      cyclePrompt: resume.originalPrompt,
+      cycleIndex: resume.cycleIndex,
+      startStepIndex: resume.nextEngineStepIndex,
+      contextTurns: resume.contextTurns,
+      parentCheckpointId: target.id,
+      sourceCheckpointId: target.id,
+      seedTurns: resume.turns,
+      lastRunId: resume.lastRunId,
+      lastOutput: resume.lastOutput,
+      allowErroredAgents: true,
+      commit: (database, cycleId) => {
+        const stored = database.orchestrations.find((item) => item.id === session.id);
+        if (!stored) throw new HttpError(404, "Orchestration not found");
+        applySupervisorModel(stored, supervisorModel);
+        const highest = database.orchestrationTurns
+          .filter((item) => item.sessionId === session.id)
+          .reduce((maximum, item) => Math.max(maximum, item.stepIndex === undefined ? 0 : item.stepIndex), -1);
+        const stepOffset = highest + 1 - resume.nextEngineStepIndex;
+        const timestamp = now();
+        stored.stepIndex = highest + 1;
+        stored.status = "queued";
+        stored.currentParticipantId = null;
+        stored.currentRunId = null;
+        stored.completionReason = null;
+        stored.errorCode = null;
+        stored.errorMessage = null;
+        stored.startedAt = timestamp;
+        stored.completedAt = null;
+        stored.updatedAt = timestamp;
+        appendEvent(database, stored, "workspace_recovery_resumed", {
+          checkpointId: target.id,
+          recoveryOperationId: operationId,
+          safeSummary:
+            "Resuming after workspace checkpoint #" + String(target.ordinal) +
+            " with fresh Project context (cycle " + cycleId.slice(0, 8) + ")",
+        });
+        return { stepOffset };
+      },
+      audit: {
+        type: "workspace_recovery_resumed",
+        summary: "Orchestration resumed from a restored checkpoint",
+        metadata: {
+          checkpointId: target.id,
+          checkpointOrdinal: target.ordinal,
+          operationId,
+          nextEngineStepIndex: resume.nextEngineStepIndex,
+          eventKey: operationId + ":resumed",
+        },
+      },
+    };
+    await this.acceptCheckpointedCycle(session, plan, (cycleId) =>
+      this.store.mutate((database) => {
+        const stored = database.orchestrations.find((item) => item.id === session.id);
+        if (!stored || !statusIsTerminal(stored.status) || this.activeSessions.has(session.id)) {
+          throw lifecycleConflict("Orchestration is not settled");
+        }
+        return structuredClone(
+          recovery.transferToCycleIn(database, operationId, {
+            orchestrationId: session.id,
+            executionCycleId: cycleId,
+            actorPrincipalId: operation.actorPrincipalId,
+            expectedEpoch: epoch,
+          }),
+        );
+      }),
+    );
+  }
+
   private findSession(id: string): OrchestrationSession {
     const session = this.store.snapshot().orchestrations.find((item) => item.id === id);
     if (!session) throw new HttpError(404, "Orchestration not found");
@@ -1093,7 +2044,7 @@ export class OrchestrationService {
 
   private async preflightRoster(
     session: OrchestrationSession,
-    options: { allowErroredAgentId?: string } = {},
+    options: { allowErroredAgentId?: string; allowErroredAgents?: boolean } = {},
   ): Promise<void> {
     const agents = await this.listCurrentAgents();
     const byId = new Map(agents.map((agent) => [agent.id, agent]));
@@ -1108,7 +2059,7 @@ export class OrchestrationService {
       this.assertAgentAvailable(
         agent,
         true,
-        options.allowErroredAgentId === agent.id,
+        options.allowErroredAgents === true || options.allowErroredAgentId === agent.id,
       );
       if (agent.modelRef === undefined) {
         throw new HttpError(
@@ -1228,6 +2179,12 @@ export class OrchestrationService {
       retryParticipantId?: string;
       /** Any retry may recover the failed checkpoint Agent once. */
       retryAgentId?: string;
+      /** Checkpoint-enabled cycle identity, when the Project is checkpointed. */
+      workspace?: OrchestrationWorkspaceCycle;
+      /** Exact engine input recorded for this cycle. */
+      seed?: CheckpointResumeState;
+      /** A recovered cycle may re-dispatch an Agent still in its error state. */
+      allowErroredAgents?: boolean;
     } = {},
   ): void {
     let invoker: PlatformAgentInvokerContract;
@@ -1235,7 +2192,11 @@ export class OrchestrationService {
     let orchestrator: Orchestrator;
     try {
       invoker = this.invokerFactory();
-      const configuredSelector = this.selectorFactory();
+      // The configured selector is the supervisor provider. Sequential and
+      // round-robin sessions route deterministically inside the engine and
+      // must never consult it: the provider rejects non-supervisor input.
+      const configuredSelector =
+        (session.mode ?? "sequential") === "supervisor" ? this.selectorFactory() : undefined;
       const supervisorModel =
         (session.mode ?? "sequential") === "supervisor"
           ? session.supervisorModelRef?.modelId
@@ -1390,6 +2351,9 @@ export class OrchestrationService {
         : { supervisorModel: session.supervisorModelRef.modelId }),
       ...(cycle.retryAgentId === undefined ? {} : { retryAgentId: cycle.retryAgentId }),
       retryAgentPending: cycle.retryAgentId !== undefined,
+      ...(cycle.allowErroredAgents === undefined ? {} : { allowErroredAgents: cycle.allowErroredAgents }),
+      ...(cycle.workspace === undefined ? {} : { workspace: cycle.workspace }),
+      ...(cycle.seed === undefined ? {} : { seed: structuredClone(cycle.seed) }),
       controller: new AbortController(),
       invoker,
       ...(selector === undefined ? {} : { selector }),
@@ -1474,11 +2438,15 @@ export class OrchestrationService {
       store: this.store,
       validateParticipant: async (participant) => {
         const allowErrored =
-          context.retryAgentPending && context.retryAgentId === participant.agentId;
+          context.allowErroredAgents === true ||
+          (context.retryAgentPending && context.retryAgentId === participant.agentId);
         await this.validateParticipant(participant, { allowErrored });
-        if (allowErrored) context.retryAgentPending = false;
+        if (context.retryAgentPending && context.retryAgentId === participant.agentId) {
+          context.retryAgentPending = false;
+        }
       },
       cancelChildRun: (runId) => this.cancelChildRun(context, runId),
+      ...(this.workspaceRecovery === undefined ? {} : { workspaceRecovery: this.workspaceRecovery }),
     });
     if (!this.audit) return journalHooks;
 
@@ -1578,35 +2546,39 @@ export class OrchestrationService {
         return structuredClone(current);
       });
       if (session === null || context.controller.signal.aborted) {
-        await this.finalizeStopped(context.id);
+        await this.finalizeStopped(context.id, context);
         span?.setStatus("ok");
         return;
       }
 
       const participantProfiles = await this.participantProfiles(session);
 
-      const executionInput: OrchestrationExecutionInput = {
-        sessionId: session.id,
-        originalPrompt: context.cyclePrompt,
-        participants: session.participants.map(safeParticipant),
-        mode: session.mode ?? "sequential",
-        cycleIndex: context.cycleIndex,
-        maxSteps: session.maxSteps,
-        // Each continuation is a fresh internal cycle. Persisted turn indexes
-        // remain global through context.stepOffset in the lifecycle hooks.
-        // A retry seeds the cursor so routing resumes at the chosen step.
-        stepIndex: context.startStepIndex,
-        lastRunId: null,
-        lastOutput: null,
-        turns: [],
-        contextTurns: this.journal.contextTurns(
-          session.id,
-          session.maxSteps,
-          context.contextBeforeStepIndex,
-        ),
-        status: "running",
-        errorCode: null,
-      };
+      // A checkpointed cycle starts from the exact state recorded beside its
+      // baseline; a legacy cycle reconstructs its context from the journal.
+      const executionInput: OrchestrationExecutionInput = context.seed
+        ? buildRecoveryExecutionInput(session.id, context.seed)
+        : {
+            sessionId: session.id,
+            originalPrompt: context.cyclePrompt,
+            participants: session.participants.map(safeParticipant),
+            mode: session.mode ?? "sequential",
+            cycleIndex: context.cycleIndex,
+            maxSteps: session.maxSteps,
+            // Each continuation is a fresh internal cycle. Persisted turn indexes
+            // remain global through context.stepOffset in the lifecycle hooks.
+            // A retry seeds the cursor so routing resumes at the chosen step.
+            stepIndex: context.startStepIndex,
+            lastRunId: null,
+            lastOutput: null,
+            turns: [],
+            contextTurns: this.journal.contextTurns(
+              session.id,
+              session.maxSteps,
+              context.contextBeforeStepIndex,
+            ),
+            status: "running",
+            errorCode: null,
+          };
       const result = await context.orchestrator.run(executionInput, {
         invoker: context.invoker,
         ...(context.selector === undefined
@@ -1620,6 +2592,7 @@ export class OrchestrationService {
         perAgentTimeoutMs: session.perAgentTimeoutMs,
         ...(session.projectId ? { projectId: session.projectId } : {}),
         orchestrationId: session.id,
+        ...(context.workspace === undefined ? {} : { workspace: context.workspace.context }),
         signal: context.controller.signal,
         hooks: this.executionHooks(context),
       });
@@ -1628,11 +2601,16 @@ export class OrchestrationService {
     } catch (error) {
       span?.setStatus("error");
       if (context.controller.signal.aborted) {
-        await this.finalizeStopped(context.id);
+        await this.finalizeStopped(context.id, context);
       } else {
-        await this.finalizeFailure(context.id, error);
+        await this.finalizeFailure(context.id, error, context);
       }
     } finally {
+      // Normally the cycle settled inside the terminal write above; this
+      // covers a session that was already terminal when finalize ran.
+      if (context.workspace !== undefined && context.cycleSettled !== true) {
+        await this.settleCycle(context);
+      }
       if (this.activeSessions.get(context.id) === context) {
         this.activeSessions.delete(context.id);
       }
@@ -1713,6 +2691,7 @@ export class OrchestrationService {
           errorCode: "ORCHESTRATION_STOPPED",
           safeSummary: session.errorMessage,
         });
+        this.settleCycleIn(database, context, session.status);
         return this.terminalOutcome(session, "orchestration_stopped", completedAt);
       }
 
@@ -1741,6 +2720,7 @@ export class OrchestrationService {
           completionEventFields.completionReason = completionReason;
         }
         appendEvent(database, session, "orchestration_completed", completionEventFields);
+        this.settleCycleIn(database, context, session.status);
         return this.terminalOutcome(session, "orchestration_completed", completedAt);
       }
 
@@ -1758,6 +2738,7 @@ export class OrchestrationService {
         errorCode: session.errorCode,
         safeSummary: session.errorMessage,
       });
+      this.settleCycleIn(database, context, session.status);
       return this.terminalOutcome(session, "orchestration_failed", completedAt);
     });
     await this.recordTerminal(context.id, outcome);
@@ -1845,12 +2826,22 @@ export class OrchestrationService {
         return "This model is paused because its provider inference limit was reached. Review Safe Experience Mode in the provider's Model Activation settings, or choose another available model, then retry.";
       case "PROJECT_PERMISSION_DENIED":
         return "This Agent is not allowed to write to the Workspace. Add Allow Agent runs (agent.invoke) and Edit workspace files (project.write) to the Agent's role, make sure it has editable Workspace membership, then retry.";
+      case "CHECKPOINT_CAPTURE_FAILED":
+        return "The Agent finished, but its Workspace files could not be checkpointed. Its reply is kept; restore an earlier checkpoint or retry once the Workspace is settled.";
+      case "CHECKPOINT_PUBLISH_FAILED":
+        return "The Agent's checkpoint could not be recorded with its turn, so the conversation stopped before the next Agent.";
+      case "CHECKPOINT_RUNTIME_UNSUPPORTED":
+        return "Source checkpoints need the container runtime to prove that a worker has stopped writing.";
       default:
         return "Orchestration failed while running a participant";
     }
   }
 
-  private async finalizeFailure(id: string, error: unknown): Promise<void> {
+  private async finalizeFailure(
+    id: string,
+    error: unknown,
+    context?: ActiveOrchestrationSession,
+  ): Promise<void> {
     const explicitCode =
       typeof error === "object" && error !== null && "orchestrationErrorCode" in error
         ? (error as { orchestrationErrorCode?: unknown }).orchestrationErrorCode
@@ -1878,12 +2869,16 @@ export class OrchestrationService {
         errorCode: code,
         safeSummary: session.errorMessage,
       });
+      if (context) this.settleCycleIn(database, context, session.status);
       return this.terminalOutcome(session, "orchestration_failed", completedAt);
     });
     await this.recordTerminal(id, outcome);
   }
 
-  private async finalizeStopped(id: string): Promise<void> {
+  private async finalizeStopped(
+    id: string,
+    context?: ActiveOrchestrationSession,
+  ): Promise<void> {
     const outcome = await this.store.mutate((database) => {
       const session = database.orchestrations.find((item) => item.id === id);
       if (!session || statusIsTerminal(session.status)) return null;
@@ -1900,6 +2895,7 @@ export class OrchestrationService {
         errorCode: "ORCHESTRATION_STOPPED",
         safeSummary: session.errorMessage,
       });
+      if (context) this.settleCycleIn(database, context, session.status);
       return this.terminalOutcome(session, "orchestration_stopped", completedAt);
     });
     await this.recordTerminal(id, outcome);

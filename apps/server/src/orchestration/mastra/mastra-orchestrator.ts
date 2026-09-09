@@ -311,6 +311,7 @@ export class MastraOrchestrator implements Orchestrator {
       ...(options.clarifyFirst === undefined
         ? {}
         : { clarifyFirst: options.clarifyFirst }),
+      ...(options.workspace === undefined ? {} : { workspace: options.workspace }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       ...(options.hooks === undefined ? {} : { hooks: options.hooks }),
       onStepFailure: ({ error, errorCode }) => {

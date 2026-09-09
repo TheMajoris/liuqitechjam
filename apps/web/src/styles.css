@@ -3889,6 +3889,119 @@ textarea:focus {
   line-height: 1.5;
 }
 
+/* Workspace checkpoints and restore-after-turn recovery */
+.orch-checkpoint-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--orch-line-soft);
+  border-radius: 999px;
+  padding: 1px 7px;
+  color: var(--orch-muted);
+  background: rgba(120, 120, 128, 0.08);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.orch-inspector-checkpoint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 11px;
+}
+
+.orch-inspector-checkpoint-facts {
+  color: var(--orch-muted);
+}
+
+.orch-inspector-restore {
+  display: grid;
+  gap: 6px;
+  margin-top: auto;
+  border-top: 1px solid var(--orch-line-soft);
+  padding-top: 10px;
+}
+
+.orch-inspector-restore + .orch-inspector-resume {
+  margin-top: 0;
+}
+
+.orch-inspector-restore-action {
+  border: 1px solid var(--orch-accent);
+  border-radius: var(--orch-radius-control);
+  padding: 7px 12px;
+  color: #ffffff;
+  background: var(--orch-accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.orch-inspector-restore-action:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.orch-inspector-restore-action:disabled {
+  border-color: var(--orch-line);
+  color: var(--orch-muted);
+  background: rgba(120, 120, 128, 0.12);
+  cursor: not-allowed;
+}
+
+.orch-chat-restore {
+  border-top-color: var(--orch-line-soft);
+}
+
+.orch-recovery-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin-bottom: 10px;
+  border: 1px solid var(--orch-line-soft);
+  border-radius: var(--orch-radius-control);
+  padding: 11px 13px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.orch-recovery-panel.is-pending {
+  background: rgba(120, 120, 128, 0.06);
+}
+
+.orch-recovery-panel.is-attention {
+  border-color: rgba(201, 52, 52, 0.28);
+  background: rgba(201, 52, 52, 0.08);
+}
+
+.orch-recovery-panel.is-attention strong {
+  color: var(--orch-danger);
+}
+
+.orch-recovery-copy {
+  display: grid;
+  flex: 1 1 260px;
+  gap: 2px;
+}
+
+.orch-recovery-note {
+  color: var(--orch-muted);
+  font-size: 11px;
+}
+
+.orch-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .orch-timeline-heading {
   display: flex;
   align-items: center;

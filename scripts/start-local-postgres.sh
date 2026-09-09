@@ -113,6 +113,9 @@ const tables = [
   'capability_grants',
   'permit_approval_correlations',
   'installed_skills',
+  'workspace_execution_cycles',
+  'workspace_checkpoints',
+  'workspace_operations',
   'audit_events',
 ];
 const client = new pg.Client({ connectionString, connectionTimeoutMillis: 10_000 });

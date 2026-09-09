@@ -64,7 +64,13 @@ export type OrchestrationEventType =
   | "orchestration_stopped"
   | "orchestration_failed"
   | "orchestration_interrupted"
-  | "orchestration_completed";
+  | "orchestration_completed"
+  | "workspace_checkpoint_created"
+  | "workspace_checkpoint_failed"
+  | "workspace_checkpoint_restore_started"
+  | "workspace_checkpoint_restored"
+  | "workspace_checkpoint_restore_failed"
+  | "workspace_recovery_resumed";
 
 /**
  * Error codes that callers may use when explaining a visible lifecycle
@@ -95,6 +101,9 @@ export type OrchestrationErrorCode =
   | "WEB_TOOL_PERMISSION_DENIED"
   | "MODEL_INFERENCE_LIMIT_EXCEEDED"
   | "PROJECT_PERMISSION_DENIED"
+  | "CHECKPOINT_CAPTURE_FAILED"
+  | "CHECKPOINT_PUBLISH_FAILED"
+  | "CHECKPOINT_RUNTIME_UNSUPPORTED"
   | "INTERNAL_ERROR";
 
 export interface OrchestrationError {
@@ -145,6 +154,13 @@ export interface OrchestrationSession {
    * toggled on a settled Conversation and takes effect on the next cycle.
    */
   clarifyFirst?: boolean | undefined;
+  /** The checkpoint-enabled cycle currently accepted for this session. */
+  activeExecutionCycleId?: string | null | undefined;
+  /**
+   * Branch head used for later continuations after a recovery: the newest
+   * ready checkpoint on the accepted lineage, never an abandoned branch.
+   */
+  acceptedContextCheckpointId?: string | null | undefined;
   status: OrchestrationStatus;
   currentParticipantId: string | null;
   currentRunId: string | null;
@@ -168,6 +184,10 @@ export interface OrchestrationTurn {
   position: number;
   /** Zero-based execution step; omitted only on legacy persisted turns. */
   stepIndex?: number | undefined;
+  /** Checkpoint-enabled cycle that dispatched this turn. */
+  executionCycleId?: string | undefined;
+  /** Ready source checkpoint captured after this successful turn. */
+  workspaceCheckpointId?: string | undefined;
   status: OrchestrationTurnStatus;
   safeInputSummary: string;
   safeOutput: string | null;
@@ -206,7 +226,31 @@ export interface OrchestrationEvent {
   safeSummary?: string | undefined;
   errorCode?: OrchestrationErrorCode | undefined;
   completionReason?: OrchestrationCompletionReason | undefined;
+  /** Opaque checkpoint ID for checkpoint/restore events. */
+  checkpointId?: string | undefined;
+  /** Opaque recovery operation ID for restore events. */
+  recoveryOperationId?: string | undefined;
   createdAt: string;
+}
+
+/** Strict body accepted by the source restore-and-resume route. */
+export interface RecoverOrchestrationInput {
+  checkpointId: string;
+  /** Generated once per confirmed action; retained across transport retries. */
+  requestId: string;
+  /** Mirrors the concrete UI confirmation; not authorization. */
+  acknowledgeSourceRestore: true;
+}
+
+/** Strict body accepted by the explicit recovery resume route. */
+export interface ResumeRecoveryInput {
+  requestId: string;
+}
+
+/** Strict body accepted by the safety-restore escape hatch. */
+export interface RestoreSafetyInput {
+  requestId: string;
+  acknowledgeSourceRestore: true;
 }
 
 /** Body accepted by the Team conversation follow-up route. */
@@ -236,6 +280,15 @@ export interface OrchestrationSessionDetail {
   events: OrchestrationEvent[];
   /** Optional for compatibility with pre-continuation detail consumers. */
   continuationPrompts?: OrchestrationContinuationPrompt[] | undefined;
+  /** Safe checkpoint views for this session only; absent when disabled. */
+  checkpoints?:
+    | import("../projects/workspace-checkpoint-types.js").WorkspaceCheckpointView[]
+    | undefined;
+  /** The newest recovery operation for this session, if any. */
+  recovery?:
+    | import("../projects/workspace-checkpoint-types.js").WorkspaceRecoveryView
+    | null
+    | undefined;
 }
 
 /**

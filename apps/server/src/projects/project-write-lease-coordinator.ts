@@ -11,13 +11,27 @@ import {
   PROJECT_LIMITS,
   type ProjectWriteLease,
 } from "./project-types.js";
+import type { WorkspaceOwner } from "./workspace-operation-coordinator.js";
 
 export interface ProjectWriteLeaseOptions {
   waitMs?: number;
   principal?: Principal;
   signal?: AbortSignal;
   deadlineAt?: number;
+  /** Trusted cycle ownership; required while the Project is reserved. */
+  workspaceOwner?: WorkspaceOwner | undefined;
 }
+
+/**
+ * Reservation admission repeated inside serialized store callbacks. It reads
+ * only the database it is handed, so it can run inside a mutation without
+ * starting a nested one.
+ */
+export type ProjectAdmissionGuard = (
+  database: Pick<Database, "workspaceOperations" | "projects">,
+  projectId: string,
+  owner?: WorkspaceOwner,
+) => void;
 
 export interface ProjectWriteLeaseHolder {
   agentId: string;
@@ -62,6 +76,7 @@ export class ProjectWriteLeaseCoordinator {
   private readonly heldLeases = new Map<string, ProjectWriteLeaseHolder>();
   /** A failed settled cleanup gates only the affected Project. */
   private readonly recoveryRequired = new Map<string, ProjectLeaseRecoveryStatus>();
+  private admissionGuard: ProjectAdmissionGuard | undefined;
 
   constructor(
     private readonly store: Storage,
@@ -150,6 +165,11 @@ export class ProjectWriteLeaseCoordinator {
     }
   }
 
+  /** Attach the workspace reservation check after the service graph exists. */
+  setAdmissionGuard(guard: ProjectAdmissionGuard | undefined): void {
+    this.admissionGuard = guard;
+  }
+
   /** Marks a Project as being moved so no new lease can race the archive. */
   beginArchive(projectId: string): void {
     this.assertProjectMutationAllowed(projectId);
@@ -184,26 +204,53 @@ export class ProjectWriteLeaseCoordinator {
    * callback so a mutation that was waiting in the queue cannot slip through
    * after the archive guard was acquired.
    */
-  assertProjectMutationAllowed(projectId: string): void {
+  assertProjectMutationAllowed(projectId: string, owner?: WorkspaceOwner): void {
     this.assertRecoveryClear(projectId);
     this.assertNotArchiving(projectId);
     this.assertNotProjectMutating(projectId);
+    this.assertAdmitted(this.store.snapshot(), projectId, owner);
   }
 
   /** Atomic check used inside a Storage mutation during archive. */
   assertDatabaseLeaseFree(
-    database: Pick<Database, "projectLeases">,
+    database: Pick<Database, "projectLeases" | "workspaceOperations" | "projects">,
     projectId: string,
   ): void {
     this.assertRecoveryClear(projectId);
     if (database.projectLeases.some((lease) => lease.projectId === projectId)) {
       throw this.projectBusy();
     }
+    this.assertAdmitted(database, projectId);
   }
 
   requireNoWriteLease(projectId: string): void {
     this.assertRecoveryClear(projectId);
     if (this.writeLeaseHolder(projectId)) throw this.projectBusy();
+    this.assertAdmitted(this.store.snapshot(), projectId);
+  }
+
+  /**
+   * Retain a lease whose worker cannot be proven settled. The Project stays
+   * gated until an operator resolves it; no timer ever releases it.
+   */
+  retainLeaseForRecovery(projectId: string, runId: string): void {
+    this.markRecoveryRequired(projectId, runId, undefined);
+  }
+
+  private assertAdmitted(
+    database: Pick<Database, "workspaceOperations" | "projects">,
+    projectId: string,
+    owner?: WorkspaceOwner,
+  ): void {
+    if (!this.admissionGuard) return;
+    try {
+      this.admissionGuard(database, projectId, owner);
+    } catch (error) {
+      // Only reservation state exists on this seam; a guard that fails to
+      // read it is not permission to proceed.
+      if (error instanceof ProjectError) throw error;
+      throw this.projectBusy();
+    }
   }
 
   async acquire(
@@ -237,8 +284,12 @@ export class ProjectWriteLeaseCoordinator {
         assertOperationActive(options);
         // Authorization may yield while archive or recovery begins. Recheck
         // immediately before persistence so a late lease cannot be accepted
-        // into a Project that is no longer writable.
-        this.assertProjectMutationAllowed(projectId);
+        // into a Project that is no longer writable. The reservation check
+        // reads the in-flight database, never a stale snapshot.
+        this.assertRecoveryClear(projectId);
+        this.assertNotArchiving(projectId);
+        this.assertNotProjectMutating(projectId);
+        this.assertAdmitted(database, projectId, options.workspaceOwner);
         if (database.projectLeases.some((lease) => lease.projectId === projectId)) {
           return false;
         }
@@ -247,6 +298,14 @@ export class ProjectWriteLeaseCoordinator {
           agentId,
           runId,
           acquiredAt: new Date().toISOString(),
+          ...(options.workspaceOwner === undefined
+            ? {}
+            : {
+                workspaceOperationId: options.workspaceOwner.workspaceOperationId,
+                ...(options.workspaceOwner.workspaceEpoch === undefined
+                  ? {}
+                  : { workspaceEpoch: options.workspaceOwner.workspaceEpoch }),
+              }),
         });
         return true;
       });

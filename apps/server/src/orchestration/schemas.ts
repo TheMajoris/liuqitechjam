@@ -2,6 +2,9 @@ import { z } from "zod";
 import type {
   CreateOrchestrationInput,
   ContinueOrchestrationInput,
+  RecoverOrchestrationInput,
+  RestoreSafetyInput,
+  ResumeRecoveryInput,
   RetryOrchestrationInput,
   HandoffEnvelope,
   OrchestrationCompletionReason,
@@ -80,6 +83,12 @@ const orchestrationEventTypeValues = [
   "orchestration_failed",
   "orchestration_interrupted",
   "orchestration_completed",
+  "workspace_checkpoint_created",
+  "workspace_checkpoint_failed",
+  "workspace_checkpoint_restore_started",
+  "workspace_checkpoint_restored",
+  "workspace_checkpoint_restore_failed",
+  "workspace_recovery_resumed",
 ] as const;
 
 const orchestrationErrorCodeValues = [
@@ -106,6 +115,9 @@ const orchestrationErrorCodeValues = [
   "WEB_TOOL_PERMISSION_DENIED",
   "MODEL_INFERENCE_LIMIT_EXCEEDED",
   "PROJECT_PERMISSION_DENIED",
+  "CHECKPOINT_CAPTURE_FAILED",
+  "CHECKPOINT_PUBLISH_FAILED",
+  "CHECKPOINT_RUNTIME_UNSUPPORTED",
   "INTERNAL_ERROR",
 ] as const;
 
@@ -294,6 +306,36 @@ export const RetryOrchestrationSchema: z.ZodType<RetryOrchestrationInput> = z
 
 export const RetryOrchestrationInputSchema = RetryOrchestrationSchema;
 
+/**
+ * Source restore-and-resume request. Strict on purpose: a client may name a
+ * checkpoint and its own idempotency key, and nothing else. Git revisions,
+ * host paths, resume state, operation owners, and principals are rejected.
+ */
+export const RecoverOrchestrationSchema: z.ZodType<RecoverOrchestrationInput> = z
+  .object({
+    checkpointId: idSchema,
+    requestId: idSchema,
+    acknowledgeSourceRestore: z.literal(true),
+  })
+  .strict();
+
+export const ResumeRecoverySchema: z.ZodType<ResumeRecoveryInput> = z
+  .object({ requestId: idSchema })
+  .strict();
+
+export const RestoreSafetySchema: z.ZodType<RestoreSafetyInput> = z
+  .object({
+    requestId: idSchema,
+    acknowledgeSourceRestore: z.literal(true),
+  })
+  .strict();
+
+/** Params for recovery operation lookups; both IDs are opaque lookups only. */
+export const RecoveryRouteParamsSchema = z.object({
+  id: idSchema,
+  operationId: idSchema,
+});
+
 /** Optional first prompt for atomically materializing and starting a draft. */
 export const StartOrchestrationSchema: z.ZodType<StartOrchestrationInput> = z
   .object({
@@ -345,6 +387,8 @@ export const OrchestrationSessionSchema: z.ZodType<OrchestrationSession> =
     clarifyFirst: z.boolean().optional(),
     /** Absent on Teams persisted before Projects existed. */
     projectId: idSchema.nullable().optional(),
+    activeExecutionCycleId: z.string().min(1).nullable().optional(),
+    acceptedContextCheckpointId: z.string().min(1).nullable().optional(),
     completionReason: OrchestrationCompletionReasonSchema.nullable().optional(),
     status: OrchestrationStatusSchema,
     currentParticipantId: participantIdSchema.nullable(),
@@ -394,6 +438,8 @@ export const OrchestrationTurnSchema: z.ZodType<OrchestrationTurn> = z.object({
   runId: idSchema,
   position: z.number().int().nonnegative(),
   stepIndex: z.number().int().nonnegative().optional(),
+  executionCycleId: z.string().min(1).optional(),
+  workspaceCheckpointId: z.string().min(1).optional(),
   status: OrchestrationTurnStatusSchema,
   safeInputSummary: z
     .string()
@@ -440,6 +486,8 @@ export const OrchestrationEventSchema: z.ZodType<OrchestrationEvent> = z.object(
       .optional(),
     errorCode: OrchestrationErrorCodeSchema.optional(),
     completionReason: OrchestrationCompletionReasonSchema.optional(),
+    checkpointId: z.string().min(1).optional(),
+    recoveryOperationId: z.string().min(1).optional(),
     createdAt: timestampSchema,
   },
 );

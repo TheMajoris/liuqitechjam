@@ -25,6 +25,8 @@ export interface OrchestrationEventFields {
   safeSummary?: string;
   errorCode?: OrchestrationErrorCode;
   completionReason?: OrchestrationCompletionReason;
+  checkpointId?: string;
+  recoveryOperationId?: string;
 }
 
 const terminalStatuses = new Set<OrchestrationSession["status"]>([
@@ -155,6 +157,10 @@ export function appendEvent(
   if (fields.errorCode !== undefined) event.errorCode = fields.errorCode;
   if (fields.completionReason !== undefined) {
     event.completionReason = fields.completionReason;
+  }
+  if (fields.checkpointId !== undefined) event.checkpointId = fields.checkpointId;
+  if (fields.recoveryOperationId !== undefined) {
+    event.recoveryOperationId = fields.recoveryOperationId;
   }
   database.orchestrationEvents.push(event);
   return event;
@@ -445,6 +451,14 @@ export class OrchestrationJournal {
       if (highest === null || turn.stepIndex > highest) highest = turn.stepIndex;
     }
     return highest;
+  }
+
+  /** Global step index of a recorded turn, looked up by its child Run. */
+  globalStepIndexByRunId(sessionId: string, runId: string): number | undefined {
+    const turn = this.store
+      .snapshot()
+      .orchestrationTurns.find((item) => item.sessionId === sessionId && item.runId === runId);
+    return turn?.stepIndex;
   }
 
   /** The recorded turn holding one global execution step, if it exists. */

@@ -610,6 +610,39 @@ describe("OrchestrationService", () => {
     expect(invoker.cancellations).toHaveLength(1);
   });
 
+  it("never consults the configured supervisor selector for sequential or round-robin sessions", async () => {
+    const store = await makeStore();
+    const agents = agentIds.map((id) => makeAgent(id));
+    await store.mutate((database) => database.agents.push(...agents));
+    let selectorCalls = 0;
+    const service = new OrchestrationService({
+      store,
+      agents: makeAgentsAccess(agents),
+      invoker: new ImmediateInvoker(),
+      // Mirrors the production provider: it rejects non-supervisor input.
+      selectNextParticipant: async () => {
+        selectorCalls += 1;
+        throw new Error("Supervisor selector used for a non-supervisor orchestration");
+      },
+    });
+    for (const mode of ["sequential", "round_robin"] as const) {
+      const created = await service.createSession({ ...makeInput(), mode });
+      await service.startSession(created.id);
+      const terminal = await waitForTerminal(service, created.id);
+      // Round-robin has no natural end and fails at its step ceiling; the
+      // point is that every step was routed by the engine, not the provider.
+      if (mode === "sequential") expect(terminal.status).toBe("completed");
+      else expect(terminal.errorCode).toBe("MAX_STEPS_EXCEEDED");
+      const detail = await service.getSession(created.id);
+      expect(detail.turns.map((turn) => turn.participantId)).toEqual([
+        "participant-0",
+        "participant-1",
+        "participant-2",
+      ]);
+    }
+    expect(selectorCalls).toBe(0);
+  });
+
   it("snapshots the server-wide supervisor model and passes it to routing", async () => {
     const store = await makeStore();
     const agents = agentIds.map((id) => makeAgent(id));

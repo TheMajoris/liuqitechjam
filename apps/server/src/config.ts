@@ -114,6 +114,22 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((value) => value === "true"),
+  /**
+   * Source checkpoints for shared Workspaces. Off by default: enabled Project
+   * cycles are checkpointed or rejected, never silently run unversioned.
+   */
+  WORKSPACE_CHECKPOINTS_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+  /**
+   * Strong checkpointing needs the container runtime to prove that a worker
+   * stopped writing. `allow` admits the local-process runtime on the strength
+   * of its child exit only; development use, never a production setting.
+   */
+  WORKSPACE_CHECKPOINT_LOCAL_PROCESS: z.enum(["reject", "allow"]).default("reject"),
+  /** Git executable used for the private checkpoint store. */
+  WORKSPACE_CHECKPOINT_GIT_BIN: z.string().trim().min(1).default("git"),
   /** Local-first by default; Brave remains available as an explicit option. */
   SEARCH_PROVIDER: z.enum(["searxng", "brave", "disabled"]).default("searxng"),
   SEARXNG_URL: z
@@ -267,6 +283,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     mcpTokenTtlMs:
       env.MCP_TOKEN_TTL_MS ?? env.CODEX_TIMEOUT_MS + MCP_TOKEN_GRACE_MS,
     mcpScopedAdvertisement: env.MCP_SCOPED_ADVERTISEMENT,
+    workspaceCheckpointsEnabled: env.WORKSPACE_CHECKPOINTS_ENABLED,
+    workspaceCheckpointLocalProcess: env.WORKSPACE_CHECKPOINT_LOCAL_PROCESS,
+    workspaceCheckpointGitBin: env.WORKSPACE_CHECKPOINT_GIT_BIN,
     searchProvider: env.SEARCH_PROVIDER,
     searxngUrl: env.SEARXNG_URL.replace(/\/+$/, ""),
     searxngTimeoutMs: env.SEARXNG_TIMEOUT_MS,

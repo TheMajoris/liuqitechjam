@@ -11,6 +11,7 @@ import { StickyComposer } from "../StickyComposer";
 import { AgentAvatar } from "./AgentAvatar";
 import {
   agentName,
+  checkpointForTurn,
   formatDateTime,
   humanizeFailure,
   isOrchestrationActive,
@@ -23,8 +24,10 @@ interface OrchestrationConversationProps {
   agents: Agent[];
   action?: OrchestrationAction;
   onContinue?: (prompt: string, sessionId: string) => void;
-  /** Re-runs one failed recorded turn and continues from that checkpoint. */
+  /** Re-runs one failed recorded turn against the files as they are now. */
   onRetry?: (fromStepIndex: number) => void;
+  /** Restores the source files to a turn's checkpoint and resumes after it. */
+  onRecover?: (checkpointId: string) => void;
   /** Prompt-policy edit; omitted hides the control. */
   onClarifyFirstChange?: ((clarifyFirst: boolean) => void) | undefined;
 }
@@ -53,6 +56,7 @@ export function OrchestrationConversation({
   action = null,
   onContinue,
   onRetry,
+  onRecover,
   onClarifyFirstChange,
 }: OrchestrationConversationProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -128,6 +132,9 @@ export function OrchestrationConversation({
   const retryPending = action === "retry";
   const retryBlocked = active;
   const retryDisabled = retryBlocked || action !== null;
+  const recoverPending = action === "recover";
+  const recoverBlocked = active;
+  const recoverDisabled = recoverBlocked || action !== null;
 
   return (
     <div className="orch-chat-pane">
@@ -168,6 +175,9 @@ export function OrchestrationConversation({
           const focus = participant?.role.trim();
           const timestamp = entry.timestamp;
           const unfinished = UNFINISHED.includes(turn.status);
+          const checkpoint = turn.status === "completed"
+            ? checkpointForTurn(detail, turn)
+            : undefined;
 
           if (turn.status === "dispatched") {
             return (
@@ -202,6 +212,14 @@ export function OrchestrationConversation({
                   </strong>
                   <span className="orch-chat-meta">
                     <span className="orch-chat-turn">Turn {step}</span>
+                    {checkpoint && (
+                      <span
+                        className="orch-checkpoint-badge"
+                        title={`Workspace checkpoint #${checkpoint.ordinal}, saved after this turn`}
+                      >
+                        Checkpoint #{checkpoint.ordinal}
+                      </span>
+                    )}
                     <time dateTime={timestamp}>{formatDateTime(timestamp)}</time>
                   </span>
                 </div>
@@ -230,19 +248,40 @@ export function OrchestrationConversation({
                         disabled={retryDisabled}
                         onClick={() => onRetry(turn.stepIndex as number)}
                       >
-                        {retryPending ? "Retrying…" : "Retry from this turn"}
+                        {retryPending ? "Retrying…" : "Retry from this turn (current files)"}
                       </button>
                       <p className="orch-chat-retry-note" role={retryPending ? "status" : undefined}>
                         {retryBlocked
                           ? "Stop the conversation before retrying it."
                           : retryPending
-                            ? "Retrying this Agent turn and continuing from the checkpoint…"
+                            ? "Retrying this Agent turn using the current files…"
                             : action !== null
                               ? "Wait for the current action to finish."
-                              : "This reruns the Agent turn and continues from there. Earlier turns stay in the record. Shared Workspace files are not rolled back."}
+                              : "This reruns the Agent turn using the current files and continues from there. Earlier turns stay in the record. Shared Workspace files are not rolled back."}
                       </p>
                     </div>
                   )}
+                {checkpoint?.recoverable && onRecover && (
+                  <div className="orch-chat-retry orch-chat-restore">
+                    <button
+                      type="button"
+                      className="orch-chat-retry-action"
+                      disabled={recoverDisabled}
+                      onClick={() => onRecover(checkpoint.checkpointId)}
+                    >
+                      {recoverPending ? "Restoring…" : `Restore after ${name} and resume`}
+                    </button>
+                    <p className="orch-chat-retry-note" role={recoverPending ? "status" : undefined}>
+                      {recoverBlocked
+                        ? "Stop the conversation before restoring its files."
+                        : recoverPending
+                          ? "Saving a safety checkpoint, then restoring the source files…"
+                          : action !== null
+                            ? "Wait for the current action to finish."
+                            : "Source files go back to how they were after this turn; a safety checkpoint of the current files is saved first, and the next Agent starts with fresh Project context."}
+                    </p>
+                  </div>
+                )}
               </div>
             </li>
           );

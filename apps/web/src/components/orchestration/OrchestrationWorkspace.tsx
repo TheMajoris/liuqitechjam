@@ -9,13 +9,17 @@ import type {
   Project,
   ProjectMembership,
   ProjectRole,
+  WorkspaceCheckpointView,
 } from "../../types";
+import { useConfirm } from "../ConfirmDialog";
 import { NewConversationDialog } from "./NewConversationDialog";
 import { OrchestrationRunView } from "./OrchestrationRunView";
 import { OrchestrationRunTabs, type RunTab } from "./OrchestrationRunTabs";
 import { ProjectPreviewPanel } from "./ProjectPreviewPanel";
+import { WorkspaceRecoveryPanel } from "./WorkspaceRecoveryPanel";
 import { diagnoseFailure } from "./failure-diagnosis";
 import {
+  agentName,
   isOrchestrationActive,
   normalizeParticipants,
   type OrchestrationDraft,
@@ -221,6 +225,81 @@ export function OrchestrationWorkspace({
     },
     [orchestration],
   );
+
+  const confirm = useConfirm();
+
+  /**
+   * Restore the Workspace's source files to one turn's checkpoint.
+   *
+   * The dialog names the checkpoint and the Agent it follows, then says what
+   * the restore costs and what it leaves alone, because "resume" here rewrites
+   * files other people may have been reading. Callers may pass what they have
+   * already resolved; anything missing is looked up from the detail by ID.
+   */
+  const handleRecover = useCallback(
+    (checkpointId: string, checkpoint?: WorkspaceCheckpointView, agentRole?: string) => {
+      if (!detail) return;
+      const resolved =
+        checkpoint ??
+        detail.checkpoints?.find((item) => item.checkpointId === checkpointId);
+      const turn = detail.turns.find((item) => item.workspaceCheckpointId === checkpointId);
+      const participant = turn
+        ? detail.session.participants.find((item) => item.id === turn.participantId)
+        : undefined;
+      const role =
+        agentRole?.trim() ||
+        participant?.role.trim() ||
+        (turn ? agentName(agents, turn.agentId) : "this turn");
+      const checkpointName = resolved ? `Checkpoint #${resolved.ordinal}` : "this checkpoint";
+      confirm({
+        title: `Restore source files to ${checkpointName}, saved after ${role}?`,
+        body:
+          "A safety checkpoint of the current eligible source files is saved first, so this can be undone. " +
+          "The source files then go back to how they were after that turn, and the next Agent runs with fresh Project conversation context. " +
+          "Credentials, generated files and external tool actions are not rolled back.",
+        confirmLabel: "Restore and resume",
+        tone: "primary",
+        onConfirm: () => {
+          void orchestration.recoverFromCheckpoint(checkpointId, detail.session.id).catch(() => undefined);
+        },
+      });
+    },
+    [agents, confirm, detail, orchestration],
+  );
+
+  const handleResumeRecovery = useCallback(
+    (operationId: string) => {
+      if (!detail) return;
+      void orchestration.resumeRecovery(operationId, detail.session.id).catch(() => undefined);
+    },
+    [detail, orchestration],
+  );
+
+  const handleRestoreSafety = useCallback(
+    (operationId: string) => {
+      if (!detail) return;
+      confirm({
+        title: "Restore the safety checkpoint?",
+        body:
+          "The source files go back to how they were just before this recovery began. " +
+          "The turns already recorded stay in the transcript. " +
+          "Credentials, generated files and external tool actions are not rolled back.",
+        confirmLabel: "Restore safety checkpoint",
+        tone: "primary",
+        onConfirm: () => {
+          void orchestration.restoreSafety(operationId, detail.session.id).catch(() => undefined);
+        },
+      });
+    },
+    [confirm, detail, orchestration],
+  );
+
+  // The restore is only offered where the server recorded checkpoints; a
+  // text-only Team or a disabled feature never shows the button.
+  const recoveryOffered = detail?.checkpoints !== undefined;
+  const recovery = detail?.recovery ?? null;
+  const showRecoveryPanel =
+    recovery !== null && recovery.stage !== "settled" && recovery.stage !== "resume_accepted";
 
   /** Cosmetic-only edit. Refreshes the Agent list so the room repaints. */
   const handleAppearanceChange = useCallback(
@@ -477,12 +556,21 @@ export function OrchestrationWorkspace({
               project={workspaceProject}
               onInspectFailure={inspectFailure}
             />
+            {showRecoveryPanel && recovery && (
+              <WorkspaceRecoveryPanel
+                recovery={recovery}
+                busy={orchestration.action === "recover"}
+                onResume={handleResumeRecovery}
+                onRestoreSafety={handleRestoreSafety}
+              />
+            )}
             <OrchestrationRunTabs
               detail={detail}
               agents={agents}
               action={orchestration.action}
               onContinue={handleContinue}
               onRetry={handleRetry}
+              onRecover={recoveryOffered ? handleRecover : undefined}
               onClarifyFirstChange={handleClarifyFirst}
               activeTab={activeTab}
               onTabChange={setActiveTab}

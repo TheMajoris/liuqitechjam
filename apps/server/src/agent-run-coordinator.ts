@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
 import {
+  CHECKPOINT_CAPTURE_FAILED,
   HttpError,
   MODEL_INFERENCE_LIMIT_EXCEEDED,
   RetryableModelError,
@@ -8,6 +9,7 @@ import {
   WEB_TOOL_PERMISSION_DENIED,
   WebToolPermissionDeniedError,
 } from "./errors.js";
+import type { WorkspaceExecutionContext } from "./projects/workspace-checkpoint-types.js";
 import { AgentRuntimePromptComposer } from "./agent-runtime-prompt.js";
 import type { WorkerRuntimeModelConfig } from "./models/types.js";
 import {
@@ -94,6 +96,27 @@ interface RunControl {
   operation: OperationOptions;
   controller: AbortController;
   dispose: () => void;
+}
+
+/**
+ * The Agent finished and its output is real, but the source could not be
+ * checkpointed. Carries the observed result so the terminal Run keeps the
+ * output and usage while being marked failed; the cycle stops here.
+ */
+class CheckpointCaptureFailure extends Error {
+  constructor(
+    readonly result: RunnerResult,
+    readonly reason: "capture" | "unsettled",
+    options?: ErrorOptions,
+  ) {
+    super(
+      reason === "unsettled"
+        ? "The worker could not be proven settled, so its source was not checkpointed"
+        : "The source checkpoint after this turn could not be established",
+      options,
+    );
+    this.name = "CheckpointCaptureFailure";
+  }
 }
 
 function createRunControl(operation: OperationOptions): RunControl {
@@ -322,6 +345,7 @@ export class AgentRunCoordinator {
     modelSnapshot?: AgentModelSnapshot,
     parentSpan?: { traceId: string; spanId: string },
     operation: OperationOptions = {},
+    workspace?: WorkspaceExecutionContext,
   ): void {
     const control = createRunControl(operation);
     // Queue the async body behind the registration. `executeRun` reaches its
@@ -341,6 +365,7 @@ export class AgentRunCoordinator {
         modelSnapshot,
         parentSpan,
         control.operation,
+        workspace,
       ),
     );
     this.activeExecutions.set(agentAtStart.id, {
@@ -535,6 +560,7 @@ export class AgentRunCoordinator {
     modelSnapshot?: AgentModelSnapshot,
     parentSpan?: { traceId: string; spanId: string },
     operation: OperationOptions = {},
+    workspace?: WorkspaceExecutionContext,
   ): Promise<void> {
     const telemetry = this.dependencies.getTelemetry();
     const attributes = correlationAttributes({
@@ -567,6 +593,7 @@ export class AgentRunCoordinator {
           span,
           parentSpan,
           operation,
+          workspace,
         ),
       );
       return;
@@ -584,6 +611,7 @@ export class AgentRunCoordinator {
       undefined,
       parentSpan,
       operation,
+      workspace,
     );
   }
 
@@ -600,6 +628,7 @@ export class AgentRunCoordinator {
     runSpan?: TelemetrySpan,
     parentSpan?: { traceId: string; spanId: string },
     operation: OperationOptions = {},
+    workspace?: WorkspaceExecutionContext,
   ): Promise<void> {
     const startedAt = now();
     // One span identity for the whole Run: every lifecycle event of this turn
@@ -629,6 +658,9 @@ export class AgentRunCoordinator {
     let terminalPersisted = false;
     let runningRecordFound = false;
     let terminalRecordFound = false;
+    // Set when the worker could not be proven stopped: the lease is retained
+    // as a recovery gate instead of being released by the finally below.
+    let writerUnsettled = false;
     try {
       // Setup is part of the same guarded lifetime as the runner. If this
       // mutation fails, the catch below records the failure (when possible)
@@ -695,6 +727,7 @@ export class AgentRunCoordinator {
           projectId,
           run.id,
           operation,
+          workspace,
         );
         // Role changes can happen after acceptance or while waiting for the
         // Project lease. Recheck immediately before invoking the runner.
@@ -702,6 +735,7 @@ export class AgentRunCoordinator {
           projectId,
           agentAtStart.id,
           operation,
+          workspace,
         );
         const afterProjectPreparation = this.executionControlError(run.id, operation);
         if (afterProjectPreparation) throw afterProjectPreparation;
@@ -905,6 +939,42 @@ export class AgentRunCoordinator {
       }
       const beforeCompletion = this.executionControlError(run.id, operation);
       if (beforeCompletion) throw beforeCompletion;
+      // Checkpoint-enabled turn: prove the worker stopped, revoke its tool
+      // session, then capture the source while this Run still holds the
+      // Project lease. Only then is the terminal Run written.
+      let candidateCheckpointId: string | undefined;
+      if (binding?.workspace !== undefined) {
+        const settlement =
+          result.workspaceSettlement ??
+          (binding.workspace.settlementPolicy === "trust_process_exit" ? "settled" : "unknown");
+        if (settlement !== "settled") {
+          writerUnsettled = true;
+          throw new CheckpointCaptureFailure(result, "unsettled");
+        }
+        if (mintedMcpSession !== null) {
+          this.dependencies.getMcpSessions()?.revoke(mintedMcpSession.token);
+          mintedMcpSession = null;
+        }
+        const capture = this.requireProjectScope().captureSuccessfulTurn;
+        if (!capture) {
+          throw new CheckpointCaptureFailure(result, "capture");
+        }
+        try {
+          const candidate = await capture.call(
+            this.requireProjectScope(),
+            binding,
+            { runId: run.id, agentId: agentAtStart.id },
+            operation,
+          );
+          candidateCheckpointId = candidate.checkpointId;
+        } catch (error) {
+          const controlError = this.executionControlError(run.id, operation);
+          if (controlError) throw controlError;
+          throw new CheckpointCaptureFailure(result, "capture", { cause: error });
+        }
+        const afterCapture = this.executionControlError(run.id, operation);
+        if (afterCapture) throw afterCapture;
+      }
       const selectedModelRef = assignmentSnapshot
         ? selectedModelIndex === 0
           ? assignmentSnapshot.modelRef
@@ -941,6 +1011,9 @@ export class AgentRunCoordinator {
         storedRun.status = "completed";
         storedRun.output = result.output;
         storedRun.usage = result.usage;
+        if (candidateCheckpointId !== undefined) {
+          storedRun.workspaceCheckpointId = candidateCheckpointId;
+        }
         storedRun.modelUsed = structuredClone(selectedModelRef);
         if (selectedModelIndex > 0) {
           storedRun.fallbackUsed = {
@@ -1043,6 +1116,8 @@ export class AgentRunCoordinator {
           this.webToolPermissionDenied(run.id));
       const modelInferenceLimitExceeded =
         !cancelled && runtimeErrorCode(error) === MODEL_INFERENCE_LIMIT_EXCEEDED;
+      const checkpointFailure =
+        !cancelled && error instanceof CheckpointCaptureFailure ? error : null;
       runSpan?.setStatus(cancelled ? "ok" : "error");
       const message = safeRuntimeError(error);
       try {
@@ -1065,6 +1140,12 @@ export class AgentRunCoordinator {
               storedRun.errorCode = WEB_TOOL_PERMISSION_DENIED;
             } else if (modelInferenceLimitExceeded) {
               storedRun.errorCode = MODEL_INFERENCE_LIMIT_EXCEEDED;
+            } else if (checkpointFailure) {
+              // The model's work is observed evidence and is retained exactly
+              // once; only the recoverable-success claim is withheld.
+              storedRun.errorCode = CHECKPOINT_CAPTURE_FAILED;
+              storedRun.output = checkpointFailure.result.output;
+              storedRun.usage = checkpointFailure.result.usage;
             } else {
               delete storedRun.errorCode;
             }
@@ -1073,12 +1154,12 @@ export class AgentRunCoordinator {
           if (agent) {
             if (agent.status !== "stopped") {
               agent.status =
-                cancelled || webPermissionDenied || modelInferenceLimitExceeded
+                cancelled || webPermissionDenied || modelInferenceLimitExceeded || checkpointFailure
                   ? "ready"
                   : "error";
             }
             agent.lastError =
-              cancelled || webPermissionDenied || modelInferenceLimitExceeded
+              cancelled || webPermissionDenied || modelInferenceLimitExceeded || checkpointFailure
                 ? null
                 : message;
             agent.updatedAt = completedAt;
@@ -1125,6 +1206,8 @@ export class AgentRunCoordinator {
                   ? { errorCode: WEB_TOOL_PERMISSION_DENIED }
                   : modelInferenceLimitExceeded
                     ? { errorCode: MODEL_INFERENCE_LIMIT_EXCEEDED }
+                    : checkpointFailure
+                      ? { errorCode: CHECKPOINT_CAPTURE_FAILED, checkpointStage: checkpointFailure.reason }
                   : {}),
                 errorClass:
                   (error as { constructor?: { name?: string } } | null)
@@ -1139,13 +1222,29 @@ export class AgentRunCoordinator {
       // the lease is the safe recovery gate rather than releasing a possibly
       // live writer.
       if (binding !== null) {
-        if (terminalPersisted) {
+        if (writerUnsettled) {
+          // A worker that may still be alive keeps the lease. This is a
+          // deliberate operator gate, never released by elapsed time.
+          try {
+            this.requireProjectScope().retainLeaseForRecovery?.(binding.projectId, run.id);
+          } catch {
+            // The lease row itself remains; the gate holds either way.
+          }
+          this.reportLifecycleFailure({
+            code: "WORKSPACE_WRITER_UNSETTLED",
+            message: "Project lease retained because the worker could not be proven settled",
+            runId: run.id,
+            agentId: agentAtStart.id,
+            projectId: binding.projectId,
+          });
+        } else if (terminalPersisted) {
           try {
             await this.requireProjectScope().endTurn(
               binding.projectId,
               agentAtStart.id,
               run.id,
               outcome,
+              workspace,
             );
           } catch {
             this.reportLifecycleFailure({

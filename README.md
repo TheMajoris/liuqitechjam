@@ -34,6 +34,11 @@ LQAM puts those decisions behind server-owned seams:
   continuation.
 - `ProjectService` binds the Team to one shared Project workspace and uses a
   persisted single-writer lease for mutable Agent turns.
+- `WorkspaceCheckpointService` snapshots the shared source files into a
+  private Git store before every cycle and after every successful turn, so an
+  operator can **restore after a specific Agent and resume** the Team from
+  that exact point when a later Agent breaks the files. See
+  [docs/WORKSPACE_CHECKPOINTS.md](docs/WORKSPACE_CHECKPOINTS.md).
 - `AuthorizationService` checks the trusted human or Agent principal against
   the Project role and requested operation. `ToolService` validates inputs and
   enforces authorization before a platform-owned executor runs.
@@ -524,6 +529,35 @@ when possible.
 
 <!-- TODO: Add the controlled denial and recovery screenshot at docs/images/failure-case.png -->
 
+### Two-minute demo: restore after a turn
+
+The failure here is deterministic, so it needs no model and no credentials:
+
+```bash
+npm run demo:checkpoints -- --reset   # API on http://127.0.0.1:3000
+npm run dev -w @launchpad/web         # UI on http://localhost:5173
+```
+
+- **0:00 to 0:40:** Start the seeded "Ship the review-ready message"
+  Conversation. The Planner writes `PLAN.md`, the Builder sets
+  `src/message.ts` to "Ready for review"; each completed turn shows a
+  workspace checkpoint badge.
+- **0:40 to 1:00:** The Reviewer overwrites the message with "BROKEN",
+  deletes `PLAN.md`, leaves a half-written file, and crashes. Show the
+  workspace folder printed by the harness.
+- **1:00 to 1:40:** Open the Builder turn and press **Restore after Builder
+  and resume**. A safety checkpoint is saved first, the source files are put
+  back, Project-scoped Agent threads are cleared, and the Reviewer runs again
+  with fresh context.
+- **1:40 to 2:00:** The Reviewer approves, the Conversation completes, and the
+  Activity view shows the operator's restore and every checkpoint with no
+  paths or Git identities. Legacy "Retry from this turn (current files)" is
+  still there for the old behaviour.
+
+The scripted Agents are a harness substitution for the Codex runtime; nothing
+in configuration can select them. Details, invariants, and limitations are in
+[docs/WORKSPACE_CHECKPOINTS.md](docs/WORKSPACE_CHECKPOINTS.md).
+
 ## Quick Start
 
 ### Local POC: `npm run poc`
@@ -615,6 +649,7 @@ npm run typecheck   # TypeScript checks for workspaces
 npm run test        # all configured workspace tests
 npm run check       # typecheck, tests, then build
 npm run start       # start the built API server
+npm run demo:checkpoints -- --reset   # deterministic restore-and-resume demo (scripted Agents)
 ```
 
 ## Testing
@@ -714,6 +749,13 @@ See [`SECURITY.md`](SECURITY.md) for the repository security policy and
 - The runtime tap parses `codex exec --json` item types as documented today
   (`command_execution`, `file_change`, `mcp_tool_call`, `reasoning`,
   `agent_message`). New item types are counted, not interpreted.
+- Workspace checkpoints capture source-like text files only (policy
+  `source-v1`): no binaries, `node_modules`, or build output, so a restore does
+  not reinstall or rebuild. Restores clear Project-scoped Agent threads rather
+  than rewinding model memory. The feature is off by default, and the
+  local-process runtime is admitted only with an explicit override because it
+  cannot prove a worker has exited. The PostgreSQL migration is implemented
+  but the PostgreSQL suite was not run in the submission environment.
 - Remaining screenshot placeholders are intentional. Only captures taken from
   the running application are embedded.
 

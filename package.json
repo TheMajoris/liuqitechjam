@@ -20,6 +20,7 @@
     "db:migrate": "node --env-file-if-exists=.env --import tsx apps/server/src/persistence/migrate.ts",
     "db:import": "node --env-file-if-exists=.env --import tsx apps/server/src/persistence/import-json.ts",
     "db:provision": "node --env-file-if-exists=.env scripts/provision-postgres.mjs",
+    "demo:checkpoints": "node --import tsx scripts/checkpoint-demo.ts",
     "start": "npm run start -w @launchpad/server"
   },
   "devDependencies": {

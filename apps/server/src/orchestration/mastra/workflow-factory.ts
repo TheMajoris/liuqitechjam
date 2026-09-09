@@ -41,6 +41,8 @@ export function createMastraOrchestrationWorkflow(
     ...(options.handoffLimits === undefined
       ? {}
       : { handoffLimits: options.handoffLimits }),
+    ...(options.clarifyFirst === undefined ? {} : { clarifyFirst: options.clarifyFirst }),
+    ...(options.workspace === undefined ? {} : { workspace: options.workspace }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     ...(options.hooks === undefined ? {} : { hooks: options.hooks }),
     ...(options.onStepFailure === undefined

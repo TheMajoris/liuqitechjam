@@ -40,6 +40,7 @@ import type { PreviewContextProvider } from "./preview/preview-context-provider.
 import {
   type ProjectExecutionScope,
 } from "./projects/project-execution.js";
+import type { WorkspaceExecutionContext } from "./projects/workspace-checkpoint-types.js";
 import { AgentRunCoordinator } from "./agent-run-coordinator.js";
 import type {
   SkillRuntimeContext,
@@ -884,6 +885,11 @@ export class AgentService {
       signal?: AbortSignal;
       /** Absolute deadline covering validation and acceptance. */
       deadlineAt?: number;
+      /**
+       * Trusted checkpoint execution identity. Only orchestration supplies it
+       * through server-side options; no HTTP field maps onto it.
+       */
+      workspace?: WorkspaceExecutionContext | undefined;
     } = {},
   ): Promise<{ run: AgentRun; message: Message }> {
     const operation: OperationOptions = {
@@ -903,7 +909,12 @@ export class AgentService {
     // intentionally precedes runtime credential/model checks as well.
     const projectId = options.projectId;
     if (projectId !== undefined) {
-      await this.requireProjectScope().assertRunnable(projectId, agentId, operation);
+      await this.requireProjectScope().assertRunnable(
+        projectId,
+        agentId,
+        operation,
+        options.workspace,
+      );
       assertOperationActive(operation);
     }
     if (agentBeforeRun.modelRef === undefined) {
@@ -942,6 +953,17 @@ export class AgentService {
       // Snapshotted so the Run stays readable after the Agent is deleted.
       agentName: agentBeforeRun.name,
       ...(conversation === null ? {} : { conversationId: conversation.id }),
+      // First-class scope: a reservation can recognize a queued Project Run
+      // that has not yet taken its lease.
+      ...(projectId === undefined ? {} : { projectId }),
+      ...(options.orchestrationId === undefined ? {} : { orchestrationId: options.orchestrationId }),
+      ...(options.workspace === undefined
+        ? {}
+        : {
+            executionCycleId: options.workspace.executionCycleId,
+            workspaceOperationId: options.workspace.workspaceOperationId,
+            workspaceEpoch: options.workspace.workspaceEpoch,
+          }),
       status: "queued",
       prompt,
       output: null,
@@ -968,6 +990,11 @@ export class AgentService {
       // prevents a cancellation observed while the acceptance write waited in
       // the queue from creating a Run after the operation stopped.
       assertOperationActive(operation);
+      // A restore or a competing reservation may have landed while this
+      // acceptance waited in the queue. Recheck against the in-flight state.
+      if (projectId !== undefined) {
+        this.projectScope?.assertAdmission?.(database, projectId, options.workspace);
+      }
       const storedAgent = database.agents.find((item) => item.id === agentId);
       if (!storedAgent) {
         throw new HttpError(404, "Agent not found");
@@ -1023,6 +1050,7 @@ export class AgentService {
       modelPlan.snapshot,
       options.parentSpan,
       operation,
+      options.workspace,
     );
     return { run, message };
   }

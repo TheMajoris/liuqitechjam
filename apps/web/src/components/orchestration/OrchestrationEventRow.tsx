@@ -95,6 +95,12 @@ export function OrchestrationEventRow({
             <code className="orch-event-code-error">{event.errorCode}</code>
           )}
           {event.runId && <code>Run {event.runId.slice(0, 8)}</code>}
+          {event.checkpointId && (
+            <code>Checkpoint {event.checkpointId.slice(0, 8)}</code>
+          )}
+          {event.recoveryOperationId && (
+            <code>Recovery {event.recoveryOperationId.slice(0, 8)}</code>
+          )}
         </div>
       </div>
     </article>

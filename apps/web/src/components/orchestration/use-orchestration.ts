@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "../../api";
+import { ApiError, api } from "../../api";
 import {
   type OrchestrationDraft,
   type WorkspaceDraft,
@@ -9,7 +9,7 @@ import type {
   OrchestrationSessionDetail,
   Project,
 } from "../../types";
-import { errorMessage, isOrchestrationActive } from "./orchestration-utils";
+import { errorMessage, isOrchestrationActive, isRecoveryPending } from "./orchestration-utils";
 
 const POLL_INTERVAL_MS = 900;
 
@@ -20,8 +20,29 @@ export type OrchestrationAction =
   | "stop"
   | "continue"
   | "retry"
+  | "recover"
   | "delete"
   | null;
+
+/**
+ * A response the server definitely produced. A 2xx or a 4xx settles the
+ * request either way; a network failure or a 5xx leaves it uncertain, and the
+ * same request ID must be reused so a resend cannot start a second restore.
+ */
+function isDefinitiveResponse(reason: unknown): boolean {
+  return reason instanceof ApiError && reason.status >= 400 && reason.status < 500;
+}
+
+function newRequestId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  // RFC 4122 v4 layout from Math.random, for hosts without crypto.randomUUID.
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (char) => {
+    const random = (Math.random() * 16) | 0;
+    return (char === "x" ? random : (random & 0x3) | 0x8).toString(16);
+  });
+}
 
 export interface UseOrchestrationResult {
   sessions: OrchestrationSession[];
@@ -51,6 +72,16 @@ export interface UseOrchestrationResult {
   stopSession: (sessionId?: string) => Promise<void>;
   continueSession: (prompt: string, sessionId?: string) => Promise<void>;
   retryFromStep: (fromStepIndex: number, sessionId?: string) => Promise<void>;
+  /**
+   * Restore the Project's source files to one checkpoint and resume the
+   * remaining participants. Only the durable `detail.recovery.stage` says
+   * whether it worked; an accepted request is not a finished one.
+   */
+  recoverFromCheckpoint: (checkpointId: string, sessionId?: string) => Promise<void>;
+  /** Carry on a recovery that stalled after its restore step. */
+  resumeRecovery: (operationId: string, sessionId?: string) => Promise<void>;
+  /** Put the files back to the safety checkpoint a stalled recovery saved. */
+  restoreSafety: (operationId: string, sessionId?: string) => Promise<void>;
   /** Prompt-policy edit for the open Conversation. Grants nothing. */
   setClarifyFirst: (clarifyFirst: boolean, sessionId?: string) => Promise<void>;
   deleteSession: (sessionId?: string) => Promise<void>;
@@ -84,6 +115,11 @@ export function useOrchestration(): UseOrchestrationResult {
   // React state updates land after the click handler returns. Keep a ref as
   // the immediate guard so two same-tick clicks cannot enqueue two retries.
   const retryInFlightRef = useRef(false);
+  const recoverInFlightRef = useRef(false);
+  // One request ID per confirmed recovery action, keyed by what it acts on.
+  // It outlives a failed transport so a retry replays the same request rather
+  // than asking the server for a second restore.
+  const recoveryRequestIdsRef = useRef(new Map<string, string>());
 
   const publishWorkspaceSelection = useCallback((workspaceId: string | null) => {
     selectedWorkspaceRef.current = workspaceId;
@@ -175,7 +211,11 @@ export function useOrchestration(): UseOrchestrationResult {
 
   useEffect(() => {
     const session = detail?.session;
-    if (!session || !isOrchestrationActive(session.status)) return;
+    if (!session) return;
+    // A restore-and-resume runs on the server between two sessions statuses,
+    // so the poll follows the durable operation as well as the run itself.
+    const recoveryPending = isRecoveryPending(detail?.recovery?.stage);
+    if (!isOrchestrationActive(session.status) && !recoveryPending) return;
 
     let disposed = false;
     const generation = ++pollGenerationRef.current;
@@ -212,7 +252,7 @@ export function useOrchestration(): UseOrchestrationResult {
       if (pollTimerRef.current !== null) window.clearTimeout(pollTimerRef.current);
       pollTimerRef.current = null;
     };
-  }, [detail?.session.id, detail?.session.status]);
+  }, [detail?.session.id, detail?.session.status, detail?.recovery?.stage]);
 
   /**
    * Turn "ask before acting" on or off for one Conversation.
@@ -514,6 +554,99 @@ export function useOrchestration(): UseOrchestrationResult {
     [selectedSessionId],
   );
 
+  /**
+   * Shared shape of the three recovery calls. The server answers 202 with the
+   * operation record, which is only an acceptance: the detail is re-read at
+   * once so the recovery panel shows the durable stage, and the poll (which
+   * now also follows pending recovery stages) carries it to settlement.
+   */
+  const runRecoveryAction = useCallback(
+    async (
+      target: string,
+      requestKey: string,
+      send: (requestId: string) => Promise<unknown>,
+    ) => {
+      if (recoverInFlightRef.current) return;
+      recoverInFlightRef.current = true;
+      setAction("recover");
+      const ids = recoveryRequestIdsRef.current;
+      const requestId = ids.get(requestKey) ?? newRequestId();
+      ids.set(requestKey, requestId);
+      try {
+        await send(requestId);
+        ids.delete(requestKey);
+        const acceptedDetail = await api.getOrchestration(target).catch(() => null);
+        if (mountedRef.current && acceptedDetail) {
+          setSessions((current) => replaceSession(current, acceptedDetail.session));
+          setDetail((current) =>
+            current === null || current.session.id === acceptedDetail.session.id
+              ? acceptedDetail
+              : current,
+          );
+          setError(null);
+        }
+      } catch (reason) {
+        // A rejection the server produced is final for this request ID; a lost
+        // connection or a 5xx is not, and the next attempt replays the same ID.
+        if (isDefinitiveResponse(reason)) ids.delete(requestKey);
+        if (mountedRef.current) setError(errorMessage(reason));
+        throw reason;
+      } finally {
+        recoverInFlightRef.current = false;
+        if (mountedRef.current) setAction(null);
+      }
+    },
+    [],
+  );
+
+  const recoverFromCheckpoint = useCallback(
+    async (checkpointId: string, sessionId?: string) => {
+      const target = sessionId ?? selectedSessionId;
+      if (!target) return;
+      await runRecoveryAction(
+        target,
+        `recover:${target}:${checkpointId}`,
+        (requestId) =>
+          api.recoverOrchestration(target, {
+            checkpointId,
+            requestId,
+            acknowledgeSourceRestore: true,
+          }),
+      );
+    },
+    [runRecoveryAction, selectedSessionId],
+  );
+
+  const resumeRecovery = useCallback(
+    async (operationId: string, sessionId?: string) => {
+      const target = sessionId ?? selectedSessionId;
+      if (!target) return;
+      await runRecoveryAction(
+        target,
+        `resume:${target}:${operationId}`,
+        (requestId) => api.resumeWorkspaceRecovery(target, operationId, { requestId }),
+      );
+    },
+    [runRecoveryAction, selectedSessionId],
+  );
+
+  const restoreSafety = useCallback(
+    async (operationId: string, sessionId?: string) => {
+      const target = sessionId ?? selectedSessionId;
+      if (!target) return;
+      await runRecoveryAction(
+        target,
+        `safety:${target}:${operationId}`,
+        (requestId) =>
+          api.restoreWorkspaceSafety(target, operationId, {
+            requestId,
+            acknowledgeSourceRestore: true,
+          }),
+      );
+    },
+    [runRecoveryAction, selectedSessionId],
+  );
+
   const deleteSession = useCallback(async (sessionId?: string) => {
     const target = sessionId ?? selectedSessionId;
     if (!target) return;
@@ -575,6 +708,9 @@ export function useOrchestration(): UseOrchestrationResult {
     stopSession,
     continueSession,
     retryFromStep,
+    recoverFromCheckpoint,
+    resumeRecovery,
+    restoreSafety,
     setClarifyFirst,
     deleteSession,
   };
