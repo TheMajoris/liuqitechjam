@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import { transitions, variants } from "../../motion/motion-tokens";
 import type { Agent, OrchestrationSessionDetail } from "../../types";
 import type { Agent, OrchestrationSessionDetail, ToolApproval } from "../../types";
+import type { Agent, AgentRole, OrchestrationSessionDetail, ToolApproval } from "../../types";
 import { OrchestrationConversation } from "./OrchestrationConversation";
 import { OrchestrationGraph } from "./OrchestrationGraph";
 import { OrchestrationTimeline } from "./OrchestrationTimeline";
@@ -28,6 +29,8 @@ const TAB_NOTES: Record<RunTab, string> = {
 interface OrchestrationRunTabsProps {
   detail: OrchestrationSessionDetail | null;
   agents: Agent[];
+  /** Resolves each speaker's capability role for the transcript byline. */
+  roles?: AgentRole[];
   action?: OrchestrationAction;
   onContinue?: (prompt: string, sessionId: string) => void;
   /** Retries the run from one recorded step; omitted when unavailable. */
@@ -62,6 +65,7 @@ interface OrchestrationRunTabsProps {
 export function OrchestrationRunTabs({
   detail,
   agents,
+  roles = [],
   action = null,
   onContinue,
   onRetry,
@@ -169,11 +173,17 @@ export function OrchestrationRunTabs({
           <OrchestrationConversation
             detail={detail}
             agents={agents}
+            roles={roles}
             action={action}
             onContinue={onContinue}
             onRetry={onRetry}
             onRecover={onRecover}
             onClarifyFirstChange={onClarifyFirstChange}
+            approvals={approvals}
+            approvalPendingId={approvalPendingId}
+            approvalPendingAction={approvalPendingAction}
+            approvalErrors={approvalErrors}
+            onApprovalDecision={onApprovalDecision}
           />
         ) : activeTab === "activity" ? (
           // The log is the reading order. The raw journal stays one disclosure

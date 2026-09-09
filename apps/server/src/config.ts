@@ -441,6 +441,34 @@ export function isArkConfigured(config: AppConfig): boolean {
   );
 }
 
+/**
+ * Safe operator guidance for an enabled approval bridge that could not start.
+ * Keep this independent from the provider error: connection strings and
+ * driver details can contain credentials and must never reach startup logs.
+ */
+export function toolApprovalStartupDiagnostic(
+  config: Pick<AppConfig, "mcpToolApprovalStorage" | "mcpToolApprovalSchema">,
+): string {
+  const prefix =
+    "MCP tool approval is enabled but unavailable; sensitive tools are fail-closed.";
+  if (config.mcpToolApprovalStorage === "postgres") {
+    if (config.mcpToolApprovalSchema !== DEFAULT_MCP_TOOL_APPROVAL_SCHEMA) {
+      return `${prefix} Provision the custom Mastra workflow schema ` +
+        `"${config.mcpToolApprovalSchema}" explicitly before restart with equivalent ` +
+        "runtime privileges (USAGE, CREATE on the schema for launchpad_runtime). " +
+        `npm run db:migrate provisions only the default schema "${DEFAULT_MCP_TOOL_APPROVAL_SCHEMA}". ` +
+        "Externally configured PostgreSQL is operator-managed; the launcher does not " +
+        "migrate custom schemas automatically.";
+    }
+    return `${prefix} Run npm run db:migrate with DATABASE_ADMIN_URL to provision the ` +
+      `Mastra workflow schema "${config.mcpToolApprovalSchema}" and its runtime ` +
+      `privileges, then restart. Externally configured PostgreSQL is operator-managed; ` +
+      "the launcher does not migrate it automatically.";
+  }
+  return `${prefix} Verify the native Mastra workflow storage and keep ` +
+    "MCP_TOOL_APPROVAL_STORAGE=memory limited to development/test.";
+}
+
 /** Whether the shared Ark credentials and resolved supervisor model are usable. */
 export function isSupervisorConfigured(config: AppConfig): boolean {
   return (

@@ -277,7 +277,7 @@ describe("supervisor selector boundary", () => {
     });
 
     expect(prompt).toContain(
-      "At current_cycle_turn_count=0, honor a named eligible addressee in the latest request, even with prior history. On continuation or required dispatch, complete is invalid: invoke an eligible occurrence.",
+      "At current_cycle_turn_count=0, and whenever require_current_cycle_dispatch is true, complete is invalid: invoke an eligible occurrence, honoring a named eligible addressee in the latest request even with prior history. Once the cycle has produced a turn, complete is valid and is the expected decision as soon as the latest request has been answered.",
     );
     expect(prompt).toContain(
       '"Dwayne, get Bernard to create the app" addresses Dwayne as the initiator, so select Dwayne first rather than Bernard.',
@@ -820,11 +820,12 @@ describe("supervisor selector boundary", () => {
         ],
       },
       // Just above the fixed policy/roster envelope, so fitting has to reduce
-      // evidence rather than reject the limit outright.
-      { maxPromptChars: 2_400 },
+      // evidence rather than reject the limit outright. Raise this whenever the
+      // routing policy text grows; the production default is 20_000.
+      { maxPromptChars: 2_600 },
     );
 
-    expect(prompt.length).toBeLessThanOrEqual(2_400);
+    expect(prompt.length).toBeLessThanOrEqual(2_600);
     expect(prompt).toContain(
       '{"kind":"invoke","participantId":"<exact occurrence_id>","reason":"short public reason"}',
     );

@@ -2,12 +2,15 @@ import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import type {
   Agent,
+  AgentRole,
   OrchestrationParticipant,
   OrchestrationSessionDetail,
   OrchestrationTurn,
+  ToolApproval,
 } from "../../types";
 import { transitions, variants } from "../../motion/motion-tokens";
 import { MarkdownMessage } from "../MarkdownMessage";
+import { ToolApprovalPrompt } from "../approvals/ToolApprovalPrompt";
 import type { OrchestrationAction } from "./use-orchestration";
 import { StickyComposer } from "../StickyComposer";
 import { AgentAvatar } from "./AgentAvatar";
@@ -24,6 +27,8 @@ import {
 interface OrchestrationConversationProps {
   detail: OrchestrationSessionDetail | null;
   agents: Agent[];
+  /** Named capability roles, used to label who is speaking and in what job. */
+  roles?: AgentRole[];
   action?: OrchestrationAction;
   onContinue?: (prompt: string, sessionId: string) => void;
   /** Re-runs one failed recorded turn against the files as they are now. */
@@ -32,6 +37,12 @@ interface OrchestrationConversationProps {
   onRecover?: (checkpointId: string) => void;
   /** Prompt-policy edit; omitted hides the control. */
   onClarifyFirstChange?: ((clarifyFirst: boolean) => void) | undefined;
+  /** Live approval projections shown beside this Conversation's composer. */
+  approvals?: readonly ToolApproval[];
+  approvalPendingId?: string | null;
+  approvalPendingAction?: "approve" | "reject" | null;
+  approvalErrors?: Readonly<Record<string, string>>;
+  onApprovalDecision?: (approvalId: string, approved: boolean) => void;
 }
 
 const UNFINISHED: OrchestrationTurn["status"][] = ["failed", "cancelled", "timed_out"];
@@ -51,6 +62,25 @@ const chatItemMotion = {
   exit: "exit",
   transition: transitions.base,
 } as const;
+ * The job title shown beside a speaker's name.
+ *
+ * Deliberately not `participant.role`: that field is the Workspace access
+ * level (owner/editor/viewer), so the byline used to label every Agent an
+ * "editor" regardless of what it was actually configured to do. The capability
+ * role is what decides which tools an Agent may call, and it is resolved here
+ * the same way the server resolves it — from the Agent's global role — so the
+ * transcript and the permission that governs the turn cannot disagree. An
+ * Agent with no role assigned simply has no chip.
+ */
+function roleName(
+  agents: Agent[],
+  roles: AgentRole[],
+  agentId: string,
+): string | undefined {
+  const globalRoleId = agents.find((agent) => agent.id === agentId)?.globalRoleId;
+  if (!globalRoleId) return undefined;
+  return roles.find((role) => role.id === globalRoleId)?.name.trim() || undefined;
+}
 
 function closingNote(detail: OrchestrationSessionDetail): string | null {
   const { session } = detail;
@@ -71,11 +101,17 @@ function closingNote(detail: OrchestrationSessionDetail): string | null {
 export function OrchestrationConversation({
   detail,
   agents,
+  roles = [],
   action = null,
   onContinue,
   onRetry,
   onRecover,
   onClarifyFirstChange,
+  approvals = [],
+  approvalPendingId = null,
+  approvalPendingAction = null,
+  approvalErrors = {},
+  onApprovalDecision,
 }: OrchestrationConversationProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [followUp, setFollowUp] = useState("");
@@ -199,9 +235,8 @@ export function OrchestrationConversation({
           }
 
           const { turn, step } = entry;
-          const participant = participants.get(turn.participantId);
           const name = agentName(agents, turn.agentId);
-          const focus = participant?.role.trim();
+          const focus = roleName(agents, roles, turn.agentId);
           const timestamp = entry.timestamp;
           const unfinished = UNFINISHED.includes(turn.status);
           const checkpoint = turn.status === "completed"
@@ -364,6 +399,19 @@ export function OrchestrationConversation({
         reflow mid-turn; it is disabled rather than removed, and a follow-up
         continues this same Team and shared Workspace.
       */}
+      {onContinue && (
+        <ToolApprovalPrompt
+          approvals={approvals}
+          getAgentName={(agentId) => agentName(agents, agentId)}
+          runLabel={session.name}
+          pendingDecisionId={approvalPendingId}
+          pendingDecision={approvalPendingAction}
+          decisionErrors={approvalErrors}
+          onDecision={onApprovalDecision}
+          className="tool-approval-prompt-orchestration"
+        />
+      )}
+
       {onContinue && (
         <StickyComposer
           value={followUp}

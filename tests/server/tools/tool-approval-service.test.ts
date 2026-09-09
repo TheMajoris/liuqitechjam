@@ -322,7 +322,9 @@ describe("ToolApprovalService MCP completion bridge", () => {
         expectedVersion: projection.version,
         actor: { kind: "system", id: "test-controller" },
       });
-      await expect(original).resolves.toMatchObject({ structuredContent: { ok: true } });
+      await expect(original).resolves.toMatchObject({
+        content: [{ type: "text", text: JSON.stringify({ ok: true }) }],
+      });
       expect(fixture.calls.count).toBe(1);
     } finally {
       await client.close().catch(() => undefined);

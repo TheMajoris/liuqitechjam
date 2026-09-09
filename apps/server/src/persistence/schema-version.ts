@@ -9,4 +9,4 @@
  *
  * Raise this in the same commit that adds `NNN_*.sql` under `migrations/`.
  */
-export const LATEST_SCHEMA_VERSION = 4;
+export const LATEST_SCHEMA_VERSION = 5;

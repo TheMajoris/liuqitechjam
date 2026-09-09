@@ -581,6 +581,7 @@ export function OrchestrationWorkspace({
             <OrchestrationRunTabs
               detail={detail}
               agents={agents}
+              roles={roles}
               approvals={orchestrationApprovals.approvals}
               approvalPendingId={orchestrationApprovals.pendingDecisionId}
               approvalPendingAction={orchestrationApprovals.pendingDecision}

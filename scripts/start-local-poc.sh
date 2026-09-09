@@ -248,6 +248,27 @@ export CODEX_SANDBOX_MODE="$codex_sandbox_mode"
 export RUNTIME_PROVIDER=container
 export CONTAINER_ENGINE="$engine"
 export CONTAINER_RUNTIME_IMAGE="$runtime_image"
+
+# Sensitive tools (web.search, project.preview.restart) are gated on a human
+# decision. The local POC enables this mode by default; an explicit
+# MCP_TOOL_APPROVAL_ENABLED=false remains an operator opt-out. Without the
+# default, the MCP dispatch guard denies the call outright and no approval
+# card is created.
+# Workflow snapshots live in the migration-provisioned `mastra_approval`
+# schema. Externally configured PostgreSQL remains operator-managed by
+# start-local-postgres.sh; run npm run db:migrate there before starting.
+approval_enabled="${MCP_TOOL_APPROVAL_ENABLED:-}"
+if [[ -z "$approval_enabled" ]]; then
+  approval_enabled="${MCP_APPROVAL_ENABLED:-}"
+fi
+if [[ -z "$approval_enabled" ]]; then
+  approval_enabled="${TOOL_APPROVAL_ENABLED:-}"
+fi
+if [[ -z "$approval_enabled" ]]; then
+  log "Enabling MCP tool approval for the local POC."
+  approval_enabled=true
+fi
+export MCP_TOOL_APPROVAL_ENABLED="$approval_enabled"
 if [[ -z "${MCP_CONTAINER_URL:-}" ]]; then
   case "$(basename "$engine")" in
   podman)

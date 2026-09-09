@@ -118,6 +118,22 @@ function toolErrorResult(error: unknown): {
 }
 
 /**
+ * Codex 0.111's Responses/Ark bridge terminates a turn without a final
+ * assistant message when an MCP result includes structuredContent. Keep the
+ * same JSON payload in the required text content block instead; this is
+ * accepted by older and newer MCP clients and lets the model continue after
+ * an approved call.
+ */
+function toolSuccessResult(output: unknown): {
+  content: [{ type: "text"; text: string }];
+} {
+  const serialized = JSON.stringify(output);
+  return {
+    content: [{ type: "text", text: serialized === undefined ? "null" : serialized }],
+  };
+}
+
+/**
  * Create one stateless SDK server for one authenticated HTTP request. The
  * session context is closed over by handlers; callers cannot submit a
  * principal, Agent, Project, or run identity as tool input.
@@ -168,7 +184,10 @@ export function createMcpServer(
         title: definition.title,
         description: definition.description,
         inputSchema: definition.inputSchema,
-        outputSchema: definition.outputSchema,
+        // Do not advertise an output schema here. Codex 0.111's MCP bridge
+        // requires structuredContent whenever outputSchema is present, while
+        // its Ark path cannot continue a turn after that response shape. The
+        // text content below remains the canonical JSON result for clients.
         annotations: annotationsForRisk(definition.risk),
       },
       async (input: unknown) => {
@@ -200,10 +219,7 @@ export function createMcpServer(
                 ...(context.deadlineAt === undefined ? {} : { deadlineAt: context.deadlineAt }),
               })
             : await toolService.execute(toolContext, definition.id, input);
-          return {
-            structuredContent: output as Record<string, unknown>,
-            content: [{ type: "text", text: JSON.stringify(output) }],
-          };
+          return toolSuccessResult(output);
         } catch (error) {
           if (
             error instanceof ToolError &&

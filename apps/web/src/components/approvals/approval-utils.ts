@@ -40,6 +40,7 @@ const STATUS_LABELS: Record<ToolApprovalStatus, string> = {
 };
 
 const TOOL_LABELS: Record<string, string> = {
+  "web.search": "Web Search",
   "project.preview.restart": "Restart project preview",
   "project.preview.start": "Start project preview",
   "project.preview.stop": "Stop project preview",

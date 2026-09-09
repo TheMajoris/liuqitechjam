@@ -177,9 +177,11 @@ describe("MCP per-run advertisement snapshots", () => {
       expect(hidden).toMatchObject({ isError: true });
       expect(executed).toHaveLength(0);
 
-      await expect(client.callTool({ name: "visible.tool", arguments: {} })).resolves.toMatchObject({
-        structuredContent: { ok: true },
+      const visibleResult = await client.callTool({ name: "visible.tool", arguments: {} });
+      expect(visibleResult).toMatchObject({
+        content: [{ type: "text", text: JSON.stringify({ ok: true }) }],
       });
+      expect(visibleResult).not.toHaveProperty("structuredContent");
       expect(executed).toHaveLength(1);
       expect(executed[0]).not.toHaveProperty("advertisedToolIds");
       expect(executed[0]).not.toHaveProperty("diagnostics");

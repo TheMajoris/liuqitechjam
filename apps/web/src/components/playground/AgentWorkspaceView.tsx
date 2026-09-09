@@ -19,7 +19,7 @@ import type { AgentWorkspaceController } from "../../playground/use-agent-worksp
 import { AgentSettingsPanel } from "./AgentSettingsPanel";
 import { Spinner } from "./Spinner";
 import { humanizeAgentRunFailure } from "../orchestration/orchestration-utils";
-import { ToolApprovalList } from "../approvals/ToolApprovalCard";
+import { ToolApprovalPrompt } from "../approvals/ToolApprovalPrompt";
 import { useToolApprovals } from "../approvals/use-tool-approvals";
 
 const starterPrompts = [
@@ -231,21 +231,6 @@ export function AgentWorkspaceView({
             )}
           </div>
 
-          {tab === "conversation" && directApprovals.approvals.length > 0 && (
-            <ToolApprovalList
-              approvals={directApprovals.approvals}
-              getAgentName={(agentId) => (agentId === agent.id ? agent.name : null)}
-              runLabel={`Direct Run ${controller.activeRun?.id.slice(0, 8) ?? ""}`}
-              pendingDecisionId={directApprovals.pendingDecisionId}
-              pendingDecision={directApprovals.pendingDecision}
-              decisionErrors={directApprovals.decisionErrors}
-              onDecision={(approvalId, approved) => {
-                void directApprovals.decide(approvalId, approved);
-              }}
-              className="tool-approval-list-direct"
-            />
-          )}
-
           {tab === "runs" ? (
             // The Agent-centric path: Agent → Runs → Run detail → trace/audit,
             // rendered by the same detail view the global explorer uses.
@@ -336,6 +321,19 @@ export function AgentWorkspaceView({
                 )}
                 <div ref={messageEnd} />
               </div>
+
+              <ToolApprovalPrompt
+                approvals={directApprovals.approvals}
+                getAgentName={(agentId) => (agentId === agent.id ? agent.name : null)}
+                runLabel={`Direct Run ${controller.activeRun?.id.slice(0, 8) ?? ""}`}
+                pendingDecisionId={directApprovals.pendingDecisionId}
+                pendingDecision={directApprovals.pendingDecision}
+                decisionErrors={directApprovals.decisionErrors}
+                onDecision={(approvalId, approved) => {
+                  void directApprovals.decide(approvalId, approved);
+                }}
+                className="tool-approval-prompt-direct"
+              />
 
               <StickyComposer
                 value={controller.prompt}

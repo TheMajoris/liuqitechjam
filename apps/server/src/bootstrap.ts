@@ -7,7 +7,12 @@ import type { MastraCompositeStore } from "@mastra/core/storage";
 import { AgentService } from "./agent-service.js";
 import { createAgentAuthoringService } from "./agent-authoring.js";
 import { createApp } from "./app.js";
-import { isArkConfigured, writeCodexConfig, type AppConfig } from "./config.js";
+import {
+  isArkConfigured,
+  toolApprovalStartupDiagnostic,
+  writeCodexConfig,
+  type AppConfig,
+} from "./config.js";
 import { createRunner } from "./runner-factory.js";
 import {
   ArkModelCatalogService,
@@ -711,7 +716,7 @@ export async function bootstrapApplication(
       }
       toolApprovalWorkflowService = undefined;
       toolApprovalService = undefined;
-      console.warn("MCP tool approval is enabled but unavailable; sensitive tools are fail-closed");
+      console.warn(toolApprovalStartupDiagnostic(config));
     }
   }
 

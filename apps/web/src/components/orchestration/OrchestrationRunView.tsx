@@ -9,7 +9,6 @@ import type {
 } from "../../types";
 import { diagnoseFailure } from "./failure-diagnosis";
 import { ParticipantBar } from "./ParticipantBar";
-import { ToolApprovalList } from "../approvals/ToolApprovalCard";
 import type { OrchestrationAction } from "./use-orchestration";
 import {
   agentName,
@@ -198,20 +197,6 @@ export function OrchestrationRunView({
           </>
         )}
       </p>
-
-      {approvals.length > 0 && (
-        <ToolApprovalList
-          approvals={approvals}
-          getAgentName={(agentId) => agentName(agents, agentId)}
-          projectName={project?.name}
-          runLabel={session.name}
-          pendingDecisionId={approvalPendingId}
-          pendingDecision={approvalPendingAction}
-          decisionErrors={approvalErrors}
-          onDecision={onApprovalDecision}
-          className="tool-approval-list-orchestration"
-        />
-      )}
 
       {failed && (
         <div className="orch-alert orch-alert-danger orch-failure-alert" role="alert">
