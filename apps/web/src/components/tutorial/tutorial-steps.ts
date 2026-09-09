@@ -25,7 +25,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     id: "welcome",
     title: "Welcome to the floor",
     body:
-      "This is a place where several AI Agents work together on your project — " +
+      "This is a place where several AI Agents work together on your project, " +
       "in a room you can watch. Six short stops and you will know your way " +
       "around. You can leave at any time and pick it back up later.",
     goal: "Press Next to begin",
@@ -45,8 +45,8 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     title: "2 · Hire your workers",
     body:
       "An Agent is one worker with its own instructions and its own model. " +
-      "Give it a job description — or press Draft it for me and have one " +
-      "written for you — then put it in a Workspace.",
+      "Give it a job description (or press Draft it for me and have one " +
+      "written for you), then put it in a Workspace.",
     selector: ".create-actions .button-secondary",
     placement: "right",
     goal: "New Agent opens the form",
@@ -66,7 +66,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     title: "4 · Give them work",
     body:
       "A Conversation is one task. Pick who joins, describe what you want, and " +
-      "they take turns — a supervisor model decides who speaks next. Turn on " +
+      "they take turns: a supervisor model decides who speaks next. Turn on " +
       "Always clarify first and they will ask you questions before they build.",
     selector: ".thread-list",
     placement: "right",
@@ -78,7 +78,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     body:
       "The room is the live picture: who is at their desk, who is thinking, " +
       "who walked off to the shelves to search. Point at anyone to read their " +
-      "state — the card stays on top so you can compare two of them.",
+      "state: the card stays on top so you can compare two of them.",
     selector: ".ws-stage",
     placement: "left",
     goal: "Hover a character to raise its card",
@@ -100,7 +100,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     body:
       "Insights shows what every model is costing you. Traces keeps the " +
       "step-by-step record of each run. Roles & skills decides what an Agent " +
-      "is allowed to touch — that one is the real safety control.",
+      "is allowed to touch: that one is the real safety control.",
     selector: ".shell-nav",
     placement: "right",
     goal: "Three views, one for each question",

@@ -10213,13 +10213,6 @@ button.assignment-archive:hover:not(:disabled) {
   /* Entry and travel between steps are driven by Framer Motion. */
 }
 
-.tutorial-card.is-centred {
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  animation: none;
-}
-
 .tutorial-progress {
   display: flex;
   gap: 4px;
