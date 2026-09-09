@@ -5,6 +5,7 @@ import {
   humanizeAgentRunFailure,
   humanizeFailure,
   isRecoveryPending,
+  MODEL_INFERENCE_LIMIT_MESSAGE,
   recoveryStageLabel,
   validateDraft,
   validateWorkspaceTask,
@@ -96,6 +97,24 @@ describe("runtime failure wording", () => {
     expect(humanizeAgentRunFailure("MODEL_INFERENCE_LIMIT_EXCEEDED", "provider details")).toBe(
       expected,
     );
+  });
+
+  it("names the exhausted endpoint when the failed turn recorded one", () => {
+    expect(
+      humanizeFailure("MODEL_INFERENCE_LIMIT_EXCEEDED", null, "ep-20260907194740-rw7n8"),
+    ).toBe(
+      "model ep-20260907194740-rw7n8 has no usage left on this provider. Choose another model for this Agent, or review Safe Experience Mode in the provider's Model Activation settings, then retry.",
+    );
+  });
+
+  it("keeps the unnamed wording when no model was recorded", () => {
+    // Session-level failures and turns written before the model was captured
+    // have nothing to name; they must not render "model undefined".
+    for (const value of [undefined, null, "", "   "]) {
+      expect(humanizeFailure("MODEL_INFERENCE_LIMIT_EXCEEDED", null, value)).toBe(
+        MODEL_INFERENCE_LIMIT_MESSAGE,
+      );
+    }
   });
 
   it("distinguishes a Project write denial from a web-tool denial", () => {

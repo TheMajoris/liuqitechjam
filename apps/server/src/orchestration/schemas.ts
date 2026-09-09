@@ -33,6 +33,8 @@ export const ORCHESTRATION_LIMITS = {
   maxPromptLength: 50_000,
   maxRoleLength: 80,
   maxParticipantIdLength: 128,
+  /** Provider endpoint identifier recorded on a failed turn. */
+  maxModelIdLength: 200,
   maxParticipants: 100,
   maxSteps: 1_000,
   minPerAgentTimeoutMs: 1_000,
@@ -447,6 +449,7 @@ export const OrchestrationTurnSchema: z.ZodType<OrchestrationTurn> = z.object({
   safeOutput: safeOutputSchema.nullable(),
   outputTruncated: z.boolean(),
   errorCode: OrchestrationErrorCodeSchema.nullable(),
+  modelId: z.string().min(1).max(ORCHESTRATION_LIMITS.maxModelIdLength).optional(),
   createdAt: timestampSchema,
   completedAt: timestampSchema.nullable(),
 });

@@ -46,7 +46,9 @@ LQAM puts those decisions behind server-owned seams:
   execution. The MCP server gives each run a bounded, expiring session.
 - `Storage` preserves the service contract, with `PostgresStore` for production
   and explicit legacy/local `JsonStore`. It persists Agents, Projects, Runs,
-  orchestration, previews, and audit/usage records. Legacy approval, grant, and
+  orchestration, previews, and audit/usage records. Native approval projections
+  live in `tool_approval_invocations`; Mastra suspend/resume snapshots live in
+  the separately managed `mastra_approval` schema. Legacy approval, grant, and
   correlation collections remain read-compatible but are not authorization
   inputs.
 - `AuditService`, the usage aggregator, and optional OpenTelemetry provide
@@ -110,7 +112,9 @@ denied `project.write`: [`repository-authorization-service.test.ts`](tests/serve
 Project membership and role templates determine permissions and tool access.
 Denied operations fail closed and are recorded as redacted policy evidence.
 No external policy, directory, or human-approval service is required for local
-development or deployment.
+development or deployment. When approval mode is enabled, the server-owned
+local/demo human principal decides through the authenticated control API; this
+is not an external approval provider.
 
 ### Observability
 
@@ -259,7 +263,12 @@ flowchart LR
     T --> V[Input and output validation]
     V --> A[AuthorizationService]
     A --> RP[Repository role policy]
-    T --> E[Platform-owned tool executor]
+    T -->|safe or approval disabled| E[Platform-owned tool executor]
+    T -->|approval required| AB[ToolApprovalService]
+    AB --> W[Mastra workflow suspend/resume]
+    W --> AP[Approval projection and UI]
+    AP -->|trusted approve/reject| AB
+    AB -->|approved, revalidated| E
     P --> PV[PreviewService]
     PV --> PC[Preview container]
     O --> OBS[Hash-chained audit, traces, usage, and optional OTel]
@@ -482,9 +491,14 @@ token evidence captured from Codex.
    Agent, Project, and run IDs. The coordinator opens a run span under the
    orchestration trace, and the host parses every JSONL line the Codex child
    writes into sandbox, file-change, MCP, and model-turn audit events.
-5. An MCP call enters `ToolService`, which validates the tool and input, checks
-   the effective role and repository policy authority, then runs the
-   platform-owned executor.
+5. An MCP call enters `ToolService`, which validates the tool and input and
+   checks the effective role and repository policy authority. Safe calls use
+   the existing guarded executor. An approval-required call enters one
+   deterministic Mastra workflow; the original `/mcp` response stays pending
+   while the UI exposes a safe approval projection. A trusted approve/reject
+   decision resumes that workflow; approval triggers final authorization and
+   execution-claim checks, while rejection never invokes the business adapter.
+   The resulting value or denial settles the same live MCP call exactly once.
    Authorization and tool outcomes are journaled as safe events.
 6. The Agent result is bounded and redacted into the orchestration turn. A
    handoff can become the next Agent's context, and the same Project workspace
@@ -725,9 +739,14 @@ See [`SECURITY.md`](SECURITY.md) for the repository security policy and
 - This is a single-user hackathon proof of concept. The trusted demo principal
   is `human:demo-owner`; a real multi-user system would need server-side
   identity resolution, sessions, tenant boundaries, and deployment hardening.
-- Authorization is repository-backed and intentionally has no external human
-  approval workflow. Legacy approval records remain readable for compatibility
-  but cannot grant access.
+- Authorization is repository-backed. Approval mode is an application-owned,
+  bounded human decision for explicitly configured sensitive tools; it uses the
+  deterministic local/demo principal and fails closed when its storage or
+  workflow bridge is unavailable. Legacy approval records remain readable for
+  compatibility but cannot grant access.
+- Approval waits are bounded to the live originating MCP request. A lost
+  request, server restart, or expired session invalidates the pending approval;
+  the system never reattaches or replays an external effect automatically.
 - The container path uses resource limits, dropped capabilities, and a bridge
   network, but it is not a hardened sandbox. Codex may fall back to
   `danger-full-access` inside the disposable container when Landlock is not

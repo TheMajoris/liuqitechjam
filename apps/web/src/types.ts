@@ -826,6 +826,8 @@ export interface OrchestrationTurn {
   safeOutput: string | null;
   outputTruncated: boolean;
   errorCode: OrchestrationErrorCode | null;
+  /** The model this turn ran on; recorded only when the turn failed. */
+  modelId?: string;
   createdAt: string;
   completedAt: string | null;
   executionCycleId?: string;

@@ -193,6 +193,16 @@ export interface OrchestrationTurn {
   safeOutput: string | null;
   outputTruncated: boolean;
   errorCode: OrchestrationErrorCode | null;
+  /**
+   * The model this turn ran on, recorded only when the turn failed.
+   *
+   * A provider-side model failure is not diagnosable from the Agent's name
+   * alone: several Agents commonly share one endpoint, and the endpoint that
+   * failed may already have been reassigned by the time anyone reads the
+   * transcript. Recorded at failure time so the reply can name the exact model
+   * rather than the model the Agent happens to point at now.
+   */
+  modelId?: string | undefined;
   createdAt: string;
   completedAt: string | null;
 }

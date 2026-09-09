@@ -290,7 +290,7 @@ export function OrchestrationConversation({
                 {unfinished ? (
                   <p className="orch-chat-unfinished">
                     {turnStatusLabel(turn.status)} —{" "}
-                    {humanizeFailure(turn.errorCode, turn.safeOutput)}
+                    {humanizeFailure(turn.errorCode, turn.safeOutput, turn.modelId)}
                   </p>
                 ) : turn.safeOutput ? (
                   <MarkdownMessage className="orch-chat-text" content={turn.safeOutput} />

@@ -207,7 +207,7 @@ export function OrchestrationTurnInspector({
 
       {node.failed && (
         <p className="orch-inspector-failure">
-          {humanizeFailure(turn.errorCode, turn.safeOutput)}
+          {humanizeFailure(turn.errorCode, turn.safeOutput, turn.modelId)}
           {turn.errorCode && <code>{turn.errorCode}</code>}
         </p>
       )}
