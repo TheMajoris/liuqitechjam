@@ -24,6 +24,7 @@ import { ToolService } from "../../apps/server/src/tools/tool-service.js";
 const PROJECT_ID = "project-1";
 const AGENT_ID = "agent-1";
 const RUN_ID = "run-1";
+const DIRECT_RUN_ID = "run-direct-1";
 
 function makeStore(): Storage {
   let data = emptyDatabase();
@@ -76,6 +77,17 @@ async function makeFixture(): Promise<{
       error: null,
       usage: null,
     });
+    // A direct Agent chat has no Project. Its approvals are decided by the
+    // local human who owns the Agent.
+    database.runs.push({
+      id: DIRECT_RUN_ID,
+      agentId: AGENT_ID,
+      status: "running",
+      prompt: "search",
+      output: null,
+      error: null,
+      usage: null,
+    });
   });
   const approvals = new ToolApprovalStore(store, {
     ownerEpoch: 1,
@@ -89,6 +101,11 @@ async function makeFixture(): Promise<{
     projectId: PROJECT_ID,
     runId: RUN_ID,
     sessionId: "session-1",
+  });
+  sessions.mint({
+    agentId: AGENT_ID,
+    runId: DIRECT_RUN_ID,
+    sessionId: "session-direct",
   });
   await approvals.createInvocation({
     approvalId: "approval-1",
@@ -150,7 +167,7 @@ async function makeFixture(): Promise<{
   const dependencies: ToolApprovalRouteDependencies = {
     approvalService: service,
     authorization,
-    getRun: async () => store.snapshot().runs[0] ?? null,
+    getRun: async (runId) => store.snapshot().runs.find((run) => run.id === runId) ?? null,
     isSessionLive: (sessionId, record) => sessions.isLive(sessionId, record),
     authorizeAgent: async () => {
       if (!agentAuthorized) throw new Error("Agent revoked");
@@ -509,13 +526,53 @@ describe("tool approval HTTP routes", () => {
       deadlineAt: "2099-01-01T00:00:00.000Z",
       initialStatus: "waiting",
     });
+    // A Project-less record is no longer refused by decision authority; it is
+    // refused here only because it carries no live MCP session.
     const projectless = await fixture.app.inject({
       method: "POST",
       url: "/api/approvals/approval-search-projectless/decision",
       payload: { expectedVersion: 1, approved: true },
     });
-    expect(projectless.statusCode).toBe(403);
+    expect(projectless.statusCode).toBe(409);
     expect(fixture.decideCalls()).toBe(2);
+  });
+
+  it("lets the local human decide a direct Agent run's approval", async () => {
+    const fixture = await makeFixture();
+    apps.push(fixture.app);
+    await fixture.approvals.createInvocation({
+      approvalId: "approval-direct-search",
+      invocationId: "invocation-direct-search",
+      workflowRunId: "workflow-direct-search",
+      agentId: AGENT_ID,
+      projectId: null,
+      runId: DIRECT_RUN_ID,
+      sessionId: "session-direct",
+      toolId: "web.search",
+      policyVersion: "tool-approval-v2",
+      inputBinding: "object{query:string:\"launchpad\";};",
+      privateInput: { query: "launchpad" },
+      safeSummary: "Approval required for Web Search",
+      deadlineAt: "2099-01-01T00:00:00.000Z",
+      initialStatus: "waiting",
+    });
+
+    const listed = await fixture.app.inject({
+      method: "GET",
+      url: "/api/approvals?runId=" + DIRECT_RUN_ID,
+    });
+    expect(listed.statusCode).toBe(200);
+    const visible = listed.json().approvals as { approvalId: string; canDecide: boolean }[];
+    expect(visible.map((item) => item.approvalId)).toContain("approval-direct-search");
+    expect(visible.find((item) => item.approvalId === "approval-direct-search")?.canDecide).toBe(true);
+
+    const decision = await fixture.app.inject({
+      method: "POST",
+      url: "/api/approvals/approval-direct-search/decision",
+      payload: { expectedVersion: 1, approved: true },
+    });
+    expect(decision.statusCode).toBe(200);
+    expect(decision.json().approval.decision).toBe("approved");
   });
 
   it("filters and authorizes the whole collection before sorting and limiting", async () => {

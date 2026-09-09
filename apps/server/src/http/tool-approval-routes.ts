@@ -233,23 +233,25 @@ function decisionAuthorityFor(
   }
 }
 
-/** Require the server-registered tool's deterministic decision authority. */
+/**
+ * Require the server-registered tool's deterministic decision authority.
+ *
+ * The registered authority names the permission; the *record's* scope names
+ * whose ownership is checked. A Project-scoped invocation is decided by that
+ * Project's owner. A direct Agent run has no Project, so it is decided by the
+ * local human who owns the Agent — the same authority that already controls
+ * Agent-owned previews. Without this second branch a direct run could raise
+ * an approval (web.search is reachable with no Project) that no one was ever
+ * permitted to see or decide, so it could only expire.
+ */
 async function requireDecisionAuthority(
   dependencies: ToolApprovalRouteDependencies,
-  record: Pick<ToolApprovalInvocationRecord, "projectId" | "toolId">,
+  record: Pick<ToolApprovalInvocationRecord, "projectId" | "toolId" | "agentId">,
   options: { hideUnauthorized: boolean },
 ): Promise<void> {
   const authority = decisionAuthorityFor(dependencies, record.toolId);
   if (authority === null || authority.kind !== "project-owner") {
     throw new HttpError(503, "Tool approval decision authority is not configured");
-  }
-  if (record.projectId === null) {
-    if (options.hideUnauthorized) throw notFound();
-    throw new ToolError(
-      "PERMISSION_DENIED",
-      403,
-      "Only a Project owner may decide this approval",
-    );
   }
 
   try {
@@ -258,8 +260,15 @@ async function requireDecisionAuthority(
       // Permission and owner semantics come from the current registered tool
       // policy, never from the approval request.
       permission: authority.permission,
-      projectId: record.projectId,
-      resource: { kind: "project", id: record.projectId },
+      ...(record.projectId === null
+        ? {
+            agentId: record.agentId,
+            resource: { kind: "agent", id: record.agentId } as const,
+          }
+        : {
+            projectId: record.projectId,
+            resource: { kind: "project", id: record.projectId } as const,
+          }),
     });
   } catch (error) {
     if (options.hideUnauthorized && isAuthorizationError(error)) throw notFound();
@@ -269,7 +278,7 @@ async function requireDecisionAuthority(
 
 async function visibleToHuman(
   dependencies: ToolApprovalRouteDependencies,
-  record: Pick<ToolApprovalInvocationRecord, "projectId" | "toolId">,
+  record: Pick<ToolApprovalInvocationRecord, "projectId" | "toolId" | "agentId">,
 ): Promise<boolean> {
   try {
     await requireDecisionAuthority(dependencies, record, { hideUnauthorized: true });

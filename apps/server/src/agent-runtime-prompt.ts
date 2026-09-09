@@ -141,7 +141,11 @@ export class AgentRuntimePromptComposer {
     // Never ask the private Agent provider here: doing so could leak private
     // preview state into a shared Project prompt.
     if (binding !== null) {
-      const previewContext = { status: binding.previewStatus } satisfies AgentPreviewContext;
+      const previewContext = {
+        status: binding.previewStatus,
+        // Only a Project-scoped turn carries project.preview.restart.
+        restartable: true,
+      } satisfies AgentPreviewContext;
       return composeForPreview(previewContext);
     }
 

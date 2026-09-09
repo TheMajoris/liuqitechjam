@@ -12,6 +12,12 @@ export type AgentPreviewStatus = PreviewStatus | "not_started";
 /** The complete, deliberately minimal Preview projection an Agent turn receives. */
 export interface AgentPreviewContext {
   status: AgentPreviewStatus;
+  /**
+   * Whether `project.preview.restart` is reachable for this turn. Only a
+   * Project-scoped turn has a shared Preview to restart; a private Agent turn
+   * has no such tool, so the runtime context must not promise one.
+   */
+  restartable?: boolean;
 }
 
 /**
@@ -111,7 +117,12 @@ export function composeRuntimeContextPrompt(
     ...stableLines,
     ...(stableLines.length > 0 ? [""] : []),
     AGENT_RESPONSE_LANGUAGE_POLICY,
-    "Preview servers are controlled by the user in the Preview panel; you cannot start, stop, or restart them.",
+    // Keep this aligned with the built-in tool catalogue. Stating a blanket
+    // prohibition on a turn that *does* carry project.preview.restart makes
+    // the Agent refuse a request the platform would have authorized.
+    context.restartable === true
+      ? "You cannot start or stop Preview servers; the user controls those in the Preview panel. To restart the shared Project preview, call the project.preview.restart tool — it runs only after a Project owner approves it."
+      : "Preview servers are controlled by the user in the Preview panel; you cannot start, stop, or restart them.",
     "",
     ...currentStateLines,
     "</platform_runtime_context>",
