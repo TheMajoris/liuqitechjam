@@ -125,7 +125,7 @@ export function OrchestrationTurnInspector({
       <div className="orch-inspector-head">
         <div>
           <span className="orch-eyebrow">Step {node.stepNumber}</span>
-          <h3 id="orch-inspector-heading">{name}</h3>
+          <h3 id="orch-inspector-heading">{agentName(agents, turn.agentId)}</h3>
         </div>
         <button
           type="button"
