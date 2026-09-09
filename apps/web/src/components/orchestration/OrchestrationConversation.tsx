@@ -6,6 +6,8 @@ import type {
   OrchestrationParticipant,
   OrchestrationSessionDetail,
   OrchestrationTurn,
+  ProjectMembership,
+  ProjectRole,
   ToolApproval,
 } from "../../types";
 import { transitions, variants } from "../../motion/motion-tokens";
@@ -29,6 +31,12 @@ interface OrchestrationConversationProps {
   agents: Agent[];
   /** Named capability roles, used to label who is speaking and in what job. */
   roles?: AgentRole[];
+  /**
+   * Project membership tiers. A capability role and a membership tier are
+   * different things and can disagree — membership is what actually decides
+   * whether a tool call is authorized — so both are shown.
+   */
+  memberships?: readonly ProjectMembership[];
   action?: OrchestrationAction;
   onContinue?: (prompt: string, sessionId: string) => void;
   /** Re-runs one failed recorded turn against the files as they are now. */
@@ -72,6 +80,27 @@ function roleName(
   return roles.find((role) => role.id === globalRoleId)?.name.trim() || undefined;
 }
 
+const MEMBERSHIP_LABEL: Record<ProjectRole, string> = {
+  owner: "Owner",
+  editor: "Editor",
+  viewer: "Viewer",
+};
+
+/**
+ * The Agent's tier in this Project.
+ *
+ * Deliberately separate from `roleName` above: that reads the Agent's global
+ * capability template, which is only a label. This is the tier the server
+ * authorizes tool calls against, so an Agent whose capability role is named
+ * "Owner" can still be an `editor` here and be refused.
+ */
+function membershipRole(
+  memberships: readonly ProjectMembership[],
+  agentId: string,
+): ProjectRole | undefined {
+  return memberships.find((membership) => membership.agentId === agentId)?.role;
+}
+
 function closingNote(detail: OrchestrationSessionDetail): string | null {
   const { session } = detail;
   switch (session.status) {
@@ -92,6 +121,7 @@ export function OrchestrationConversation({
   detail,
   agents,
   roles = [],
+  memberships = [],
   action = null,
   onContinue,
   onRetry,
@@ -227,6 +257,7 @@ export function OrchestrationConversation({
                 const { turn, step } = entry;
                 const name = agentName(agents, turn.agentId);
                 const focus = roleName(agents, roles, turn.agentId);
+                const membership = membershipRole(memberships, turn.agentId);
                 const timestamp = entry.timestamp;
                 const unfinished = UNFINISHED.includes(turn.status);
                 const checkpoint = turn.status === "completed"
@@ -261,7 +292,17 @@ export function OrchestrationConversation({
                         <strong>
                           {name}
                           {focus && focus !== name && (
-                            <span className="orch-chat-focus">{focus}</span>
+                            <span className="orch-chat-focus" title={`Capability role: ${focus}`}>
+                              {focus}
+                            </span>
+                          )}
+                          {membership && (
+                            <span
+                              className="orch-chat-membership"
+                              title={`Project membership: ${MEMBERSHIP_LABEL[membership]}. This tier decides which tools this Agent may run.`}
+                            >
+                              {MEMBERSHIP_LABEL[membership]}
+                            </span>
                           )}
                         </strong>
                         <span className="orch-chat-meta">

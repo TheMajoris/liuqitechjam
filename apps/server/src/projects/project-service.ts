@@ -4,6 +4,7 @@ import {
   DEMO_HUMAN_PRINCIPAL,
   type AuthorizationService,
 } from "../access/authorization-service.js";
+import { DEFAULT_PROJECT_ROLE } from "../access/access-types.js";
 import type { Principal, ProjectRole } from "../access/access-types.js";
 import type { ApplicationLifecycleFailureSink } from "../application-health.js";
 import type { RuntimeReconciliationResult } from "../types.js";
@@ -113,10 +114,10 @@ export function publicProject(
     project.status === "archived" ? [] : membershipsOrAgentIds
   ).map((item) =>
     typeof item === "string"
-      ? { agentId: item, role: "editor" }
+      ? { agentId: item, role: DEFAULT_PROJECT_ROLE }
       : {
           agentId: item.agentId,
-          role: item.role ?? "editor",
+          role: item.role ?? DEFAULT_PROJECT_ROLE,
         },
   );
   return {
@@ -880,6 +881,7 @@ export class ProjectService {
     projectId: string,
     agentId: string,
     principal: Principal = DEMO_HUMAN_PRINCIPAL,
+    role: ProjectRole = DEFAULT_PROJECT_ROLE,
   ): Promise<ProjectView> {
     await this.authorization.require({
       principal,
@@ -899,11 +901,15 @@ export class ProjectService {
       );
     }
     const attachedAt = now();
+    // Write the membership tier explicitly. Leaving it unset made every
+    // attachment an editor by way of three separate read-side fallbacks,
+    // which is invisible both here and to the caller.
     const attachment: ProjectAgentAttachment = {
       projectId,
       agentId,
       codexThreadId: null,
       attachedAt,
+      role,
       toolGrants: [],
       updatedAt: attachedAt,
     };
@@ -1647,7 +1653,7 @@ export class ProjectService {
       .sort((left, right) => left.attachedAt.localeCompare(right.attachedAt))
       .map((item) => ({
         agentId: item.agentId,
-        role: item.role ?? "editor",
+        role: item.role ?? DEFAULT_PROJECT_ROLE,
       }));
   }
 

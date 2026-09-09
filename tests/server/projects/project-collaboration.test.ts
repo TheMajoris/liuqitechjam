@@ -156,6 +156,36 @@ async function runProjectTurn(
 }
 
 describe("Shared Project collaboration", () => {
+  it("writes an explicit membership tier on attach and honours an owner attach", async () => {
+    const { agentService, projectService } = await makeStack(new FileWritingRunner());
+    const member = await agentService.createAgent({
+      name: "member",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
+    const lead = await agentService.createAgent({
+      name: "lead",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
+    const project = await projectService.create({ name: "Roles" });
+
+    // The default is still editor, but it is now written, not inferred by
+    // three separate read-side fallbacks.
+    const withDefault = await projectService.attachAgent(project.id, member.id);
+    expect(
+      withDefault.memberships.find((m) => m.agentId === member.id)?.role,
+    ).toBe("editor");
+
+    const withOwner = await projectService.attachAgent(
+      project.id,
+      lead.id,
+      undefined,
+      "owner",
+    );
+    expect(
+      withOwner.memberships.find((m) => m.agentId === lead.id)?.role,
+    ).toBe("owner");
+  });
+
   it("lets a second Agent read and modify the first Agent's Project files", async () => {
     const runner = new FileWritingRunner();
     const { agentService, projectService } = await makeStack(runner);

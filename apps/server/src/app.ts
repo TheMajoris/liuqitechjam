@@ -18,6 +18,7 @@ import {
   isAuthorizationError,
 } from "./access/authorization-service.js";
 import { humanPrincipal } from "./access/access-types.js";
+import type { Principal } from "./access/access-types.js";
 import type { AgentService } from "./agent-service.js";
 import {
   AgentDraftRequestSchema,
@@ -138,7 +139,12 @@ export interface ProjectServiceContract {
   update(projectId: string, input: UpdateProjectInput): Promise<ProjectView>;
   archive(projectId: string): Promise<{ archivedWorkspace: string | null }>;
   deletePermanently(projectId: string): Promise<{ deleted: boolean }>;
-  attachAgent(projectId: string, agentId: string): Promise<ProjectView>;
+  attachAgent(
+    projectId: string,
+    agentId: string,
+    principal?: Principal,
+    role?: ProjectRole,
+  ): Promise<ProjectView>;
   updateAgentRole(
     projectId: string,
     agentId: string,
@@ -1141,6 +1147,9 @@ export async function createApp(
   const updateProjectAgentRoleBody = z.object({
     role: z.enum(["owner", "editor", "viewer"]),
   });
+  const attachProjectAgentBody = z.object({
+    role: z.enum(["owner", "editor", "viewer"]).optional(),
+  });
 
   app.post("/api/projects", async (request, reply) => {
     const body = createProjectBody.parse(request.body);
@@ -1195,7 +1204,16 @@ export async function createApp(
 
   app.post("/api/projects/:id/agents/:agentId", async (request) => {
     const { id, agentId } = projectAgentParams.parse(request.params);
-    return { project: await requireProjectService(projectService).attachAgent(id, agentId) };
+    // The membership tier governs which tools the Agent may run, so it is
+    // settable at attach time instead of only through a follow-up PATCH.
+    const { role } = attachProjectAgentBody.parse(request.body ?? {});
+    const project = await requireProjectService(projectService).attachAgent(
+      id,
+      agentId,
+      humanPrincipal(),
+      role,
+    );
+    return { project };
   });
 
   app.delete("/api/projects/:id/agents/:agentId", async (request) => {

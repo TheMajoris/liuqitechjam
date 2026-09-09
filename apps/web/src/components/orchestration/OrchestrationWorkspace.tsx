@@ -581,6 +581,7 @@ export function OrchestrationWorkspace({
             <OrchestrationRunTabs
               detail={detail}
               agents={agents}
+              memberships={workspaceProject?.memberships ?? []}
               roles={roles}
               approvals={orchestrationApprovals.approvals}
               approvalPendingId={orchestrationApprovals.pendingDecisionId}

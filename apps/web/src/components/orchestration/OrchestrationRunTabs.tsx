@@ -1,7 +1,13 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import { transitions, variants } from "../../motion/motion-tokens";
-import type { Agent, AgentRole, OrchestrationSessionDetail, ToolApproval } from "../../types";
+import type {
+  Agent,
+  AgentRole,
+  OrchestrationSessionDetail,
+  ProjectMembership,
+  ToolApproval,
+} from "../../types";
 import { OrchestrationConversation } from "./OrchestrationConversation";
 import { OrchestrationGraph } from "./OrchestrationGraph";
 import { OrchestrationTimeline } from "./OrchestrationTimeline";
@@ -27,6 +33,8 @@ const TAB_NOTES: Record<RunTab, string> = {
 interface OrchestrationRunTabsProps {
   detail: OrchestrationSessionDetail | null;
   agents: Agent[];
+  /** Project membership tiers, shown beside each Agent's capability role. */
+  memberships?: readonly ProjectMembership[];
   /** Resolves each speaker's capability role for the transcript byline. */
   roles?: AgentRole[];
   action?: OrchestrationAction;
@@ -63,6 +71,7 @@ interface OrchestrationRunTabsProps {
 export function OrchestrationRunTabs({
   detail,
   agents,
+  memberships = [],
   roles = [],
   action = null,
   onContinue,
@@ -171,6 +180,7 @@ export function OrchestrationRunTabs({
           <OrchestrationConversation
             detail={detail}
             agents={agents}
+            memberships={memberships}
             roles={roles}
             action={action}
             onContinue={onContinue}

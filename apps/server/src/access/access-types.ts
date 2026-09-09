@@ -126,3 +126,14 @@ export interface PermitApprovalCorrelation {
 export type { AuditEvent } from "../audit/audit-types.js";
 
 export type ProjectRole = "owner" | "editor" | "viewer";
+
+/**
+ * The membership tier a newly attached Agent receives.
+ *
+ * This is the single source of truth. It used to be an implicit `?? "editor"`
+ * repeated at three read sites while `attachAgent` wrote no role at all, so
+ * every attachment silently became an editor and no caller could see it.
+ * Attachment now writes this value explicitly; the read-side fallbacks remain
+ * only to normalize records persisted before that.
+ */
+export const DEFAULT_PROJECT_ROLE: ProjectRole = "editor";

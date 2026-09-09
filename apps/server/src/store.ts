@@ -6,6 +6,7 @@ import {
   OrchestrationSessionSchema,
   OrchestrationTurnSchema,
 } from "./orchestration/schemas.js";
+import { DEFAULT_PROJECT_ROLE } from "./access/access-types.js";
 import { PreviewRecordSchema } from "./preview/preview-types.js";
 import {
   ProjectAgentAttachmentSchema,
@@ -168,7 +169,7 @@ export function normalizeDatabase(value: unknown): Database {
     normalized.projectAgents = normalized.projectAgents.map((attachment) => {
       if (!isRecord(attachment)) return attachment;
       const next = { ...attachment };
-      if (!Object.prototype.hasOwnProperty.call(next, "role")) next.role = "editor";
+      if (!Object.prototype.hasOwnProperty.call(next, "role")) next.role = DEFAULT_PROJECT_ROLE;
       if (!Object.prototype.hasOwnProperty.call(next, "toolGrants")) next.toolGrants = [];
       if (!Object.prototype.hasOwnProperty.call(next, "updatedAt")) {
         next.updatedAt = next.attachedAt;
