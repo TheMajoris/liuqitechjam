@@ -5,6 +5,7 @@ import type {
   OrchestrationSession,
   OrchestrationSessionDetail,
   Project,
+  ToolApproval,
 } from "../../types";
 import { diagnoseFailure } from "./failure-diagnosis";
 import { ParticipantBar } from "./ParticipantBar";
@@ -30,6 +31,12 @@ interface OrchestrationRunViewProps {
   modelProviders?: ModelProviderDescriptor[];
   /** Opens the room on the Agent whose turn failed; omitted hides the button. */
   onInspectFailure?: ((agentId: string | null) => void) | undefined;
+  /** Optional server-owned approval projections for this Team Run. */
+  approvals?: readonly ToolApproval[];
+  approvalPendingId?: string | null;
+  approvalPendingAction?: "approve" | "reject" | null;
+  approvalErrors?: Readonly<Record<string, string>>;
+  onApprovalDecision?: (approvalId: string, approved: boolean) => void;
 }
 
 function StatusMark({ status }: { status: OrchestrationSession["status"] }) {
@@ -79,6 +86,11 @@ export function OrchestrationRunView({
   onDelete,
   modelProviders = [],
   onInspectFailure,
+  approvals = [],
+  approvalPendingId = null,
+  approvalPendingAction = null,
+  approvalErrors = {},
+  onApprovalDecision,
 }: OrchestrationRunViewProps) {
   const confirm = useConfirm();
   const failure = diagnoseFailure(detail, agents);

@@ -2,12 +2,17 @@ import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import type {
   Agent,
+  AgentRole,
   OrchestrationParticipant,
   OrchestrationSessionDetail,
   OrchestrationTurn,
+  ProjectMembership,
+  ProjectRole,
+  ToolApproval,
 } from "../../types";
 import { transitions, variants } from "../../motion/motion-tokens";
 import { MarkdownMessage } from "../MarkdownMessage";
+import { ToolApprovalPrompt } from "../approvals/ToolApprovalPrompt";
 import type { OrchestrationAction } from "./use-orchestration";
 import { StickyComposer } from "../StickyComposer";
 import { AgentAvatar } from "./AgentAvatar";
@@ -24,6 +29,14 @@ import {
 interface OrchestrationConversationProps {
   detail: OrchestrationSessionDetail | null;
   agents: Agent[];
+  /** Named capability roles, used to label who is speaking and in what job. */
+  roles?: AgentRole[];
+  /**
+   * Project membership tiers. A capability role and a membership tier are
+   * different things and can disagree — membership is what actually decides
+   * whether a tool call is authorized — so both are shown.
+   */
+  memberships?: readonly ProjectMembership[];
   action?: OrchestrationAction;
   onContinue?: (prompt: string, sessionId: string) => void;
   /** Re-runs one failed recorded turn against the files as they are now. */
@@ -32,6 +45,12 @@ interface OrchestrationConversationProps {
   onRecover?: (checkpointId: string) => void;
   /** Prompt-policy edit; omitted hides the control. */
   onClarifyFirstChange?: ((clarifyFirst: boolean) => void) | undefined;
+  /** Live approval projections shown beside this Conversation's composer. */
+  approvals?: readonly ToolApproval[];
+  approvalPendingId?: string | null;
+  approvalPendingAction?: "approve" | "reject" | null;
+  approvalErrors?: Readonly<Record<string, string>>;
+  onApprovalDecision?: (approvalId: string, approved: boolean) => void;
 }
 
 const UNFINISHED: OrchestrationTurn["status"][] = ["failed", "cancelled", "timed_out"];
@@ -51,6 +70,36 @@ const chatItemMotion = {
   exit: "exit",
   transition: transitions.base,
 } as const;
+function roleName(
+  agents: Agent[],
+  roles: AgentRole[],
+  agentId: string,
+): string | undefined {
+  const globalRoleId = agents.find((agent) => agent.id === agentId)?.globalRoleId;
+  if (!globalRoleId) return undefined;
+  return roles.find((role) => role.id === globalRoleId)?.name.trim() || undefined;
+}
+
+const MEMBERSHIP_LABEL: Record<ProjectRole, string> = {
+  owner: "Owner",
+  editor: "Editor",
+  viewer: "Viewer",
+};
+
+/**
+ * The Agent's tier in this Project.
+ *
+ * Deliberately separate from `roleName` above: that reads the Agent's global
+ * capability template, which is only a label. This is the tier the server
+ * authorizes tool calls against, so an Agent whose capability role is named
+ * "Owner" can still be an `editor` here and be refused.
+ */
+function membershipRole(
+  memberships: readonly ProjectMembership[],
+  agentId: string,
+): ProjectRole | undefined {
+  return memberships.find((membership) => membership.agentId === agentId)?.role;
+}
 
 function closingNote(detail: OrchestrationSessionDetail): string | null {
   const { session } = detail;
@@ -71,11 +120,18 @@ function closingNote(detail: OrchestrationSessionDetail): string | null {
 export function OrchestrationConversation({
   detail,
   agents,
+  roles = [],
+  memberships = [],
   action = null,
   onContinue,
   onRetry,
   onRecover,
   onClarifyFirstChange,
+  approvals = [],
+  approvalPendingId = null,
+  approvalPendingAction = null,
+  approvalErrors = {},
+  onApprovalDecision,
 }: OrchestrationConversationProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [followUp, setFollowUp] = useState("");
@@ -157,206 +213,216 @@ export function OrchestrationConversation({
   return (
     <div className="orch-chat-pane">
       <div className="orch-chat-scroll">
-    <section className="orch-chat" aria-labelledby="orch-conversation-heading">
-      <h2 className="orch-sr-only" id="orch-conversation-heading">Conversation</h2>
-      <ol className="orch-chat-list" aria-label="Task and Agent replies in order">
-        {session.originalPrompt.trim() && (
-          <li className="orch-chat-item orch-chat-item-user">
-            <div className="orch-chat-bubble">
-              <div className="orch-chat-topline">
-                <strong>You</strong>
-                <time dateTime={session.createdAt}>{formatDateTime(session.createdAt)}</time>
-              </div>
-              <p className="orch-chat-text">{session.originalPrompt}</p>
-            </div>
-          </li>
-        )}
+        <section className="orch-chat" aria-labelledby="orch-conversation-heading">
+          <h2 className="orch-sr-only" id="orch-conversation-heading">Conversation</h2>
+          <ol className="orch-chat-list" aria-label="Task and Agent replies in order">
+            {session.originalPrompt.trim() && (
+              <li className="orch-chat-item orch-chat-item-user">
+                <div className="orch-chat-bubble">
+                  <div className="orch-chat-topline">
+                    <strong>You</strong>
+                    <time dateTime={session.createdAt}>{formatDateTime(session.createdAt)}</time>
+                  </div>
+                  <p className="orch-chat-text">{session.originalPrompt}</p>
+                </div>
+              </li>
+            )}
 
-        {/* `initial={false}` matters: opening a finished conversation must
+            {/* `initial={false}` matters: opening a finished conversation must
             show its record at once, not replay forty turns arriving. Only
             what actually appears while the reader is watching animates.
             Keyed by session because that skip applies to a presence group's
             first render only — without it, switching conversations would
             animate every old turn out while every new one arrived. */}
-        <AnimatePresence initial={false} key={session.id}>
-        {entries.map((entry) => {
-          if (entry.kind === "prompt") {
-            return (
-              <motion.li
-                className="orch-chat-item orch-chat-item-user"
-                key={entry.prompt.id}
-                {...chatItemMotion}
-              >
-                <div className="orch-chat-bubble">
-                  <div className="orch-chat-topline">
-                    <strong>You</strong>
-                    <time dateTime={entry.prompt.createdAt}>{formatDateTime(entry.prompt.createdAt)}</time>
-                  </div>
-                  <p className="orch-chat-text">{entry.prompt.prompt}</p>
-                </div>
-              </motion.li>
-            );
-          }
-
-          const { turn, step } = entry;
-          const participant = participants.get(turn.participantId);
-          const name = agentName(agents, turn.agentId);
-          const focus = participant?.role.trim();
-          const timestamp = entry.timestamp;
-          const unfinished = UNFINISHED.includes(turn.status);
-          const checkpoint = turn.status === "completed"
-            ? checkpointForTurn(detail, turn)
-            : undefined;
-
-          if (turn.status === "dispatched") {
-            return (
-              <motion.li className="orch-chat-item" key={turn.id} {...chatItemMotion}>
-                <AgentAvatar agentId={turn.agentId} name={name} />
-                <div className="orch-chat-bubble is-typing">
-                  <div className="orch-chat-topline">
-                    <strong>{name}</strong>
-                    <span className="orch-chat-turn">Turn {step}</span>
-                  </div>
-                  <p className="orch-chat-typing" role="status">
-                    <span aria-hidden="true" />
-                    <span aria-hidden="true" />
-                    <span aria-hidden="true" />
-                    <span className="orch-sr-only">{name} is working on its turn</span>
-                  </p>
-                </div>
-              </motion.li>
-            );
-          }
-
-          return (
-            <motion.li className="orch-chat-item" key={turn.id} {...chatItemMotion}>
-              <AgentAvatar agentId={turn.agentId} name={name} />
-              <div className={`orch-chat-bubble ${unfinished ? "is-unfinished" : ""}`}>
-                <div className="orch-chat-topline">
-                  <strong>
-                    {name}
-                    {focus && focus !== name && (
-                      <span className="orch-chat-focus">{focus}</span>
-                    )}
-                  </strong>
-                  <span className="orch-chat-meta">
-                    <span className="orch-chat-turn">Turn {step}</span>
-                    {checkpoint && (
-                      <span
-                        className="orch-checkpoint-badge"
-                        title={`Workspace checkpoint #${checkpoint.ordinal}, saved after this turn`}
-                      >
-                        Checkpoint #{checkpoint.ordinal}
-                      </span>
-                    )}
-                    <time dateTime={timestamp}>{formatDateTime(timestamp)}</time>
-                  </span>
-                </div>
-                {unfinished ? (
-                  <p className="orch-chat-unfinished">
-                    {turnStatusLabel(turn.status)} —{" "}
-                    {humanizeFailure(turn.errorCode, turn.safeOutput)}
-                  </p>
-                ) : turn.safeOutput ? (
-                  <MarkdownMessage className="orch-chat-text" content={turn.safeOutput} />
-                ) : (
-                  <p className="orch-chat-text">
-                    This Agent finished without leaving a reply.
-                  </p>
-                )}
-                {turn.outputTruncated && !unfinished && (
-                  <p className="orch-chat-truncated">Reply shortened before it was passed on.</p>
-                )}
-                {(turn.status === "failed" || turn.status === "timed_out") &&
-                  turn.stepIndex !== undefined &&
-                  onRetry && (
-                    <div className="orch-chat-retry">
-                      <button
-                        type="button"
-                        className="orch-chat-retry-action"
-                        disabled={retryDisabled}
-                        onClick={() => onRetry(turn.stepIndex as number)}
-                      >
-                        {retryPending ? "Retrying…" : "Retry from this turn (current files)"}
-                      </button>
-                      <p className="orch-chat-retry-note" role={retryPending ? "status" : undefined}>
-                        {retryBlocked
-                          ? "Stop the conversation before retrying it."
-                          : retryPending
-                            ? "Retrying this Agent turn using the current files…"
-                            : action !== null
-                              ? "Wait for the current action to finish."
-                              : "This reruns the Agent turn using the current files and continues from there. Earlier turns stay in the record. Shared Workspace files are not rolled back."}
-                      </p>
-                    </div>
-                  )}
-                {checkpoint?.recoverable && onRecover && (
-                  <div className="orch-chat-retry orch-chat-restore">
-                    <button
-                      type="button"
-                      className="orch-chat-retry-action"
-                      disabled={recoverDisabled}
-                      onClick={() => onRecover(checkpoint.checkpointId)}
+            <AnimatePresence initial={false} key={session.id}>
+              {entries.map((entry) => {
+                if (entry.kind === "prompt") {
+                  return (
+                    <motion.li
+                      className="orch-chat-item orch-chat-item-user"
+                      key={entry.prompt.id}
+                      {...chatItemMotion}
                     >
-                      {recoverPending ? "Restoring…" : `Restore after ${name} and resume`}
-                    </button>
-                    <p className="orch-chat-retry-note" role={recoverPending ? "status" : undefined}>
-                      {recoverBlocked
-                        ? "Stop the conversation before restoring its files."
-                        : recoverPending
-                          ? "Saving a safety checkpoint, then restoring the source files…"
-                          : action !== null
-                            ? "Wait for the current action to finish."
-                            : "Source files go back to how they were after this turn; a safety checkpoint of the current files is saved first, and the next Agent starts with fresh Project context."}
+                      <div className="orch-chat-bubble">
+                        <div className="orch-chat-topline">
+                          <strong>You</strong>
+                          <time dateTime={entry.prompt.createdAt}>{formatDateTime(entry.prompt.createdAt)}</time>
+                        </div>
+                        <p className="orch-chat-text">{entry.prompt.prompt}</p>
+                      </div>
+                    </motion.li>
+                  );
+                }
+
+                const { turn, step } = entry;
+                const name = agentName(agents, turn.agentId);
+                const focus = roleName(agents, roles, turn.agentId);
+                const membership = membershipRole(memberships, turn.agentId);
+                const timestamp = entry.timestamp;
+                const unfinished = UNFINISHED.includes(turn.status);
+                const checkpoint = turn.status === "completed"
+                  ? checkpointForTurn(detail, turn)
+                  : undefined;
+
+                if (turn.status === "dispatched") {
+                  return (
+                    <motion.li className="orch-chat-item" key={turn.id} {...chatItemMotion}>
+                      <AgentAvatar agentId={turn.agentId} name={name} />
+                      <div className="orch-chat-bubble is-typing">
+                        <div className="orch-chat-topline">
+                          <strong>{name}</strong>
+                          <span className="orch-chat-turn">Turn {step}</span>
+                        </div>
+                        <p className="orch-chat-typing" role="status">
+                          <span aria-hidden="true" />
+                          <span aria-hidden="true" />
+                          <span aria-hidden="true" />
+                          <span className="orch-sr-only">{name} is working on its turn</span>
+                        </p>
+                      </div>
+                    </motion.li>
+                  );
+                }
+
+                return (
+                  <motion.li className="orch-chat-item" key={turn.id} {...chatItemMotion}>
+                    <AgentAvatar agentId={turn.agentId} name={name} />
+                    <div className={`orch-chat-bubble ${unfinished ? "is-unfinished" : ""}`}>
+                      <div className="orch-chat-topline">
+                        <strong>
+                          {name}
+                          {focus && focus !== name && (
+                            <span className="orch-chat-focus" title={`Capability role: ${focus}`}>
+                              {focus}
+                            </span>
+                          )}
+                          {membership && (
+                            <span
+                              className="orch-chat-membership"
+                              title={`Project membership: ${MEMBERSHIP_LABEL[membership]}. This tier decides which tools this Agent may run.`}
+                            >
+                              {MEMBERSHIP_LABEL[membership]}
+                            </span>
+                          )}
+                        </strong>
+                        <span className="orch-chat-meta">
+                          <span className="orch-chat-turn">Turn {step}</span>
+                          {checkpoint && (
+                            <span
+                              className="orch-checkpoint-badge"
+                              title={`Workspace checkpoint #${checkpoint.ordinal}, saved after this turn`}
+                            >
+                              Checkpoint #{checkpoint.ordinal}
+                            </span>
+                          )}
+                          <time dateTime={timestamp}>{formatDateTime(timestamp)}</time>
+                        </span>
+                      </div>
+                      {unfinished ? (
+                        <p className="orch-chat-unfinished">
+                          {turnStatusLabel(turn.status)} —{" "}
+                          {humanizeFailure(turn.errorCode, turn.safeOutput, turn.modelId)}
+                        </p>
+                      ) : turn.safeOutput ? (
+                        <MarkdownMessage className="orch-chat-text" content={turn.safeOutput} />
+                      ) : (
+                        <p className="orch-chat-text">
+                          This Agent finished without leaving a reply.
+                        </p>
+                      )}
+                      {turn.outputTruncated && !unfinished && (
+                        <p className="orch-chat-truncated">Reply shortened before it was passed on.</p>
+                      )}
+                      {(turn.status === "failed" || turn.status === "timed_out") &&
+                        turn.stepIndex !== undefined &&
+                        onRetry && (
+                          <div className="orch-chat-retry">
+                            <button
+                              type="button"
+                              className="orch-chat-retry-action"
+                              disabled={retryDisabled}
+                              onClick={() => onRetry(turn.stepIndex as number)}
+                            >
+                              {retryPending ? "Retrying…" : "Retry from this turn (current files)"}
+                            </button>
+                            <p className="orch-chat-retry-note" role={retryPending ? "status" : undefined}>
+                              {retryBlocked
+                                ? "Stop the conversation before retrying it."
+                                : retryPending
+                                  ? "Retrying this Agent turn using the current files…"
+                                  : action !== null
+                                    ? "Wait for the current action to finish."
+                                    : "This reruns the Agent turn using the current files and continues from there. Earlier turns stay in the record. Shared Workspace files are not rolled back."}
+                            </p>
+                          </div>
+                        )}
+                      {checkpoint?.recoverable && onRecover && (
+                        <div className="orch-chat-retry orch-chat-restore">
+                          <button
+                            type="button"
+                            className="orch-chat-retry-action"
+                            disabled={recoverDisabled}
+                            onClick={() => onRecover(checkpoint.checkpointId)}
+                          >
+                            {recoverPending ? "Restoring…" : `Restore after ${name} and resume`}
+                          </button>
+                          <p className="orch-chat-retry-note" role={recoverPending ? "status" : undefined}>
+                            {recoverBlocked
+                              ? "Stop the conversation before restoring its files."
+                              : recoverPending
+                                ? "Saving a safety checkpoint, then restoring the source files…"
+                                : action !== null
+                                  ? "Wait for the current action to finish."
+                                  : "Source files go back to how they were after this turn; a safety checkpoint of the current files is saved first, and the next Agent starts with fresh Project context."}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </motion.li>
+                );
+              })}
+
+              {pending && (
+                <motion.li className="orch-chat-item" key="pending" {...chatItemMotion}>
+                  <AgentAvatar
+                    agentId={pending.agentId}
+                    name={agentName(agents, pending.agentId)}
+                  />
+                  <div className="orch-chat-bubble is-typing">
+                    <div className="orch-chat-topline">
+                      <strong>{agentName(agents, pending.agentId)}</strong>
+                    </div>
+                    <p className="orch-chat-typing" role="status">
+                      <span aria-hidden="true" />
+                      <span aria-hidden="true" />
+                      <span aria-hidden="true" />
+                      <span className="orch-sr-only">
+                        {agentName(agents, pending.agentId)} is about to speak
+                      </span>
                     </p>
                   </div>
-                )}
-              </div>
-            </motion.li>
-          );
-        })}
+                </motion.li>
+              )}
+            </AnimatePresence>
+          </ol>
 
-        {pending && (
-          <motion.li className="orch-chat-item" key="pending" {...chatItemMotion}>
-            <AgentAvatar
-              agentId={pending.agentId}
-              name={agentName(agents, pending.agentId)}
-            />
-            <div className="orch-chat-bubble is-typing">
-              <div className="orch-chat-topline">
-                <strong>{agentName(agents, pending.agentId)}</strong>
-              </div>
-              <p className="orch-chat-typing" role="status">
-                <span aria-hidden="true" />
-                <span aria-hidden="true" />
-                <span aria-hidden="true" />
-                <span className="orch-sr-only">
-                  {agentName(agents, pending.agentId)} is about to speak
-                </span>
-              </p>
-            </div>
-          </motion.li>
-        )}
-        </AnimatePresence>
-      </ol>
+          {ordered.length === 0 && !active && session.status === "draft" && (
+            <p className="orch-chat-hint" role="status">
+              Start the conversation and the first Agent&apos;s reply lands here.
+            </p>
+          )}
 
-      {ordered.length === 0 && !active && session.status === "draft" && (
-        <p className="orch-chat-hint" role="status">
-          Start the conversation and the first Agent&apos;s reply lands here.
-        </p>
-      )}
+          {note && (
+            <p
+              className={`orch-chat-note ${session.status === "failed" ? "is-failure" : ""}`}
+              role="status"
+            >
+              {note}
+            </p>
+          )}
 
-      {note && (
-        <p
-          className={`orch-chat-note ${session.status === "failed" ? "is-failure" : ""}`}
-          role="status"
-        >
-          {note}
-        </p>
-      )}
-
-      <div ref={bottomRef} aria-hidden="true" />
-    </section>
+          <div ref={bottomRef} aria-hidden="true" />
+        </section>
       </div>
 
       {/*
@@ -364,6 +430,19 @@ export function OrchestrationConversation({
         reflow mid-turn; it is disabled rather than removed, and a follow-up
         continues this same Team and shared Workspace.
       */}
+      {onContinue && (
+        <ToolApprovalPrompt
+          approvals={approvals}
+          getAgentName={(agentId) => agentName(agents, agentId)}
+          runLabel={session.name}
+          pendingDecisionId={approvalPendingId}
+          pendingDecision={approvalPendingAction}
+          decisionErrors={approvalErrors}
+          onDecision={onApprovalDecision}
+          className="tool-approval-prompt-orchestration"
+        />
+      )}
+
       {onContinue && (
         <StickyComposer
           value={followUp}

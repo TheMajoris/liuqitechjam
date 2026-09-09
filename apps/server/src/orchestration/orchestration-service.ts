@@ -49,6 +49,7 @@ import {
   type WorkspaceRecoveryView,
 } from "../projects/workspace-checkpoint-types.js";
 import type { OrchestrationWorkspaceRecovery } from "../projects/workspace-recovery-facade.js";
+import type { ToolApprovalInvalidator } from "../tools/tool-approval-store.js";
 import type {
   OrchestrationExecutionHooks,
   OrchestrationExecutionInput,
@@ -223,6 +224,7 @@ export class OrchestrationService {
   private readonly orchestratorFactory: () => Orchestrator;
   private readonly projectBinding: OrchestrationProjectBinding | undefined;
   private readonly workspaceRecovery: OrchestrationWorkspaceRecovery | undefined;
+  private toolApprovalInvalidator: ToolApprovalInvalidator | undefined;
   /** Background recovery operations keyed by operation ID. */
   private readonly recoveryTasks = new Map<string, Promise<void>>();
   private telemetry: RuntimeTelemetry | undefined;
@@ -253,7 +255,13 @@ export class OrchestrationService {
     this.orchestratorFactory = normalized.orchestratorFactory;
     this.projectBinding = normalized.projectBinding;
     this.workspaceRecovery = normalized.workspaceRecovery;
+    this.toolApprovalInvalidator = normalized.toolApprovalInvalidator;
     this.audit = normalized.audit;
+  }
+
+  /** Attach the central approval fence after the composition root is built. */
+  setToolApprovalInvalidator(invalidator: ToolApprovalInvalidator | undefined): void {
+    this.toolApprovalInvalidator = invalidator;
   }
 
   /**
@@ -337,10 +345,13 @@ export class OrchestrationService {
     const active = [...this.activeSessions.values()];
     if (active.length === 0) return;
     const cancellations = active.map(async (context) => {
-      context.controller.abort();
       if (context.currentRunId) {
         await this.cancelChildRunForStorageFailure(context, context.currentRunId);
       }
+      // Fence/physically cancel the accepted child before aborting the
+      // orchestration loop. This ordering prevents a late loop callback from
+      // observing a still-open approval while the parent is being stopped.
+      context.controller.abort();
       await context.execution?.catch(() => undefined);
     });
     await settleWithin(
@@ -352,10 +363,10 @@ export class OrchestrationService {
   private async cancelActiveSessions(): Promise<void> {
     const active = [...this.activeSessions.values()];
     for (const context of active) {
-      context.controller.abort();
       if (context.currentRunId) {
         await this.cancelChildRun(context, context.currentRunId);
       }
+      context.controller.abort();
     }
     await Promise.all(
       active.map(async (context) => {
@@ -1132,11 +1143,13 @@ export class OrchestrationService {
       return (await this.getSession(id)).session;
     }
 
-    active.controller.abort();
     const runId = active.currentRunId;
     if (runId) {
       await this.cancelChildRun(active, runId);
     }
+    // The child cancel path closes its approval fence first. Abort the parent
+    // loop only after that fence and native cancellation request are queued.
+    active.controller.abort();
     if (active.execution) {
       try {
         await active.execution;
@@ -2401,6 +2414,19 @@ export class OrchestrationService {
     // cancellation. Keep the platform call idempotent at this boundary.
     if (context.cancellationRequestedRunId === runId) return;
     context.cancellationRequestedRunId = runId;
+    // Close the application approval fence before asking the child runtime to
+    // stop. AgentService normally performs the same operation, but retaining
+    // the hook here covers injected invokers and keeps orchestration stop
+    // ordered even when the child cancellation bridge is delayed.
+    try {
+      await this.toolApprovalInvalidator?.invalidateForRun?.(
+        runId,
+        "Orchestration was stopped",
+      );
+    } catch {
+      // A failed fence cannot grant authorization back. Still request the
+      // physical child cancellation so the lifecycle owner can settle.
+    }
     try {
       await context.invoker.cancel(runId);
     } catch {
@@ -2417,6 +2443,15 @@ export class OrchestrationService {
     // cancellation seam and never turn this fatal path into a Storage read.
     if (context.cancellationRequestedRunId === runId) return;
     context.cancellationRequestedRunId = runId;
+    try {
+      await this.toolApprovalInvalidator?.invalidateForRun?.(
+        runId,
+        "Storage failure cancelled the orchestration Run",
+      );
+    } catch {
+      // Storage-fatal quiescence must remain bounded and proceed to the
+      // memory-first physical cancellation path below.
+    }
     try {
       if (context.invoker.cancelForStorageFailure) {
         await context.invoker.cancelForStorageFailure(runId);

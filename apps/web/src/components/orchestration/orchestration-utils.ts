@@ -327,6 +327,8 @@ export function isInternalWording(text: string | null | undefined): boolean {
 export function humanizeFailure(
   errorCode: OrchestrationErrorCode | null | undefined,
   fallback?: string | null,
+  /** Recorded on the failed turn; names the exact endpoint that ran out. */
+  modelId?: string | null,
 ): string {
   switch (errorCode) {
     case "MAX_STEPS_EXCEEDED":
@@ -343,7 +345,7 @@ export function humanizeFailure(
     case "WEB_TOOL_PERMISSION_DENIED":
       return "Web access was denied. Assign this Agent a role that allows the requested web tool, then retry this turn.";
     case "MODEL_INFERENCE_LIMIT_EXCEEDED":
-      return MODEL_INFERENCE_LIMIT_MESSAGE;
+      return modelInferenceLimitMessage(modelId);
     case "PROJECT_PERMISSION_DENIED":
       return PROJECT_PERMISSION_DENIED_MESSAGE;
     case "RUN_FAILED":
@@ -390,6 +392,25 @@ export function humanizeFailure(
  */
 export const MODEL_INFERENCE_LIMIT_MESSAGE =
   "This model is paused because its provider inference limit was reached. Review Safe Experience Mode in the provider's Model Activation settings, or choose another available model, then retry.";
+
+/**
+ * Name the endpoint that ran out whenever the failed turn recorded one.
+ *
+ * Several Agents usually share one endpoint, so "this model" leaves the reader
+ * guessing which assignment to change — and the Agent may already have been
+ * repointed by the time the transcript is read. Falls back to the unnamed
+ * wording for session-level failures and for turns recorded before the model
+ * was captured.
+ */
+export function modelInferenceLimitMessage(modelId?: string | null): string {
+  const model = modelId?.trim();
+  if (!model) return MODEL_INFERENCE_LIMIT_MESSAGE;
+  return (
+    "model " + model + " has no usage left on this provider. Choose another " +
+    "model for this Agent, or review Safe Experience Mode in the provider's " +
+    "Model Activation settings, then retry."
+  );
+}
 export const PROJECT_PERMISSION_DENIED_MESSAGE =
   "This Agent is not allowed to write to the Workspace. Add Allow Agent runs (agent.invoke) and Edit workspace files (project.write) to the Agent's role, make sure it has editable Workspace membership, then retry.";
 export const CHECKPOINT_CAPTURE_FAILED_MESSAGE =

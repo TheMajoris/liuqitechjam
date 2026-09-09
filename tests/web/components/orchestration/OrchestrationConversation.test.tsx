@@ -6,6 +6,7 @@ import type {
   OrchestrationSessionDetail,
   OrchestrationStatus,
   OrchestrationTurn,
+  ToolApproval,
 } from "../../../../apps/web/src/types";
 import { OrchestrationConversation } from "../../../../apps/web/src/components/orchestration/OrchestrationConversation";
 
@@ -67,6 +68,39 @@ function failedTurn(): OrchestrationTurn {
   };
 }
 
+function webSearchApproval(): ToolApproval {
+  return {
+    approvalId: "approval-web-1",
+    invocationId: "invocation-web-1",
+    workflowRunId: "workflow-web-1",
+    agentId: "agent-1",
+    projectId: "project-1",
+    runId: "run-web-1",
+    orchestrationId: "session-1",
+    turnId: "turn-1",
+    sessionId: "session-1",
+    toolId: "web.search",
+    policyVersion: "v1",
+    safeSummary: "Search the web for the requested information.",
+    deadlineAt: "2999-01-01T00:00:00.000Z",
+    status: "waiting",
+    version: 1,
+    ownerEpoch: 1,
+    decision: null,
+    decisionActor: null,
+    decisionAt: null,
+    decisionReason: null,
+    traceRefs: {},
+    executionStartedAt: null,
+    completedAt: null,
+    terminalReason: null,
+    cancellationRequestedAt: null,
+    createdAt: "2026-09-09T00:00:00.000Z",
+    updatedAt: "2026-09-09T00:00:00.000Z",
+    decisionEligible: true,
+  };
+}
+
 function render(status: OrchestrationStatus) {
   return renderToStaticMarkup(
     <OrchestrationConversation
@@ -113,6 +147,26 @@ describe("Team conversation composer", () => {
     expect(html).toContain("Type the first task to start this conversation…");
     expect(html).toMatch(/<textarea class="composer-input"(?![^>]*disabled)/);
     expect(html).not.toContain("orch-chat-item-user");
+  });
+
+  it("places a compact Web Search approval beside the Team composer", () => {
+    const html = renderToStaticMarkup(
+      <OrchestrationConversation
+        detail={detailFor("running")}
+        agents={agents}
+        approvals={[webSearchApproval()]}
+        onApprovalDecision={() => undefined}
+        onContinue={() => undefined}
+      />,
+    );
+
+    const promptIndex = html.indexOf("tool-approval-prompt");
+    const composerIndex = html.indexOf("composer-dock");
+    expect(promptIndex).toBeGreaterThan(-1);
+    expect(promptIndex).toBeLessThan(composerIndex);
+    expect(html).toContain("Web Search");
+    expect(html).toContain("Approve");
+    expect(html).not.toContain("Control surface");
   });
 
   it("offers retry from a failed turn and explains the workspace file behavior", () => {

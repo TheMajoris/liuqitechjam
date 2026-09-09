@@ -6,7 +6,13 @@ import type {
   AuditReader,
   AuditRecorder,
 } from "./audit-types.js";
-import { AUDIT_EVENT_CATEGORY } from "./audit-types.js";
+import {
+  AUDIT_EVENT_CATEGORY,
+  AUDIT_EVENT_SOURCES,
+  NATIVE_APPROVAL_AUDIT_EVENT_TYPES,
+  NATIVE_APPROVAL_AUDIT_SCHEMA_VERSION,
+  NATIVE_APPROVAL_AUDIT_SOURCE,
+} from "./audit-types.js";
 import { safeAuditInput } from "./audit-redaction.js";
 import { queryAuditEvents, queryAuditEventsForExport } from "./audit-query.js";
 import {
@@ -14,6 +20,7 @@ import {
   type AuditExportFormat,
 } from "./audit-export.js";
 import { normalizeAuditEvent } from "./audit-normalize.js";
+export { approvalLifecycleEvent } from "./approval-audit.js";
 import { newSpanId, newTraceId } from "./audit-span.js";
 import type { AuditEventDraft, AuditStoreAdapter } from "./audit-store.js";
 import { verifyAuditChain, type AuditChainVerification } from "./audit-hash.js";
@@ -167,6 +174,7 @@ export type {
   AuditCorrelation,
   AuditEvent,
   AuditEventInput,
+  AuditEventSource,
   AuditEventStatus,
   AuditEventType,
   AuditMetadata,
@@ -176,17 +184,24 @@ export type {
   AuditReader,
   AuditRecorder,
   AuditSpan,
+  NativeApprovalAuditEventType,
 } from "./audit-types.js";
 export {
   AUDIT_ACTOR_TYPES,
   AUDIT_CATEGORIES,
   AUDIT_EVENT_CATEGORY,
+  AUDIT_EVENT_SOURCES,
   AUDIT_EVENT_TYPES,
+  NATIVE_APPROVAL_AUDIT_EVENT_TYPES,
+  NATIVE_APPROVAL_AUDIT_SCHEMA_VERSION,
+  NATIVE_APPROVAL_AUDIT_SOURCE,
 } from "./audit-types.js";
 export {
   MAX_AUDIT_ID_LENGTH,
   MAX_AUDIT_METADATA_KEYS,
   MAX_AUDIT_METADATA_VALUE_LENGTH,
+  MAX_AUDIT_SCHEMA_VERSION,
+  MAX_AUDIT_SOURCE_LENGTH,
   MAX_AUDIT_SUMMARY_LENGTH,
   safeAuditIdentifier,
   safeAuditInput,

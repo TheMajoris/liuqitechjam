@@ -6,6 +6,7 @@ import type {
   Agent,
   OrchestrationEvent,
   OrchestrationTurn,
+  ToolApproval,
   WorkspaceCheckpointView,
 } from "../../../../apps/web/src/types";
 
@@ -119,6 +120,40 @@ function node(overrides: Partial<GraphNode> = {}): GraphNode {
   };
 }
 
+function approval(overrides: Partial<ToolApproval> = {}): ToolApproval {
+  return {
+    approvalId: "approval-1",
+    invocationId: "invocation-1",
+    workflowRunId: "workflow-1",
+    agentId: "agent-p1",
+    projectId: "project-1",
+    runId: "9f8e7d6c-0000-4000-8000-000000000001",
+    orchestrationId: "session-1",
+    turnId: "t1",
+    sessionId: "session-1",
+    toolId: "project.preview.restart",
+    policyVersion: "tool-approval-v1",
+    safeSummary: "Restart the project preview after the Agent changes files.",
+    deadlineAt: "2099-01-01T00:00:00.000Z",
+    status: "waiting",
+    version: 1,
+    ownerEpoch: 1,
+    decision: null,
+    decisionActor: null,
+    decisionAt: null,
+    decisionReason: null,
+    traceRefs: {},
+    executionStartedAt: null,
+    completedAt: null,
+    terminalReason: null,
+    cancellationRequestedAt: null,
+    createdAt: "2026-09-07T10:00:00.000Z",
+    updatedAt: "2026-09-07T10:00:00.000Z",
+    decisionEligible: true,
+    ...overrides,
+  };
+}
+
 describe("OrchestrationTurnInspector", () => {
   it("states the status, timing and Run of the selected turn", () => {
     const html = renderToStaticMarkup(
@@ -131,6 +166,37 @@ describe("OrchestrationTurnInspector", () => {
     expect(html).toContain("4.2 s");
     // Run IDs are shown short, the way the Activity log shows them.
     expect(html).toContain("9f8e7d6c");
+  });
+
+  it("shows each protected action in the selected participant turn", () => {
+    const html = renderToStaticMarkup(
+      <OrchestrationTurnInspector
+        node={node()}
+        agents={agents}
+        approvals={[
+          approval(),
+          approval({
+            approvalId: "approval-2",
+            invocationId: "invocation-2",
+            safeSummary: "Restart the project preview after the second change.",
+          }),
+          approval({
+            approvalId: "foreign-approval",
+            invocationId: "foreign-invocation",
+            runId: "other-run",
+            turnId: "other-turn",
+            safeSummary: "Do not show this unrelated action.",
+          }),
+        ]}
+        onApprovalDecision={() => undefined}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(html).toContain("2 requests");
+    expect(html).toContain("after the Agent changes files");
+    expect(html).toContain("after the second change");
+    expect(html).not.toContain("Do not show this unrelated action");
   });
 
   it("lists the journal entries recorded against the Run", () => {

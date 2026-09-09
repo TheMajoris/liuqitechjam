@@ -8,7 +8,7 @@ import {
 } from "./authorization-service.js";
 import type { PermissionId } from "./permission-types.js";
 import type { Principal } from "./access-types.js";
-import { principalKey } from "./access-types.js";
+import { DEFAULT_PROJECT_ROLE, principalKey } from "./access-types.js";
 import { roleAllows } from "./role-policy.js";
 
 /** The role names are intentionally fixed in Wave 8. */
@@ -138,7 +138,7 @@ export class RepositoryAuthorizationService implements AuthorizationService {
           errorCode: "PERMISSION_DENIED",
         };
       }
-      const role = attachment.role ?? "editor";
+      const role = attachment.role ?? DEFAULT_PROJECT_ROLE;
       if (roleAllows(role, input.permission)) {
         return {
           result: "allow",

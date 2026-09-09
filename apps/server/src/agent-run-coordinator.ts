@@ -21,6 +21,7 @@ import {
   type MintedMcpSession,
 } from "./tools/mcp-session-service.js";
 import type { EffectiveToolResolution } from "./tools/effective-tool-resolver.js";
+import type { ToolApprovalInvalidator } from "./tools/tool-approval-store.js";
 import type { SkillRuntimeProjection } from "./skills/skill-types.js";
 import type { RuntimeTelemetry, TelemetrySpan } from "./telemetry/telemetry-types.js";
 import { correlationAttributes } from "./telemetry/telemetry-types.js";
@@ -175,6 +176,8 @@ export interface AgentRunCoordinatorDependencies {
   /** Optional server-owned audit sink for fallback usage events. */
   getAudit?: () => AuditRecorder | undefined;
   getRun: (runId: string) => AgentRun;
+  /** Optional central approval fence, attached after app composition. */
+  toolApprovalInvalidator?: ToolApprovalInvalidator;
   /** Application-owned sink for failures that need lifecycle attention. */
   reportLifecycleFailure?: (failure: ApplicationLifecycleFailure) => void;
 }
@@ -205,8 +208,32 @@ export class AgentRunCoordinator {
   private readonly runControls = new Map<string, RunControl>();
   /** Audit span of each in-flight Run, so runtime events can parent under it. */
   private readonly runSpans = new Map<string, AuditSpan>();
+  private toolApprovalInvalidator: ToolApprovalInvalidator | undefined;
 
-  constructor(private readonly dependencies: AgentRunCoordinatorDependencies) {}
+  constructor(private readonly dependencies: AgentRunCoordinatorDependencies) {
+    this.toolApprovalInvalidator = dependencies.toolApprovalInvalidator;
+  }
+
+  /** Attach the central approval lifecycle owner after service composition. */
+  setToolApprovalInvalidator(invalidator: ToolApprovalInvalidator | undefined): void {
+    this.toolApprovalInvalidator = invalidator;
+  }
+
+  private async invalidateRunApprovals(runId: string, reason: string): Promise<void> {
+    if (!this.toolApprovalInvalidator?.invalidateForRun || !runId) return;
+    try {
+      await this.toolApprovalInvalidator.invalidateForRun(runId, reason);
+    } catch {
+      // A lifecycle owner must continue the physical cancel path even when the
+      // approval adapter is unavailable; a failed storage transition cannot
+      // grant authorization back to a late decision.
+      this.reportLifecycleFailure({
+        code: "EXECUTION_FINALIZATION_FAILED",
+        message: "Approval lifecycle invalidation could not be completed",
+        runId,
+      });
+    }
+  }
 
   isCancelling(agentId: string): boolean {
     return this.agentCancellationLocks.has(agentId);
@@ -241,6 +268,7 @@ export class AgentRunCoordinator {
     }
 
     const cancellations = active.map(async ([agentId, execution]) => {
+      await this.invalidateRunApprovals(execution.runId, "Server shutdown cancelled the Agent Run");
       try {
         // A Team cancellation can arrive through the orchestration invoker at
         // the same time as this storage-fatal sweep. The lock is the existing
@@ -296,6 +324,7 @@ export class AgentRunCoordinator {
     const alreadyCancelling = this.agentCancellationLocks.has(agentId);
     this.agentCancellationLocks.add(agentId);
     this.cancellationRequests.add(runId);
+    await this.invalidateRunApprovals(runId, "Storage failure cancelled the Agent Run");
     this.runControls.get(runId)?.controller.abort(new RunCancelledError());
     let cancellationError: unknown;
     try {
@@ -533,6 +562,7 @@ export class AgentRunCoordinator {
     this.agentCancellationLocks.add(agentId);
     this.cancellationRequests.add(active.runId);
     try {
+      await this.invalidateRunApprovals(active.runId, "Agent execution was cancelled");
       this.runControls.get(active.runId)?.controller.abort(new RunCancelledError());
       let cancellationError: unknown;
       try {
@@ -630,6 +660,9 @@ export class AgentRunCoordinator {
     operation: OperationOptions = {},
     workspace?: WorkspaceExecutionContext,
   ): Promise<void> {
+    operation = operation.deadlineAt === undefined
+      ? { ...operation, deadlineAt: Date.now() + this.dependencies.config.codexTimeoutMs }
+      : operation;
     const startedAt = now();
     // One span identity for the whole Run: every lifecycle event of this turn
     // shares it, and runtime events can parent under it via runSpan().
@@ -800,6 +833,7 @@ export class AgentRunCoordinator {
           ...(projectId === undefined ? {} : { projectId }),
           runId: run.id,
           ...(orchestrationId === undefined ? {} : { orchestrationId }),
+          ...(operation.deadlineAt === undefined ? {} : { deadlineAt: operation.deadlineAt }),
           ...(traceCarrier.traceparent === undefined
             ? {}
             : { traceparent: traceCarrier.traceparent }),
@@ -952,7 +986,7 @@ export class AgentRunCoordinator {
           throw new CheckpointCaptureFailure(result, "unsettled");
         }
         if (mintedMcpSession !== null) {
-          this.dependencies.getMcpSessions()?.revoke(mintedMcpSession.token);
+          await this.dependencies.getMcpSessions()?.revokeAndAwait(mintedMcpSession.token);
           mintedMcpSession = null;
         }
         const capture = this.requireProjectScope().captureSuccessfulTurn;
@@ -1217,6 +1251,11 @@ export class AgentRunCoordinator {
       );
     } finally {
       this.runSpans.delete(run.id);
+      // A Run can reach this block through a normal finish, a runtime error,
+      // or a cancellation that raced the runner. Fence any approval still
+      // attached to the Run on every terminal path before releasing a Project
+      // lease or the per-run MCP session.
+      await this.invalidateRunApprovals(run.id, "Agent Run finished");
       // Release only after a terminal Run fact is known to be committed. A
       // failed terminal write leaves physical ownership uncertain, so keeping
       // the lease is the safe recovery gate rather than releasing a possibly
@@ -1266,7 +1305,7 @@ export class AgentRunCoordinator {
         }
       }
       if (mintedMcpSession !== null) {
-        this.dependencies.getMcpSessions()?.revoke(mintedMcpSession.token);
+        await this.dependencies.getMcpSessions()?.revokeAndAwait(mintedMcpSession.token);
       }
       this.dependencies.getMcpSessions()?.clearWebToolPermissionDenied(run.id);
     }
@@ -1297,6 +1336,11 @@ export class AgentRunCoordinator {
     this.agentCancellationLocks.add(initial.agentId);
     this.cancellationRequests.add(runId);
     try {
+      // The durable approval fence must win before aborting the child worker.
+      // This closes the race where a decision arrives while cancellation is
+      // waiting to reach the runtime, and lets the approval bridge settle the
+      // originating MCP response/native workflow before the Run is finalized.
+      await this.invalidateRunApprovals(runId, "Agent Run was cancelled");
       this.runControls.get(runId)?.controller.abort(new RunCancelledError());
       let cancellationError: unknown;
       try {

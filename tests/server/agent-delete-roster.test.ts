@@ -165,4 +165,26 @@ describe("deleteAgent and Conversation rosters", () => {
       store.snapshot().projectAgents.filter((item) => item.agentId === doomed.id),
     ).toEqual([]);
   });
+
+  it("fences native tool approvals before deleting an Agent", async () => {
+    const { service } = await makeService();
+    const doomed = await service.createAgent({
+      name: "Doomed",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
+    const invalidated: string[] = [];
+    service.setToolApprovalInvalidator({
+      async invalidateForAgent(agentId) {
+        invalidated.push(agentId);
+        return 1;
+      },
+      async invalidateForProject() {
+        return 0;
+      },
+    });
+
+    await service.deleteAgent(doomed.id);
+
+    expect(invalidated).toEqual([doomed.id]);
+  });
 });

@@ -14,7 +14,15 @@ import type { AgentRole } from "../../../apps/server/src/roles/role-types.js";
 import type { Project, ProjectAgentAttachment } from "../../../apps/server/src/projects/project-types.js";
 import { ToolRegistry } from "../../../apps/server/src/tools/tool-registry.js";
 import { ToolService } from "../../../apps/server/src/tools/tool-service.js";
-import type { ToolDefinition, ToolExecutionContext } from "../../../apps/server/src/tools/tool-types.js";
+import type {
+  PreparedToolInvocation,
+  ToolDefinition,
+  ToolExecutionContext,
+} from "../../../apps/server/src/tools/tool-types.js";
+import {
+  ToolError,
+} from "../../../apps/server/src/tools/tool-errors.js";
+import { ToolExecutionClaim } from "../../../apps/server/src/tools/tool-service.js";
 
 const timestamp = "2026-09-07T00:00:00.000Z";
 
@@ -137,6 +145,59 @@ function webTools(calls: ToolCalls): ToolDefinition<unknown, unknown>[] {
       },
     },
   ];
+}
+
+function restartTool(calls: { restart: number }): ToolDefinition<unknown, unknown> {
+  return {
+    id: "project.preview.restart",
+    title: "Restart preview",
+    description: "Test restart",
+    risk: "write",
+    requiredPermission: "tool.execute:project.preview.restart",
+    approvalPolicy: { mode: "required", version: "test-policy-v1" },
+    inputSchema: z.object({}),
+    outputSchema: z.object({ ok: z.boolean() }),
+    async execute() {
+      calls.restart += 1;
+      return { ok: true };
+    },
+  };
+}
+
+function transformedProjectTool(): ToolDefinition<unknown, unknown> {
+  return {
+    id: "project.preview.inspect",
+    title: "Inspect preview",
+    description: "Test transformed project input",
+    risk: "read",
+    requiredPermission: "tool.execute:project.preview.inspect",
+    inputSchema: z.object({ target: z.string() }).transform(() => ({ projectId: "project-other" })),
+    outputSchema: z.object({ ok: z.boolean() }),
+    async execute() {
+      return { ok: true };
+    },
+  };
+}
+
+function transformedRestartTool(calls: { inputs: unknown[] }): ToolDefinition<unknown, unknown> {
+  return {
+    id: "project.preview.restart",
+    title: "Restart preview",
+    description: "Test one-way transformed input",
+    risk: "write",
+    requiredPermission: "tool.execute:project.preview.restart",
+    approvalPolicy: { mode: "required", version: "test-policy-v1" },
+    inputSchema: z
+      .object({ target: z.string().min(1) })
+      .transform(({ target }) => ({
+        normalized: target.trim().toUpperCase(),
+      })),
+    outputSchema: z.object({ ok: z.boolean() }),
+    async execute(_context, input) {
+      calls.inputs.push(input);
+      return { ok: true };
+    },
+  };
 }
 
 function context(projectId?: string): ToolExecutionContext {
@@ -322,5 +383,263 @@ describe("ToolService Agent web permissions", () => {
     await expect(service.execute(context("project-1"), "web.search", { query: "after-revoke" }))
       .rejects.toMatchObject({ code: "PERMISSION_DENIED" });
     expect(calls).toEqual({ search: 1, fetch: 0 });
+  });
+});
+
+describe("ToolService approval preparation and guarded execution", () => {
+  it("prepares restart without executing, rejects forged claims, and allows the trusted human path", async () => {
+    const store = makeStore();
+    roots.push(store);
+    await seed(store, { project: true });
+    await store.mutate((database) => {
+      const attachment = database.projectAgents[0];
+      if (attachment) attachment.role = "owner";
+    });
+    const calls = { restart: 0 };
+    const service = new ToolService(
+      new ToolRegistry([restartTool(calls)]),
+      new RepositoryAuthorizationService(store),
+      store,
+    );
+
+    const prepared = await service.prepareInvocation(context("project-1"), "project.preview.restart", {});
+    expect(Object.isFrozen(prepared)).toBe(true);
+    expect(Object.isFrozen(prepared.context)).toBe(true);
+    expect("input" in prepared).toBe(false);
+    expect(prepared.policy).toMatchObject({ mode: "required", version: "test-policy-v1" });
+    expect(calls.restart).toBe(0);
+
+    await expect(service.execute(context("project-1"), "project.preview.restart", {})).rejects.toMatchObject({
+      code: "APPROVAL_REQUIRED",
+    });
+    await expect(service.executePrepared(prepared)).rejects.toMatchObject({
+      code: "APPROVAL_REQUIRED",
+    });
+    expect(calls.restart).toBe(0);
+
+    const forged = { ...prepared } as PreparedToolInvocation;
+    await expect(
+      service.executePrepared(forged, Object.create(ToolExecutionClaim.prototype) as ToolExecutionClaim),
+    ).rejects.toMatchObject({ code: "TOOL_INVOCATION_INVALIDATED" });
+    expect(calls.restart).toBe(0);
+
+    const claim = service.issueExecutionClaim(prepared);
+    await expect(service.executePrepared(prepared, claim)).resolves.toEqual({ ok: true });
+    expect(calls.restart).toBe(1);
+
+    await expect(service.executePrepared(prepared, claim)).rejects.toMatchObject({
+      code: "TOOL_EXECUTION_CLAIM_FAILED",
+    });
+
+    await expect(
+      service.execute(
+        {
+          principal: { kind: "human", id: "demo-owner" },
+          agentId: "agent-1",
+          projectId: "project-1",
+          runId: "human-tool-test",
+        },
+        "project.preview.restart",
+        {},
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect(calls.restart).toBe(2);
+  });
+
+  it("invalidates a prepared invocation after live authorization or policy changes", async () => {
+    const store = makeStore();
+    roots.push(store);
+    await seed(store, { project: true });
+    await store.mutate((database) => {
+      const attachment = database.projectAgents[0];
+      if (attachment) attachment.role = "owner";
+    });
+    const calls = { restart: 0 };
+    const definition = restartTool(calls);
+    const service = new ToolService(
+      new ToolRegistry([definition]),
+      new RepositoryAuthorizationService(store),
+      store,
+    );
+    const prepared = await service.prepareInvocation(context("project-1"), "project.preview.restart", {});
+
+    await store.mutate((database) => {
+      database.projectAgents = [];
+    });
+    await expect(
+      service.executePrepared(prepared, service.issueExecutionClaim(prepared)),
+    ).rejects.toMatchObject({ code: "TOOL_INVOCATION_INVALIDATED" });
+    expect(calls.restart).toBe(0);
+
+    await store.mutate((database) => {
+      database.projectAgents.push(makeAttachment());
+      const attachment = database.projectAgents[0];
+      if (attachment) attachment.role = "owner";
+    });
+    const second = await service.prepareInvocation(context("project-1"), "project.preview.restart", {});
+    definition.approvalPolicy = { mode: "required", version: "test-policy-v2" };
+    await expect(
+      service.executePrepared(second, service.issueExecutionClaim(second)),
+    ).rejects.toMatchObject({ code: "TOOL_INVOCATION_INVALIDATED" });
+    expect(calls.restart).toBe(0);
+  });
+
+  it("rejects Project smuggling before and after schema parsing", async () => {
+    const store = makeStore();
+    roots.push(store);
+    await seed(store, { project: true });
+    const service = new ToolService(
+      new ToolRegistry([transformedProjectTool()]),
+      new RepositoryAuthorizationService(store),
+      store,
+    );
+
+    await expect(
+      service.execute(context("project-1"), "project.preview.inspect", { projectId: "project-other" }),
+    ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    await expect(
+      service.execute(context("project-1"), "project.preview.inspect", { target: "other" }),
+    ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+  });
+
+  it("revalidates the raw request while retaining the original one-way transform", async () => {
+    const store = makeStore();
+    roots.push(store);
+    await seed(store, { project: true });
+    await store.mutate((database) => {
+      const attachment = database.projectAgents[0];
+      if (attachment) attachment.role = "owner";
+    });
+    const calls = { inputs: [] as unknown[] };
+    const service = new ToolService(
+      new ToolRegistry([transformedRestartTool(calls)]),
+      new RepositoryAuthorizationService(store),
+      store,
+    );
+
+    const prepared = await service.prepareInvocation(
+      context("project-1"),
+      "project.preview.restart",
+      { target: "  first  " },
+    );
+    expect("input" in prepared).toBe(false);
+    expect("rawInput" in prepared).toBe(false);
+
+    const claim = service.issueExecutionClaim(prepared);
+    await expect(service.executePrepared(prepared, claim)).resolves.toEqual({ ok: true });
+    expect(calls.inputs).toEqual([{ normalized: "FIRST" }]);
+  });
+
+  it("snapshots input without freezing or mutating the caller object", async () => {
+    const store = makeStore();
+    roots.push(store);
+    await seed(store, { project: true });
+    await store.mutate((database) => {
+      const attachment = database.projectAgents[0];
+      if (attachment) attachment.role = "owner";
+    });
+    const calls = { inputs: [] as unknown[] };
+    const service = new ToolService(
+      new ToolRegistry([transformedRestartTool(calls)]),
+      new RepositoryAuthorizationService(store),
+      store,
+    );
+    const input = { target: "original" };
+    const prepared = await service.prepareInvocation(
+      context("project-1"),
+      "project.preview.restart",
+      input,
+    );
+
+    expect(Object.isFrozen(input)).toBe(false);
+    input.target = "mutated-after-preparation";
+    const claim = service.issueExecutionClaim(prepared);
+    await expect(service.executePrepared(prepared, claim)).resolves.toEqual({ ok: true });
+    expect(calls.inputs).toEqual([{ normalized: "ORIGINAL" }]);
+  });
+
+  it("records guard rejection as authorization without a phantom tool failure", async () => {
+    const store = makeStore();
+    roots.push(store);
+    await seed(store, { project: true });
+    await store.mutate((database) => {
+      const attachment = database.projectAgents[0];
+      if (attachment) attachment.role = "owner";
+    });
+    const audit = new RecordingAudit();
+    const calls = { restart: 0 };
+    const service = new ToolService(
+      new ToolRegistry([restartTool(calls)]),
+      new RepositoryAuthorizationService(store),
+      store,
+      audit,
+    );
+    const prepared = await service.prepareInvocation(context("project-1"), "project.preview.restart", {});
+    await expect(service.executePrepared(prepared)).rejects.toMatchObject({
+      code: "APPROVAL_REQUIRED",
+    });
+
+    expect(audit.ofType("tool_started")).toHaveLength(0);
+    expect(audit.ofType("tool_succeeded")).toHaveLength(0);
+    expect(audit.ofType("tool_failed")).toHaveLength(0);
+    expect(audit.ofType("authorization_decision")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: "failure",
+          metadata: expect.objectContaining({
+            phase: "execution_guard",
+            errorCode: "APPROVAL_REQUIRED",
+          }),
+        }),
+      ]),
+    );
+    expect(calls.restart).toBe(0);
+  });
+
+  it("does not invoke the executor or approval path for denied identity and scope", async () => {
+    const store = makeStore();
+    roots.push(store);
+    await seed(store, { project: true });
+    const calls = { restart: 0 };
+    const audit = new RecordingAudit();
+    const service = new ToolService(
+      new ToolRegistry([restartTool(calls)]),
+      new RepositoryAuthorizationService(store),
+      store,
+      audit,
+    );
+
+    const deniedContexts: ToolExecutionContext[] = [
+      {
+        principal: { kind: "agent", id: "agent-other" },
+        agentId: "agent-1",
+        projectId: "project-1",
+        runId: "run-identity-mismatch",
+      },
+      {
+        principal: { kind: "agent", id: "agent-1" },
+        agentId: "agent-1",
+        runId: "run-missing-project",
+      },
+    ];
+    for (const deniedContext of deniedContexts) {
+      await expect(
+        service.execute(deniedContext, "project.preview.restart", {}),
+      ).rejects.toBeInstanceOf(ToolError);
+    }
+    const failedBeforeDirectPreparation = audit.ofType("tool_failed").length;
+    await expect(
+      service.prepareInvocation(deniedContexts[0]!, "project.preview.restart", {}),
+    ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    expect(calls.restart).toBe(0);
+    expect(audit.ofType("tool_failed")).toHaveLength(failedBeforeDirectPreparation + 1);
+    expect(audit.ofType("tool_failed").at(-1)).toMatchObject({
+      metadata: expect.objectContaining({
+        phase: "authorization",
+        decision: "identity_mismatch",
+        errorCode: "PERMISSION_DENIED",
+      }),
+    });
+    expect(audit.ofType("tool_approval_required")).toHaveLength(0);
   });
 });

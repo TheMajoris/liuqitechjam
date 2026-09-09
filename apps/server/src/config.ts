@@ -17,6 +17,23 @@ export const MAX_MCP_TOKEN_TTL_MS = 86_400_000;
 export const DEFAULT_WEB_FETCH_TIMEOUT_MS = 15_000;
 export const DEFAULT_WEB_FETCH_MAX_RESPONSE_BYTES = 1_048_576;
 export const DEFAULT_WEB_FETCH_MAX_REDIRECTS = 3;
+/**
+ * Codex's MCP client timeout is expressed in seconds. Keep it at or below the
+ * client's historical 300-second default so the server owns the bound rather
+ * than inheriting a longer client-side wait.
+ */
+export const DEFAULT_MCP_TOOL_TIMEOUT_SEC = 180;
+/** Time reserved after an approval decision for the approved executor. */
+export const MCP_APPROVAL_EXECUTION_RESERVE_MS = 30_000;
+/** Small margin for serializing and delivering the final MCP response. */
+export const MCP_APPROVAL_DELIVERY_MARGIN_MS = 5_000;
+/** Default deadline for a human decision, before execution/delivery reserves. */
+export const DEFAULT_MCP_TOOL_APPROVAL_TIMEOUT_MS = 120_000;
+/** Native Mastra storage schema dedicated to approval workflow snapshots. */
+// Keep the default short enough for @mastra/pg 1.22.0's generated index names.
+export const DEFAULT_MCP_TOOL_APPROVAL_SCHEMA = "mastra_approval";
+
+const POSTGRES_IDENTIFIER = /^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/u;
 
 const envSchema = z.object({
   HOST: z.string().default("0.0.0.0"),
@@ -106,6 +123,52 @@ const envSchema = z.object({
   MCP_PUBLIC_URL: z.string().trim().url().optional(),
   /** Explicit host-reachable MCP endpoint used from container workers. */
   MCP_CONTAINER_URL: z.string().trim().url().optional(),
+  /** Bounded Codex MCP tool-call timeout, passed as tool_timeout_sec. */
+  MCP_TOOL_TIMEOUT_SEC: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(300)
+    .default(DEFAULT_MCP_TOOL_TIMEOUT_SEC),
+  /**
+   * Tool approval is an explicit deployment mode. Keep the aliases for
+   * operators who used the shorter name while the contract was experimental;
+   * the canonical value returned by loadConfig is mcpToolApprovalEnabled.
+   */
+  MCP_TOOL_APPROVAL_ENABLED: z.enum(["true", "false"]).optional(),
+  MCP_APPROVAL_ENABLED: z.enum(["true", "false"]).optional(),
+  TOOL_APPROVAL_ENABLED: z.enum(["true", "false"]).optional(),
+  /** Native workflow storage. `memory` is accepted only in development/test. */
+  MCP_TOOL_APPROVAL_STORAGE: z.enum(["postgres", "memory"]).optional(),
+  MCP_APPROVAL_STORAGE: z.enum(["postgres", "memory"]).optional(),
+  /** Dedicated schema for the native Mastra workflow tables. */
+  MCP_TOOL_APPROVAL_SCHEMA: z
+    .string()
+    .trim()
+    .min(1)
+    .max(63)
+    .regex(POSTGRES_IDENTIFIER, "MCP_TOOL_APPROVAL_SCHEMA must be a safe PostgreSQL identifier")
+    .optional(),
+  MCP_APPROVAL_SCHEMA: z
+    .string()
+    .trim()
+    .min(1)
+    .max(63)
+    .regex(POSTGRES_IDENTIFIER, "MCP_APPROVAL_SCHEMA must be a safe PostgreSQL identifier")
+    .optional(),
+  /** Human decision deadline; the effective MCP timeout still owns the outer bound. */
+  MCP_TOOL_APPROVAL_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(DEFAULT_MCP_TOOL_APPROVAL_TIMEOUT_MS)
+    .optional(),
+  MCP_APPROVAL_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(DEFAULT_MCP_TOOL_APPROVAL_TIMEOUT_MS)
+    .optional(),
   // An explicit value is allowed for deployments with a shorter-lived policy;
   // the default below is derived from CODEX_TIMEOUT_MS instead of this field.
   MCP_TOKEN_TTL_MS: z.coerce.number().int().min(1_000).max(MAX_MCP_TOKEN_TTL_MS).optional(),
@@ -192,6 +255,30 @@ export type AppConfig = ReturnType<typeof loadConfig>;
 
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
   const env = envSchema.parse(environment);
+  // The MCP client timeout covers the whole suspended call, not merely the
+  // approval wait. Derive a safe effective value from the outer Codex bound so
+  // approval can never consume the time reserved for execution and delivery.
+  const mcpTimeoutCeilingSec = Math.max(
+    1,
+    Math.floor(
+      Math.max(
+        1_000,
+        env.CODEX_TIMEOUT_MS -
+          MCP_APPROVAL_EXECUTION_RESERVE_MS -
+          MCP_APPROVAL_DELIVERY_MARGIN_MS,
+      ) / 1_000,
+    ),
+  );
+  const mcpToolTimeoutSec = Math.min(env.MCP_TOOL_TIMEOUT_SEC, mcpTimeoutCeilingSec);
+  const mcpToolApprovalEnabledValue =
+    env.MCP_TOOL_APPROVAL_ENABLED ?? env.MCP_APPROVAL_ENABLED ?? env.TOOL_APPROVAL_ENABLED;
+  const mcpToolApprovalEnabled = mcpToolApprovalEnabledValue === "true";
+  const mcpToolApprovalStorage =
+    env.MCP_TOOL_APPROVAL_STORAGE ?? env.MCP_APPROVAL_STORAGE ?? "postgres";
+  const mcpToolApprovalSchema =
+    env.MCP_TOOL_APPROVAL_SCHEMA ?? env.MCP_APPROVAL_SCHEMA ?? DEFAULT_MCP_TOOL_APPROVAL_SCHEMA;
+  const mcpToolApprovalTimeoutMs =
+    env.MCP_TOOL_APPROVAL_TIMEOUT_MS ?? env.MCP_APPROVAL_TIMEOUT_MS ?? DEFAULT_MCP_TOOL_APPROVAL_TIMEOUT_MS;
   const persistenceBackend = env.PERSISTENCE_BACKEND ??
     (env.NODE_ENV === "test" ? "json" : "postgres");
   const databaseUrl = env.DATABASE_URL ?? "";
@@ -202,6 +289,35 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
       valid = ["postgres:", "postgresql:"].includes(url.protocol) && !!url.hostname;
     } catch { /* Report configuration without exposing the connection secret. */ }
     if (!valid) throw new Error("PERSISTENCE_BACKEND=postgres requires a valid DATABASE_URL");
+  }
+  if (mcpToolApprovalStorage === "memory" && env.NODE_ENV === "production") {
+    throw new Error("MCP tool approval InMemory storage is allowed only in development/test");
+  }
+  if (mcpToolApprovalEnabled && env.NODE_ENV === "production" && persistenceBackend !== "postgres") {
+    throw new Error(
+      "MCP tool approval in production requires PERSISTENCE_BACKEND=postgres for single-owner durable fencing",
+    );
+  }
+  if (mcpToolApprovalEnabled && mcpToolApprovalStorage === "postgres") {
+    let valid = false;
+    try {
+      const url = new URL(databaseUrl);
+      valid = ["postgres:", "postgresql:"].includes(url.protocol) && !!url.hostname;
+    } catch { /* Keep the failure generic; DATABASE_URL may contain credentials. */ }
+    if (!valid) {
+      throw new Error(
+        "MCP tool approval requires a valid DATABASE_URL for persistent workflow storage",
+      );
+    }
+  }
+  if (
+    mcpToolApprovalEnabled &&
+    mcpToolApprovalTimeoutMs + MCP_APPROVAL_EXECUTION_RESERVE_MS + MCP_APPROVAL_DELIVERY_MARGIN_MS >
+      mcpToolTimeoutSec * 1_000
+  ) {
+    throw new Error(
+      "MCP tool approval deadline must fit within MCP_TOOL_TIMEOUT_SEC after execution and delivery reserves",
+    );
   }
   const authToken = env.APP_AUTH_TOKEN?.trim() ?? "";
   const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -280,6 +396,19 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     mcpPublicUrl:
       env.MCP_PUBLIC_URL?.trim() || `http://127.0.0.1:${env.PORT}/mcp`,
     mcpContainerUrl: env.MCP_CONTAINER_URL?.trim() || "",
+    mcpToolTimeoutSec,
+    mcpToolApprovalEnabled,
+    // Compatibility aliases are read-only projections of the same explicit
+    // switch; bootstrap uses the canonical mcpTool* names above.
+    mcpApprovalEnabled: mcpToolApprovalEnabled,
+    toolApprovalEnabled: mcpToolApprovalEnabled,
+    mcpToolApprovalStorage,
+    mcpApprovalStorage: mcpToolApprovalStorage,
+    approvalWorkflowStorage: mcpToolApprovalStorage,
+    mcpToolApprovalSchema,
+    mcpApprovalSchema: mcpToolApprovalSchema,
+    mcpToolApprovalTimeoutMs,
+    mcpApprovalTimeoutMs: mcpToolApprovalTimeoutMs,
     mcpTokenTtlMs:
       env.MCP_TOKEN_TTL_MS ?? env.CODEX_TIMEOUT_MS + MCP_TOKEN_GRACE_MS,
     mcpScopedAdvertisement: env.MCP_SCOPED_ADVERTISEMENT,
@@ -310,6 +439,34 @@ export function isArkConfigured(config: AppConfig): boolean {
     config.arkApiKey.length > 0 &&
     !config.arkApiKey.startsWith("replace-")
   );
+}
+
+/**
+ * Safe operator guidance for an enabled approval bridge that could not start.
+ * Keep this independent from the provider error: connection strings and
+ * driver details can contain credentials and must never reach startup logs.
+ */
+export function toolApprovalStartupDiagnostic(
+  config: Pick<AppConfig, "mcpToolApprovalStorage" | "mcpToolApprovalSchema">,
+): string {
+  const prefix =
+    "MCP tool approval is enabled but unavailable; sensitive tools are fail-closed.";
+  if (config.mcpToolApprovalStorage === "postgres") {
+    if (config.mcpToolApprovalSchema !== DEFAULT_MCP_TOOL_APPROVAL_SCHEMA) {
+      return `${prefix} Provision the custom Mastra workflow schema ` +
+        `"${config.mcpToolApprovalSchema}" explicitly before restart with equivalent ` +
+        "runtime privileges (USAGE, CREATE on the schema for launchpad_runtime). " +
+        `npm run db:migrate provisions only the default schema "${DEFAULT_MCP_TOOL_APPROVAL_SCHEMA}". ` +
+        "Externally configured PostgreSQL is operator-managed; the launcher does not " +
+        "migrate custom schemas automatically.";
+    }
+    return `${prefix} Run npm run db:migrate with DATABASE_ADMIN_URL to provision the ` +
+      `Mastra workflow schema "${config.mcpToolApprovalSchema}" and its runtime ` +
+      `privileges, then restart. Externally configured PostgreSQL is operator-managed; ` +
+      "the launcher does not migrate it automatically.";
+  }
+  return `${prefix} Verify the native Mastra workflow storage and keep ` +
+    "MCP_TOOL_APPROVAL_STORAGE=memory limited to development/test.";
 }
 
 /** Whether the shared Ark credentials and resolved supervisor model are usable. */

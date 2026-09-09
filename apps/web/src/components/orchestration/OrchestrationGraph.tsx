@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, type CSSProperties } from "react";
-import type { Agent, OrchestrationSessionDetail } from "../../types";
+import type { Agent, OrchestrationSessionDetail, ToolApproval } from "../../types";
 import { AgentAvatar } from "./AgentAvatar";
 import {
   agentHue,
@@ -32,6 +32,12 @@ interface OrchestrationGraphProps {
   recoverPending?: boolean;
   recoverBlocked?: boolean;
   recoverDisabled?: boolean;
+  /** Approval projections shown inside the selected turn's detail surface. */
+  approvals?: readonly ToolApproval[];
+  approvalPendingId?: string | null;
+  approvalPendingAction?: "approve" | "reject" | null;
+  approvalErrors?: Readonly<Record<string, string>>;
+  onApprovalDecision?: (approvalId: string, approved: boolean) => void;
 }
 
 /**
@@ -203,6 +209,11 @@ export function OrchestrationGraph({
   recoverPending = false,
   recoverBlocked = false,
   recoverDisabled = false,
+  approvals = [],
+  approvalPendingId = null,
+  approvalPendingAction = null,
+  approvalErrors = {},
+  onApprovalDecision,
 }: OrchestrationGraphProps) {
   const [openIds, setOpenIds] = useState<Set<string>>(new Set());
   const checkpointsEnabled = detail?.checkpoints !== undefined;
@@ -466,6 +477,11 @@ export function OrchestrationGraph({
                         recoverPending={recoverPending}
                         recoverBlocked={recoverBlocked}
                         recoverDisabled={recoverDisabled}
+                        approvals={approvals}
+                        approvalPendingId={approvalPendingId}
+                        approvalPendingAction={approvalPendingAction}
+                        approvalErrors={approvalErrors}
+                        onApprovalDecision={onApprovalDecision}
                         onClose={() => toggleRow(row.id)}
                       />
                     </div>

@@ -8,7 +8,11 @@ export const DEMO_HUMAN_PRINCIPAL = {
 
 export type HumanPrincipal = {
   kind: "human";
-  id: "demo-owner";
+  /**
+   * The local/demo owner remains the default, but trusted control-plane
+   * decisions may carry the authenticated human actor that made them.
+   */
+  id: string;
 };
 
 export type AgentPrincipal = {
@@ -35,8 +39,10 @@ export function agentPrincipal(id: string): AgentPrincipal {
   return { kind: "agent", id };
 }
 
-export function humanPrincipal(): HumanPrincipal {
-  return DEMO_HUMAN_PRINCIPAL;
+export function humanPrincipal(id = DEMO_HUMAN_PRINCIPAL.id): HumanPrincipal {
+  return id === DEMO_HUMAN_PRINCIPAL.id
+    ? DEMO_HUMAN_PRINCIPAL
+    : { kind: "human", id };
 }
 
 export function systemPrincipal(): SystemPrincipal {
@@ -120,3 +126,14 @@ export interface PermitApprovalCorrelation {
 export type { AuditEvent } from "../audit/audit-types.js";
 
 export type ProjectRole = "owner" | "editor" | "viewer";
+
+/**
+ * The membership tier a newly attached Agent receives.
+ *
+ * This is the single source of truth. It used to be an implicit `?? "editor"`
+ * repeated at three read sites while `attachAgent` wrote no role at all, so
+ * every attachment silently became an editor and no caller could see it.
+ * Attachment now writes this value explicitly; the read-side fallbacks remain
+ * only to normalize records persisted before that.
+ */
+export const DEFAULT_PROJECT_ROLE: ProjectRole = "editor";

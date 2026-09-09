@@ -32,6 +32,7 @@ import type {
   WorkspaceExecutionCycle,
   WorkspaceOperation,
 } from "./projects/workspace-checkpoint-types.js";
+import type { ToolApprovalInvocationRecord } from "./tools/tool-approval-store.js";
 
 export type {
   AgentRole,
@@ -264,6 +265,8 @@ export interface Database {
   workspaceCheckpoints: WorkspaceCheckpoint[];
   workspaceExecutionCycles: WorkspaceExecutionCycle[];
   workspaceOperations: WorkspaceOperation[];
+  /** Additive native-workflow approval projection; legacy approval records are separate. */
+  toolApprovalInvocations: ToolApprovalInvocationRecord[];
 }
 
 /**

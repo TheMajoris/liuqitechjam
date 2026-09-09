@@ -1,7 +1,13 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import { transitions, variants } from "../../motion/motion-tokens";
-import type { Agent, OrchestrationSessionDetail } from "../../types";
+import type {
+  Agent,
+  AgentRole,
+  OrchestrationSessionDetail,
+  ProjectMembership,
+  ToolApproval,
+} from "../../types";
 import { OrchestrationConversation } from "./OrchestrationConversation";
 import { OrchestrationGraph } from "./OrchestrationGraph";
 import { OrchestrationTimeline } from "./OrchestrationTimeline";
@@ -27,6 +33,10 @@ const TAB_NOTES: Record<RunTab, string> = {
 interface OrchestrationRunTabsProps {
   detail: OrchestrationSessionDetail | null;
   agents: Agent[];
+  /** Project membership tiers, shown beside each Agent's capability role. */
+  memberships?: readonly ProjectMembership[];
+  /** Resolves each speaker's capability role for the transcript byline. */
+  roles?: AgentRole[];
   action?: OrchestrationAction;
   onContinue?: (prompt: string, sessionId: string) => void;
   /** Retries the run from one recorded step; omitted when unavailable. */
@@ -42,6 +52,14 @@ interface OrchestrationRunTabsProps {
   workspace: ReactNode;
   /** Rendered for the Preview tab; present only with a shared Project. */
   preview: ReactNode;
+  /** Approval projections are joined into the selected turn detail as well as
+   * the room header, so a participant's protected action is actionable in
+   * context. */
+  approvals?: readonly ToolApproval[];
+  approvalPendingId?: string | null;
+  approvalPendingAction?: "approve" | "reject" | null;
+  approvalErrors?: Readonly<Record<string, string>>;
+  onApprovalDecision?: (approvalId: string, approved: boolean) => void;
 }
 
 /**
@@ -53,6 +71,8 @@ interface OrchestrationRunTabsProps {
 export function OrchestrationRunTabs({
   detail,
   agents,
+  memberships = [],
+  roles = [],
   action = null,
   onContinue,
   onRetry,
@@ -62,6 +82,11 @@ export function OrchestrationRunTabs({
   onTabChange,
   workspace,
   preview,
+  approvals = [],
+  approvalPendingId = null,
+  approvalPendingAction = null,
+  approvalErrors = {},
+  onApprovalDecision,
 }: OrchestrationRunTabsProps) {
   const tabs = useMemo<RunTab[]>(
     () =>
@@ -155,11 +180,18 @@ export function OrchestrationRunTabs({
           <OrchestrationConversation
             detail={detail}
             agents={agents}
+            memberships={memberships}
+            roles={roles}
             action={action}
             onContinue={onContinue}
             onRetry={onRetry}
             onRecover={onRecover}
             onClarifyFirstChange={onClarifyFirstChange}
+            approvals={approvals}
+            approvalPendingId={approvalPendingId}
+            approvalPendingAction={approvalPendingAction}
+            approvalErrors={approvalErrors}
+            onApprovalDecision={onApprovalDecision}
           />
         ) : activeTab === "activity" ? (
           // The log is the reading order. The raw journal stays one disclosure
@@ -168,6 +200,11 @@ export function OrchestrationRunTabs({
             <OrchestrationGraph
               detail={detail}
               agents={agents}
+              approvals={approvals}
+              approvalPendingId={approvalPendingId}
+              approvalPendingAction={approvalPendingAction}
+              approvalErrors={approvalErrors}
+              onApprovalDecision={onApprovalDecision}
               onRetry={onRetry}
               retryPending={action === "retry"}
               // A retry starts a fresh cycle, so the run must be settled.

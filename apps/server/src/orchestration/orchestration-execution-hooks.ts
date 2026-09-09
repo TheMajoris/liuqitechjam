@@ -350,6 +350,14 @@ export function createOrchestrationExecutionHooks(
                 : "failed";
           turn.errorCode = errorCode;
           turn.completedAt = failedAt;
+          // Read the model off the child Run rather than the Agent: the Agent's
+          // assignment can be changed (often in response to this very failure)
+          // before anyone reads the transcript, and the reply must name the
+          // model that actually failed.
+          const modelId = database.runs
+            .find((candidate) => candidate.id === runId)
+            ?.modelSnapshot?.modelRef.modelId?.trim();
+          if (modelId) turn.modelId = modelId.slice(0, ORCHESTRATION_LIMITS.maxModelIdLength);
         }
         session.currentParticipantId = null;
         session.currentRunId = null;

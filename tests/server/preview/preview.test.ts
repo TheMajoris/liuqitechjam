@@ -118,6 +118,21 @@ describe("composeRuntimeContextPrompt", () => {
       "Respond in English by default. Use another language only when the user explicitly requests it.",
     );
   });
+
+  it("denies preview control when the turn carries no restart tool", () => {
+    expect(composeRuntimeContextPrompt("report the result", { status: "running" })).toContain(
+      "you cannot start, stop, or restart them",
+    );
+  });
+
+  it("points a Project-scoped turn at the restart tool it actually holds", () => {
+    const prompt = composeRuntimeContextPrompt("restart the preview", {
+      status: "running",
+      restartable: true,
+    });
+    expect(prompt).toContain("project.preview.restart");
+    expect(prompt).not.toContain("you cannot start, stop, or restart them");
+  });
 });
 
 describe("PreviewService", () => {

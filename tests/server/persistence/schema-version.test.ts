@@ -48,4 +48,17 @@ describe("PostgreSQL schema version", () => {
     expect(source).toContain("LATEST_SCHEMA_VERSION");
     expect(source).not.toMatch(/version\.rows\[0\]\?\.version \?\? 0\) !== \d/u);
   });
+
+  it("provisions the Mastra approval schema for the runtime role", async () => {
+    const migration = await import("node:fs/promises").then((fs) =>
+      fs.readFile(
+        new URL("../../../apps/server/src/persistence/migrations/005_mastra_approval_schema.sql", import.meta.url),
+        "utf8",
+      ),
+    );
+    expect(migration).toContain("CREATE SCHEMA IF NOT EXISTS mastra_approval");
+    expect(migration).toContain(
+      "GRANT USAGE, CREATE ON SCHEMA mastra_approval TO launchpad_runtime",
+    );
+  });
 });

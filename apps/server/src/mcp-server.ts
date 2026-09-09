@@ -11,9 +11,11 @@ import type { SkillService } from "./skills/skill-service.js";
 import type { RoleService } from "./roles/role-service.js";
 import type { AuditReader, AuditRecorder } from "./audit/audit-types.js";
 import { systemPrincipal } from "./access/access-types.js";
+import type { AuthorizationService } from "./access/authorization-service.js";
 import { correlationAttributes, type RuntimeTelemetry, type TelemetryCarrier } from "./telemetry/telemetry-types.js";
 import type { SearchProvider } from "./tools/search-provider.js";
 import type { WebFetchAdapter } from "./tools/web-fetch-adapter.js";
+import type { ToolApprovalService } from "./tools/tool-approval-service.js";
 
 export interface McpRouteDependencies {
   sessions: McpSessionService;
@@ -34,6 +36,18 @@ export interface McpRouteDependencies {
   searchProvider?: SearchProvider;
   /** Safe public-only fetcher reused for explicit skill Markdown imports. */
   webFetch?: Pick<WebFetchAdapter, "fetch">;
+  /** Optional native approval bridge. Missing bridge remains fail-closed. */
+  approvalService?: ToolApprovalService;
+  /** Explicit approval deployment mode; disabled preserves legacy behavior. */
+  approvalFeatureEnabled?: boolean;
+  /** Startup health of the durable/native approval dependencies. */
+  approvalAvailable?: boolean;
+  /**
+   * Optional Project policy authority for the human approval control plane.
+   * The bridge is deliberately not constructed here; startup wiring may add
+   * both dependencies when the approval feature is enabled.
+   */
+  authorizationService?: AuthorizationService;
   telemetry?: RuntimeTelemetry;
 }
 
@@ -42,6 +56,14 @@ export interface McpServerOptions {
   onWebToolPermissionDenied?: (runId: string) => void;
   /** Safe rollback hook; omitted preserves the historical full registry. */
   legacyFullAdvertisement?: boolean;
+  /** Optional native approval bridge for sensitive Agent tool calls. */
+  approvalService?: ToolApprovalService;
+  /** Approval mode is fixed for the accepted Run; never downgrade on failure. */
+  approvalFeatureEnabled?: boolean;
+  /** Sensitive tools are unavailable until startup has completed all checks. */
+  approvalAvailable?: boolean;
+  /** Originating request signal used to fence a lost MCP response. */
+  signal?: AbortSignal;
 }
 
 function bearerToken(request: FastifyRequest): string | null {
@@ -96,6 +118,22 @@ function toolErrorResult(error: unknown): {
 }
 
 /**
+ * Codex 0.111's Responses/Ark bridge terminates a turn without a final
+ * assistant message when an MCP result includes structuredContent. Keep the
+ * same JSON payload in the required text content block instead; this is
+ * accepted by older and newer MCP clients and lets the model continue after
+ * an approved call.
+ */
+function toolSuccessResult(output: unknown): {
+  content: [{ type: "text"; text: string }];
+} {
+  const serialized = JSON.stringify(output);
+  return {
+    content: [{ type: "text", text: serialized === undefined ? "null" : serialized }],
+  };
+}
+
+/**
  * Create one stateless SDK server for one authenticated HTTP request. The
  * session context is closed over by handlers; callers cannot submit a
  * principal, Agent, Project, or run identity as tool input.
@@ -111,22 +149,30 @@ export function createMcpServer(
   const {
     traceparent: _traceparent,
     expiresAt: _expiresAt,
+    sessionId: _sessionId,
+    deadlineAt: _deadlineAt,
     advertisedToolIds,
     diagnostics,
     ...toolContext
   } = context;
   void _traceparent;
   void _expiresAt;
+  void _sessionId;
+  void _deadlineAt;
   void diagnostics;
   const server = new McpServer({
     name: "lqam",
     version: "1.0.0",
   });
   const registryDefinitions = toolService.getRegistry().list();
+  const approvalUnavailable =
+    options.approvalFeatureEnabled === true && options.approvalAvailable !== true;
   const registeredDefinitions = advertisedToolIds === undefined
     ? diagnostics?.resolutionStatus === "failed" || options.legacyFullAdvertisement === false
       ? []
-      : registryDefinitions
+      : approvalUnavailable
+        ? registryDefinitions.filter((definition) => definition.approvalPolicy?.mode !== "required")
+        : registryDefinitions
     : (() => {
         const snapshot = new Set(advertisedToolIds);
         return registryDefinitions.filter((definition) => snapshot.has(definition.id));
@@ -138,16 +184,42 @@ export function createMcpServer(
         title: definition.title,
         description: definition.description,
         inputSchema: definition.inputSchema,
-        outputSchema: definition.outputSchema,
+        // Do not advertise an output schema here. Codex 0.111's MCP bridge
+        // requires structuredContent whenever outputSchema is present, while
+        // its Ark path cannot continue a turn after that response shape. The
+        // text content below remains the canonical JSON result for clients.
         annotations: annotationsForRisk(definition.risk),
       },
       async (input: unknown) => {
         try {
-          const output = await toolService.execute(toolContext, definition.id, input);
-          return {
-            structuredContent: output as Record<string, unknown>,
-            content: [{ type: "text", text: JSON.stringify(output) }],
-          };
+          const approvalMode = definition.approvalPolicy?.mode;
+          if (
+            context.principal.kind === "agent" &&
+            approvalMode === "required" &&
+            (
+              options.approvalService === undefined ||
+              (options.approvalFeatureEnabled === true && options.approvalAvailable !== true)
+            )
+          ) {
+            // Do not let a missing bridge turn a sensitive definition into a
+            // direct executor call, including when this server is composed
+            // with a test/demonstration ToolService adapter.
+            throw new ToolError(
+              "APPROVAL_REQUIRED",
+              409,
+              "The approval bridge is unavailable for this Agent tool",
+            );
+          }
+          const output = options.approvalService
+            ? await options.approvalService.execute(toolContext, definition.id, input, {
+                ...(options.signal === undefined ? {} : { signal: options.signal }),
+                expiresAt: context.expiresAt,
+                sessionId: context.sessionId,
+                ...(context.traceparent === undefined ? {} : { traceparent: context.traceparent }),
+                ...(context.deadlineAt === undefined ? {} : { deadlineAt: context.deadlineAt }),
+              })
+            : await toolService.execute(toolContext, definition.id, input);
+          return toolSuccessResult(output);
         } catch (error) {
           if (
             error instanceof ToolError &&
@@ -189,7 +261,7 @@ export function registerMcpRoute(
     // Authentication happens before creating the SDK server or request
     // context. The token itself is never placed in an error or log payload.
     const token = bearerToken(request);
-    const detailed = token === null ? null : dependencies.sessions.resolveDetailed(token);
+    const detailed = token === null ? null : await dependencies.sessions.resolveDetailedAndAwait(token);
     if (!detailed || detailed.context === null) {
       const reason = detailed === null ? "missing" : detailed.reason;
       void dependencies.auditService
@@ -208,6 +280,27 @@ export function registerMcpRoute(
         .send({ error: "Authentication required" });
     }
     const context = detailed.context;
+
+    // A pending approval is tied to this live HTTP response. Aborting the
+    // signal on an early socket close lets the approval bridge close its
+    // application fence before any late decision can resume the workflow.
+    const requestAbort = dependencies.approvalService === undefined
+      ? undefined
+      : new AbortController();
+    const onRequestAborted = () => {
+      // IncomingMessage.aborted is authoritative even if the response object
+      // has already been marked destroyed or ended by the transport.
+      requestAbort?.abort();
+    };
+    const onResponseClosed = () => {
+      // A normal completed response also emits `close`; only an unwritten
+      // response means the originating MCP call was lost.
+      if (!reply.raw.writableEnded) requestAbort?.abort();
+    };
+    if (requestAbort !== undefined) {
+      request.raw.once("aborted", onRequestAborted);
+      reply.raw.once("close", onResponseClosed);
+    }
 
     const configuredCatalogueSize = context.diagnostics?.configuredCatalogueSize ??
       dependencies.toolService.getRegistry().list().length;
@@ -237,6 +330,16 @@ export function registerMcpRoute(
         onWebToolPermissionDenied: (runId) => {
           dependencies.sessions.markWebToolPermissionDenied(runId);
         },
+        ...(dependencies.approvalService === undefined
+          ? {}
+          : { approvalService: dependencies.approvalService }),
+        ...(dependencies.approvalFeatureEnabled === undefined
+          ? {}
+          : { approvalFeatureEnabled: dependencies.approvalFeatureEnabled }),
+        ...(dependencies.approvalAvailable === undefined
+          ? {}
+          : { approvalAvailable: dependencies.approvalAvailable }),
+        ...(requestAbort === undefined ? {} : { signal: requestAbort.signal }),
       });
       const transport = new StreamableHTTPServerTransport(
         {
@@ -260,42 +363,50 @@ export function registerMcpRoute(
         );
         await transport.handleRequest(request.raw, reply.raw, request.body);
       } catch {
+        requestAbort?.abort();
         await writeTransportFailure(reply);
       } finally {
         await server.close().catch(() => undefined);
       }
     };
-    if (dependencies.telemetry) {
-      const incomingCarrier = {
-        ...(request.headers as TelemetryCarrier),
-        ...(context.traceparent === undefined ||
-        (request.headers.traceparent !== undefined)
-          ? {}
-          : { traceparent: context.traceparent }),
-      };
-      const parent = dependencies.telemetry.extract(
-        incomingCarrier,
-      );
-      await dependencies.telemetry.withSpan(
-        "mcp.request",
-        {
-          ...correlationAttributes({
-            principalKind: context.principal.kind,
-            principalId: context.principal.id,
-            agentId: context.agentId,
-            ...(context.projectId === undefined ? {} : { projectId: context.projectId }),
-            runId: context.runId,
-            ...(context.orchestrationId === undefined
-              ? {}
-              : { orchestrationId: context.orchestrationId }),
-          }),
-          "mcp.method": request.method,
-        },
-        handleRequest,
-        parent,
-      );
-    } else {
-      await handleRequest();
+    try {
+      if (dependencies.telemetry) {
+        const incomingCarrier = {
+          ...(request.headers as TelemetryCarrier),
+          ...(context.traceparent === undefined ||
+          (request.headers.traceparent !== undefined)
+            ? {}
+            : { traceparent: context.traceparent }),
+        };
+        const parent = dependencies.telemetry.extract(
+          incomingCarrier,
+        );
+        await dependencies.telemetry.withSpan(
+          "mcp.request",
+          {
+            ...correlationAttributes({
+              principalKind: context.principal.kind,
+              principalId: context.principal.id,
+              agentId: context.agentId,
+              ...(context.projectId === undefined ? {} : { projectId: context.projectId }),
+              runId: context.runId,
+              ...(context.orchestrationId === undefined
+                ? {}
+                : { orchestrationId: context.orchestrationId }),
+            }),
+            "mcp.method": request.method,
+          },
+          handleRequest,
+          parent,
+        );
+      } else {
+        await handleRequest();
+      }
+    } finally {
+      if (requestAbort !== undefined) {
+        request.raw.off("aborted", onRequestAborted);
+        reply.raw.off("close", onResponseClosed);
+      }
     }
   });
 }

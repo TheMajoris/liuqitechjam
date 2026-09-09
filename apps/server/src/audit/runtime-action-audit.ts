@@ -28,6 +28,11 @@ export interface RuntimeActionObserverOptions {
   agentId: string;
   projectId?: string;
   orchestrationId?: string;
+  turnId?: string;
+  sessionId?: string;
+  invocationId?: string;
+  approvalId?: string;
+  workflowRunId?: string;
   /** The Run span; runtime events parent under it. */
   parentSpan: AuditSpan;
   now?: () => number;
@@ -94,6 +99,11 @@ export function createRuntimeActionObserver(
     ...(options.orchestrationId === undefined
       ? {}
       : { orchestrationId: options.orchestrationId }),
+    ...(options.turnId === undefined ? {} : { turnId: options.turnId }),
+    ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
+    ...(options.invocationId === undefined ? {} : { invocationId: options.invocationId }),
+    ...(options.approvalId === undefined ? {} : { approvalId: options.approvalId }),
+    ...(options.workflowRunId === undefined ? {} : { workflowRunId: options.workflowRunId }),
     principal: agentPrincipal(options.agentId),
     actorType: "agent",
   } as const;

@@ -19,6 +19,8 @@ import type { AgentWorkspaceController } from "../../playground/use-agent-worksp
 import { AgentSettingsPanel } from "./AgentSettingsPanel";
 import { Spinner } from "./Spinner";
 import { humanizeAgentRunFailure } from "../orchestration/orchestration-utils";
+import { ToolApprovalPrompt } from "../approvals/ToolApprovalPrompt";
+import { useToolApprovals } from "../approvals/use-tool-approvals";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -102,6 +104,11 @@ export function AgentWorkspaceView({
   const agentModels = agent.modelRef?.providerId
     ? modelCatalog.modelsByProvider[agent.modelRef.providerId] ?? []
     : [];
+  const directApprovals = useToolApprovals({
+    runId: controller.activeRun?.id ?? null,
+    active: controller.runInFlight,
+    initialApprovals: controller.activeRun?.approvals,
+  });
 
   useEffect(() => {
     messageEnd.current?.scrollIntoView({ behavior: "smooth" });
@@ -314,6 +321,19 @@ export function AgentWorkspaceView({
                 )}
                 <div ref={messageEnd} />
               </div>
+
+              <ToolApprovalPrompt
+                approvals={directApprovals.approvals}
+                getAgentName={(agentId) => (agentId === agent.id ? agent.name : null)}
+                runLabel={`Direct Run ${controller.activeRun?.id.slice(0, 8) ?? ""}`}
+                pendingDecisionId={directApprovals.pendingDecisionId}
+                pendingDecision={directApprovals.pendingDecision}
+                decisionErrors={directApprovals.decisionErrors}
+                onDecision={(approvalId, approved) => {
+                  void directApprovals.decide(approvalId, approved);
+                }}
+                className="tool-approval-prompt-direct"
+              />
 
               <StickyComposer
                 value={controller.prompt}

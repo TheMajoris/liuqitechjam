@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { Agent, OrchestrationParticipant, WorkspaceCheckpointView } from "../../types";
+import type { Agent, OrchestrationParticipant, WorkspaceCheckpointView, ToolApproval } from "../../types";
 import { MarkdownMessage } from "../MarkdownMessage";
 
 import {
@@ -17,6 +17,7 @@ import {
   digestReply,
   type NarrativeExcerpt,
 } from "./turn-narrative";
+import { ToolApprovalList } from "../approvals/ToolApprovalCard";
 
 export interface OrchestrationTurnInspectorProps {
   node: GraphNode;
@@ -47,6 +48,12 @@ export interface OrchestrationTurnInspectorProps {
   recoverBlocked?: boolean;
   /** True while another lifecycle action is in flight. */
   recoverDisabled?: boolean;
+  /** Approval projections joined to this turn by turn ID or Agent Run ID. */
+  approvals?: readonly ToolApproval[];
+  approvalPendingId?: string | null;
+  approvalPendingAction?: "approve" | "reject" | null;
+  approvalErrors?: Readonly<Record<string, string>>;
+  onApprovalDecision?: (approvalId: string, approved: boolean) => void;
   onClose: () => void;
 }
 
@@ -104,6 +111,11 @@ export function OrchestrationTurnInspector({
   recoverPending = false,
   recoverBlocked = false,
   recoverDisabled = false,
+  approvals = [],
+  approvalPendingId = null,
+  approvalPendingAction = null,
+  approvalErrors = {},
+  onApprovalDecision,
   onClose,
 }: OrchestrationTurnInspectorProps) {
   const { turn } = node;
@@ -119,6 +131,9 @@ export function OrchestrationTurnInspector({
   const reply = useMemo(() => digestReply(turn.safeOutput), [turn.safeOutput]);
   const speaker = (excerpt: NarrativeExcerpt) =>
     speakerLabel(agents, participants, excerpt);
+  const turnApprovals = approvals.filter(
+    (approval) => approval.turnId === turn.id || approval.runId === turn.runId,
+  );
 
   return (
     <aside className="orch-inspector" aria-labelledby="orch-inspector-heading">
@@ -156,6 +171,19 @@ export function OrchestrationTurnInspector({
         </div>
       </dl>
 
+      {turnApprovals.length > 0 && (
+        <ToolApprovalList
+          approvals={turnApprovals}
+          getAgentName={(agentId) => agentName(agents, agentId)}
+          runLabel={`Run ${turn.runId.slice(0, 8)}`}
+          pendingDecisionId={approvalPendingId}
+          pendingDecision={approvalPendingAction}
+          decisionErrors={approvalErrors}
+          onDecision={onApprovalDecision}
+          className="tool-approval-list-turn"
+        />
+      )}
+
       {completed && checkpoint && (
         <p className="orch-inspector-checkpoint">
           <span className="orch-checkpoint-badge">
@@ -178,7 +206,7 @@ export function OrchestrationTurnInspector({
 
       {node.failed && (
         <p className="orch-inspector-failure">
-          {humanizeFailure(turn.errorCode, turn.safeOutput)}
+          {humanizeFailure(turn.errorCode, turn.safeOutput, turn.modelId)}
           {turn.errorCode && <code>{turn.errorCode}</code>}
         </p>
       )}

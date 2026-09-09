@@ -29,6 +29,8 @@ import type {
   AuditTraceSummary,
   RunHistoryEntry,
   RunStatus,
+  ToolApprovalPublicDto,
+  ToolApprovalStatus,
   WorkspaceCheckpointStatus,
   WorkspaceCheckpointView,
   WorkspaceRecoveryView,
@@ -51,6 +53,15 @@ export interface AuditTraceQuery {
 export interface RunHistoryQuery {
   agentId?: string;
   status?: RunStatus;
+  limit?: number;
+}
+
+export interface ToolApprovalListQuery {
+  agentId?: string;
+  projectId?: string;
+  runId?: string;
+  orchestrationId?: string;
+  status?: ToolApprovalStatus;
   limit?: number;
 }
 
@@ -153,12 +164,44 @@ export const api = {
     }),
   listAgents: () => request<{ agents: Agent[] }>("/api/agents"),
   projectActivity: (projectId: string, limit = 200) =>
-    request<{ events: import("./types").AuditEventRecord[] }>(
+    request<{
+      events: import("./types").AuditEventRecord[];
+      /** Added by the approval projection; absent on older servers. */
+      approvals?: ToolApprovalPublicDto[];
+    }>(
       "/api/projects/" + encodeURIComponent(projectId) + "/activity?limit=" + limit,
     ),
   runActivity: (runId: string, limit = 100) =>
-    request<{ events: import("./types").AuditEventRecord[] }>(
+    request<{
+      events: import("./types").AuditEventRecord[];
+      /** Added by the approval projection; absent on older servers. */
+      approvals?: ToolApprovalPublicDto[];
+    }>(
       "/api/runs/" + encodeURIComponent(runId) + "/activity?limit=" + limit,
+    ),
+  /** Safe, owner-scoped approval projections. The default collection is pending-only. */
+  listApprovals: (query: ToolApprovalListQuery = {}) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (typeof value === "string" && value.length > 0) params.set(key, value);
+      else if (typeof value === "number") params.set(key, String(value));
+    }
+    const suffix = params.toString();
+    return request<{ approvals: ToolApprovalPublicDto[] }>(
+      "/api/approvals" + (suffix ? "?" + suffix : ""),
+    );
+  },
+  getApproval: (approvalId: string) =>
+    request<{ approval: ToolApprovalPublicDto }>(
+      "/api/approvals/" + encodeURIComponent(approvalId),
+    ),
+  decideApproval: (
+    approvalId: string,
+    body: { expectedVersion: number; approved: boolean; reason?: string },
+  ) =>
+    request<{ approval: ToolApprovalPublicDto }>(
+      "/api/approvals/" + encodeURIComponent(approvalId) + "/decision",
+      { method: "POST", body: JSON.stringify(body) },
     ),
   listTools: () => request<{ tools: import("./types").ToolMetadata[] }>("/api/tools"),
   traces: (query: AuditTraceQuery = {}) => {

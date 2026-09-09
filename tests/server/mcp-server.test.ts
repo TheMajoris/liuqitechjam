@@ -153,6 +153,7 @@ describe("MCP per-run advertisement snapshots", () => {
       agentId: "agent-1",
       projectId: "project-1",
       runId: "run-1",
+      sessionId: "session-1",
       traceparent: "traceparent",
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
       advertisedToolIds: ["visible.tool"],
@@ -176,9 +177,11 @@ describe("MCP per-run advertisement snapshots", () => {
       expect(hidden).toMatchObject({ isError: true });
       expect(executed).toHaveLength(0);
 
-      await expect(client.callTool({ name: "visible.tool", arguments: {} })).resolves.toMatchObject({
-        structuredContent: { ok: true },
+      const visibleResult = await client.callTool({ name: "visible.tool", arguments: {} });
+      expect(visibleResult).toMatchObject({
+        content: [{ type: "text", text: JSON.stringify({ ok: true }) }],
       });
+      expect(visibleResult).not.toHaveProperty("structuredContent");
       expect(executed).toHaveLength(1);
       expect(executed[0]).not.toHaveProperty("advertisedToolIds");
       expect(executed[0]).not.toHaveProperty("diagnostics");
@@ -200,6 +203,7 @@ describe("MCP per-run advertisement snapshots", () => {
       principal: agentPrincipal("agent-1"),
       agentId: "agent-1",
       runId: "run-legacy",
+      sessionId: "session-legacy",
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     };
     const server = createMcpServer(context, toolService);
@@ -228,6 +232,7 @@ describe("MCP per-run advertisement snapshots", () => {
       principal: agentPrincipal("agent-1"),
       agentId: "agent-1",
       runId: "run-failed-resolution",
+      sessionId: "session-failed-resolution",
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
       diagnostics: { resolutionStatus: "failed" },
     };

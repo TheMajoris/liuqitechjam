@@ -4,7 +4,7 @@ import {
   startChildProcessExecution,
   type ChildProcessExecution,
 } from "./child-process-execution.js";
-import type { AppConfig } from "./config.js";
+import { DEFAULT_MCP_TOOL_TIMEOUT_SEC, type AppConfig } from "./config.js";
 import {
   ModelInferenceLimitExceededError,
   RetryableModelError,
@@ -172,6 +172,7 @@ export function buildCodexArgs(
   request: RunnerRequest,
   sandboxMode: AppConfig["codexSandboxMode"],
   workspacePath = request.workspacePath,
+  mcpToolTimeoutSec = DEFAULT_MCP_TOOL_TIMEOUT_SEC,
 ): string[] {
   const args = [
     "exec",
@@ -198,6 +199,9 @@ export function buildCodexArgs(
       "-c",
       "mcp_servers.launchpad.bearer_token_env_var=" +
         JSON.stringify(MCP_BEARER_TOKEN_ENV),
+      "-c",
+      "mcp_servers.launchpad.tool_timeout_sec=" +
+        String(mcpToolTimeoutSec),
     );
   }
   if (request.threadId) {
@@ -363,7 +367,12 @@ export class CodexRunner implements AgentRunner {
       throw new Error("Agent already has an active Codex process");
     }
 
-    const args = buildCodexArgs(request, this.config.codexSandboxMode);
+    const args = buildCodexArgs(
+      request,
+      this.config.codexSandboxMode,
+      request.workspacePath,
+      this.config.mcpToolTimeoutSec,
+    );
     const parsed: ParsedEvents = {
       messages: [],
       threadId: request.threadId,

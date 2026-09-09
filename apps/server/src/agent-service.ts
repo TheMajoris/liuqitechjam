@@ -52,6 +52,7 @@ import type { RuntimeTelemetry } from "./telemetry/telemetry-types.js";
 import type { AuditRecorder } from "./audit/audit-types.js";
 import type { McpSessionService } from "./tools/mcp-session-service.js";
 import type { EffectiveToolResolution } from "./tools/effective-tool-resolver.js";
+import type { ToolApprovalInvalidator } from "./tools/tool-approval-store.js";
 import { buildUsageReport } from "./usage/usage-aggregator.js";
 import type { UsageReport, UsageReportOptions } from "./usage/usage-types.js";
 import { normalizeAppearance } from "./agent-appearance.js";
@@ -144,6 +145,7 @@ export class AgentService {
   private effectiveToolResolution: EffectiveToolResolutionReader | undefined;
   private telemetry: RuntimeTelemetry | undefined;
   private audit: AuditRecorder | undefined;
+  private toolApprovalInvalidator: ToolApprovalInvalidator | undefined;
   private lifecycleFailureSink: ApplicationLifecycleFailureSink | undefined;
   private startupReconciliation: RuntimeReconciliationResult | undefined;
   private readonly startupRecoveryAgents = new Set<string>();
@@ -224,6 +226,19 @@ export class AgentService {
   /** Attach the server-owned audit sink used for model fallback evidence. */
   setAuditRecorder(audit: AuditRecorder): void {
     this.audit = audit;
+  }
+
+  /**
+   * Attach the native tool-approval lifecycle fence after composition. The
+   * type-only seam keeps AgentService independent from the concrete store.
+   */
+  setToolApprovalInvalidator(invalidator: ToolApprovalInvalidator): void {
+    this.toolApprovalInvalidator = invalidator;
+    // Run cancellation is owned by the coordinator, not this facade. Keep the
+    // same server-wide fence attached there so every cancel path (including
+    // orchestration stop and storage-fatal quiescence) closes approvals before
+    // a child runtime can be stopped or a late decision can resume it.
+    this.runCoordinator.setToolApprovalInvalidator(invalidator);
   }
 
   /** Attach the application-owned lifecycle failure sink after app assembly. */
@@ -696,6 +711,11 @@ export class AgentService {
     const releaseProjectMutation =
       this.projectScope?.beginAgentDeletion?.(id) ?? (() => undefined);
     try {
+      // Close any approval-backed invocation before the Agent row and its
+      // attachments are removed. If a later filesystem/database step fails,
+      // the fail-closed terminal decision is still safer than leaving an
+      // executable approval attached to an Agent being deleted.
+      await this.toolApprovalInvalidator?.invalidateForAgent(id, "Agent was deleted");
       const archivedWorkspace = await this.workspaces.archive(stoppedAgent);
       const deletedAt = now();
       try {
