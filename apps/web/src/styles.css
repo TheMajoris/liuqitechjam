@@ -10386,3 +10386,107 @@ button.assignment-archive:hover:not(:disabled) {
     gap: 0;
   }
 }
+
+/* ------------------------------------------------------------------ *
+ * Picking an Agent up.
+ *
+ * The motion itself is the canvas's — the sprite lifts, the shadow pulls in,
+ * the zone lights up. Everything here is the part of a move that has to be
+ * words: what each partitioned room is called, which one the Agent is headed
+ * for, and how to do any of it without a mouse.
+ * ------------------------------------------------------------------ */
+
+.ws-plate {
+  /* A name plate is a handle as well as a label, and says so before it is
+     pressed. `:active` covers the moment before the drag threshold is met. */
+  cursor: grab;
+  touch-action: none;
+}
+
+.ws-plate:active {
+  cursor: grabbing;
+}
+
+.ws-plate.is-carrying {
+  z-index: 5;
+  cursor: grabbing;
+  border-color: var(--purple);
+  background: #ffffff;
+  box-shadow: 0 6px 14px rgba(60, 53, 36, 0.22), 0 0 0 3px var(--purple-soft);
+}
+
+/* Nothing in the overlay may swallow a pointer that is carrying an Agent
+   across the room — the plates sit directly over the floor being crossed. */
+.ws-overlay.is-carrying > * {
+  pointer-events: none;
+}
+
+/* One name per partitioned zone, shown only while a move is in progress. The
+   room is otherwise unlabelled on purpose; it is furniture, not a diagram. */
+.ws-drop-label {
+  position: absolute;
+  transform: translate(-50%, 0);
+  border-radius: 6px;
+  padding: 2px 7px;
+  color: var(--orch-muted);
+  background: rgba(251, 250, 247, 0.82);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  transition:
+    color 120ms var(--ease-out),
+    background-color 120ms var(--ease-out),
+    box-shadow 120ms var(--ease-out);
+}
+
+.ws-drop-label.is-active {
+  color: var(--purple-dark);
+  background: #ffffff;
+  box-shadow: 0 0 0 1px var(--purple), var(--elevation-1);
+}
+
+/*
+ * The running commentary on a move.
+ *
+ * Also the live region, which is why it is a real paragraph rather than a
+ * decoration: at rest it teaches the keyboard route, and during a move it is
+ * the only surface that names the destination for anyone who cannot see the
+ * highlighted zone.
+ */
+.ws-drag-hint {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  max-width: 56%;
+  margin: 0;
+  border-radius: 8px;
+  padding: 5px 9px;
+  color: var(--orch-muted);
+  background: rgba(251, 250, 247, 0.9);
+  font-size: 10.5px;
+  opacity: 0;
+  transition: opacity 160ms var(--ease-out), color 160ms var(--ease-out);
+  pointer-events: none;
+}
+
+/* Silent until it has something to say: the room explains itself on hover and
+   shouts nothing at someone who is only reading it. */
+.ws-stage:hover .ws-drag-hint,
+.ws-stage:focus-within .ws-drag-hint {
+  opacity: 1;
+}
+
+.ws-drag-hint.is-carrying {
+  opacity: 1;
+  color: var(--purple-dark);
+  background: #ffffff;
+  box-shadow: var(--elevation-1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-drop-label,
+  .ws-drag-hint {
+    transition: none;
+  }
+}

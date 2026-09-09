@@ -1,9 +1,12 @@
 import { useEffect, useRef } from "react";
 import { PERKS } from "./pixi/art/perks";
+import type { AgentPlacementController } from "./use-agent-placement";
 import type { WorkspaceDecorController } from "./use-workspace-decor";
 
 interface WorkspaceDecorPanelProps {
   decor: WorkspaceDecorController;
+  /** Where everyone has been put. Cosmetic in the same way the furniture is. */
+  placement?: AgentPlacementController;
   onClose: () => void;
 }
 
@@ -15,7 +18,7 @@ interface WorkspaceDecorPanelProps {
  * in the room, or how a turn is routed — the crew switch redraws the same
  * Agents in the same seats with the same states.
  */
-export function WorkspaceDecorPanel({ decor, onClose }: WorkspaceDecorPanelProps) {
+export function WorkspaceDecorPanel({ decor, placement, onClose }: WorkspaceDecorPanelProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -112,7 +115,30 @@ export function WorkspaceDecorPanel({ decor, onClose }: WorkspaceDecorPanelProps
         </ul>
       </fieldset>
 
+      {/* Where people stand is arranged by dragging them, not from here — but
+          an arrangement made by hand needs a way back that does not involve
+          remembering where everyone started. */}
+      {placement && (
+        <fieldset className="ws-decor-group">
+          <legend>Seating</legend>
+          <p className="ws-decor-note">
+            Drag an Agent to move them to another desk or into a zone. They wait
+            where you put them, and go where their work takes them.
+          </p>
+        </fieldset>
+      )}
+
       <div className="ws-decor-actions">
+        {placement && (
+          <button
+            type="button"
+            className="button button-ghost"
+            disabled={!placement.arranged}
+            onClick={placement.reset}
+          >
+            Put everyone back
+          </button>
+        )}
         <button
           type="button"
           className="button button-ghost"
