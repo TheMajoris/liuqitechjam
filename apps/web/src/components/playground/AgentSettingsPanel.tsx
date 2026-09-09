@@ -1,3 +1,5 @@
+import { motion } from "motion/react";
+import { transitions, variants } from "../../motion/motion-tokens";
 import type {
   Agent,
   AgentRole,
@@ -46,7 +48,15 @@ export function AgentSettingsPanel({
   onClose,
 }: AgentSettingsPanelProps) {
   return (
-    <form className="settings-panel" onSubmit={onSubmit}>
+    <motion.form
+      className="settings-panel"
+      onSubmit={onSubmit}
+      variants={variants.dockLeft}
+      initial="initial"
+      animate="animate"
+      exit="exit"
+      transition={transitions.slow}
+    >
       <div className="settings-title">
         <div>
           <span className="eyebrow">Agent configuration</span>
@@ -75,6 +85,6 @@ export function AgentSettingsPanel({
           {disabled ? <Spinner /> : "Save changes"}
         </button>
       </div>
-    </form>
+    </motion.form>
   );
 }

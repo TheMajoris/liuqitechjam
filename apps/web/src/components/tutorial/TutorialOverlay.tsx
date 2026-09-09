@@ -1,4 +1,6 @@
+import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { transitions, variants } from "../../motion/motion-tokens";
 import { TUTORIAL_STEPS, type TutorialStep } from "./tutorial-steps";
 import type { TutorialController } from "./use-tutorial";
 
@@ -10,7 +12,7 @@ interface Spotlight {
 }
 
 const PAD = 8;
-const CARD = { width: 340, gap: 16 };
+const CARD_GAP = 16;
 
 function measure(selector: string | undefined): Spotlight | null {
   if (!selector || typeof document === "undefined") return null;
@@ -28,34 +30,54 @@ function measure(selector: string | undefined): Spotlight | null {
   };
 }
 
-/** Keep the card on screen whichever side of the target it was asked for. */
+/**
+ * Keep the card on screen whichever side of the target it was asked for.
+ *
+ * Takes the card's real measured size rather than a guessed constant: a
+ * centred step used to assume a fixed height, so a step whose text happened
+ * to render taller or shorter than that guess centred on the wrong point,
+ * sometimes badly enough to clip off screen.
+ *
+ * Always returns a real, clamped position rather than `null` for a missing
+ * spot: the card is a single element reused across every step, and Framer
+ * Motion only writes the `top`/`left` keys present in `animate` — it never
+ * resets a key that stops being passed. A conditional `null` here used to
+ * leave the previous step's inline pixel position stuck on the element,
+ * which then outranked the centring CSS meant for a targetless step.
+ */
 function cardPosition(
   spot: Spotlight | null,
   placement: TutorialStep["placement"],
-): { top: number; left: number } | null {
-  if (!spot) return null;
+  cardSize: { width: number; height: number },
+): { top: number; left: number } {
   const viewportWidth = window.innerWidth;
   const viewportHeight = window.innerHeight;
-  const height = 250;
+  const { width, height } = cardSize;
+  if (!spot) {
+    return {
+      top: Math.max(12, (viewportHeight - height) / 2),
+      left: Math.max(12, (viewportWidth - width) / 2),
+    };
+  }
   let left =
     placement === "left"
-      ? spot.left - CARD.width - CARD.gap
+      ? spot.left - width - CARD_GAP
       : placement === "right"
-        ? spot.left + spot.width + CARD.gap
-        : spot.left + spot.width / 2 - CARD.width / 2;
+        ? spot.left + spot.width + CARD_GAP
+        : spot.left + spot.width / 2 - width / 2;
   let top =
     placement === "top"
-      ? spot.top - height - CARD.gap
+      ? spot.top - height - CARD_GAP
       : placement === "bottom"
-        ? spot.top + spot.height + CARD.gap
+        ? spot.top + spot.height + CARD_GAP
         : spot.top;
 
   // Flip rather than clip when the preferred side has no room.
-  if (left + CARD.width > viewportWidth - 12) {
-    left = Math.min(spot.left - CARD.width - CARD.gap, viewportWidth - CARD.width - 12);
+  if (left + width > viewportWidth - 12) {
+    left = Math.min(spot.left - width - CARD_GAP, viewportWidth - width - 12);
   }
-  if (left < 12) left = Math.min(spot.left + spot.width + CARD.gap, viewportWidth - CARD.width - 12);
-  left = Math.max(12, Math.min(left, viewportWidth - CARD.width - 12));
+  if (left < 12) left = Math.min(spot.left + spot.width + CARD_GAP, viewportWidth - width - 12);
+  left = Math.max(12, Math.min(left, viewportWidth - width - 12));
   top = Math.max(12, Math.min(top, viewportHeight - height - 12));
   return { top, left };
 }
@@ -76,7 +98,9 @@ interface TutorialOverlayProps {
 export function TutorialOverlay({ tutorial }: TutorialOverlayProps) {
   const step = TUTORIAL_STEPS[tutorial.stepIndex];
   const [spot, setSpot] = useState<Spotlight | null>(null);
+  const [cardSize, setCardSize] = useState({ width: 340, height: 220 });
   const nextRef = useRef<HTMLButtonElement | null>(null);
+  const cardRef = useRef<HTMLDivElement | null>(null);
 
   // Measure before paint so the hole and the card appear together.
   useLayoutEffect(() => {
@@ -94,6 +118,19 @@ export function TutorialOverlay({ tutorial }: TutorialOverlayProps) {
     };
   }, [step, tutorial.active, tutorial.stepIndex]);
 
+  // The card's own size drives its position, so a step whose text wraps to a
+  // different height still lands centred, or fully clear of its target,
+  // instead of by a guessed constant that only matched some steps.
+  useLayoutEffect(() => {
+    const node = cardRef.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      setCardSize({ width: node.offsetWidth, height: node.offsetHeight });
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [tutorial.active]);
+
   useEffect(() => {
     if (!tutorial.active) return;
     nextRef.current?.focus();
@@ -109,13 +146,23 @@ export function TutorialOverlay({ tutorial }: TutorialOverlayProps) {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [tutorial]);
 
-  if (!tutorial.active || !step) return null;
-
-  const position = cardPosition(spot, step.placement);
+  const position = cardPosition(spot, step?.placement, cardSize);
   const last = tutorial.stepIndex === tutorial.stepCount - 1;
 
   return (
-    <div className="tutorial-layer" role="dialog" aria-modal="true" aria-labelledby="tutorial-title">
+    <AnimatePresence>
+    {tutorial.active && step && (
+    <motion.div
+      className="tutorial-layer"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="tutorial-title"
+      variants={variants.fade}
+      initial="initial"
+      animate="animate"
+      exit="exit"
+      transition={transitions.base}
+    >
       {/*
         The scrim is one element with a giant spread shadow rather than four
         panels around the target: one box to animate, and the hole tracks the
@@ -136,9 +183,16 @@ export function TutorialOverlay({ tutorial }: TutorialOverlayProps) {
         onClick={tutorial.finish}
       />
 
-      <div
-        className={"tutorial-card" + (position ? "" : " is-centred")}
-        style={position ?? undefined}
+      {/* The card travels to the next thing it is pointing at rather than
+          teleporting, which is what ties a step to the one before it.
+          `top`/`left` are always supplied, even for a targetless step, so a
+          missing spot never leaves the previous step's position stuck. */}
+      <motion.div
+        ref={cardRef}
+        className="tutorial-card"
+        initial={{ opacity: 0, ...position }}
+        animate={{ opacity: 1, ...position }}
+        transition={transitions.base}
       >
         <div className="tutorial-progress" aria-hidden="true">
           {TUTORIAL_STEPS.map((item, index) => (
@@ -186,7 +240,9 @@ export function TutorialOverlay({ tutorial }: TutorialOverlayProps) {
             </button>
           </div>
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
+    )}
+    </AnimatePresence>
   );
 }

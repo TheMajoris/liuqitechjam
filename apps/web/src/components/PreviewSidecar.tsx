@@ -1,4 +1,6 @@
+import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
+import { transitions, variants } from "../motion/motion-tokens";
 import type { Preview } from "../types";
 
 export type PreviewActionError = {
@@ -104,10 +106,21 @@ export function PreviewSidecar({
     setLogsOpen(true);
   }, [displayedError]);
 
-  if (!open) return null;
-
   return (
-    <aside id="preview-sidecar" className="preview-sidecar" aria-labelledby="preview-sidecar-title">
+    // The panel leaves toward the edge it docks to, so closing reads as the
+    // undo of opening rather than as the panel being deleted.
+    <AnimatePresence>
+      {open && (
+        <motion.aside
+          id="preview-sidecar"
+          className="preview-sidecar"
+          aria-labelledby="preview-sidecar-title"
+          variants={variants.dockRight}
+          initial="initial"
+          animate="animate"
+          exit="exit"
+          transition={transitions.slow}
+        >
       <header className="sidecar-head">
         <div className="sidecar-title">
           <h2 id="preview-sidecar-title">Preview</h2>
@@ -253,6 +266,8 @@ export function PreviewSidecar({
           {busy === "stop" ? <Spinner /> : "Stop Server"}
         </button>
       </footer>
-    </aside>
+        </motion.aside>
+      )}
+    </AnimatePresence>
   );
 }

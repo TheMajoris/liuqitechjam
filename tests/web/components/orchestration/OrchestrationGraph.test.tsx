@@ -180,6 +180,37 @@ describe("OrchestrationGraph", () => {
     expect(html).toContain("Show 20 earlier turns");
   });
 
+  it("labels a row with the task, not the prompt that was sent", () => {
+    const html = renderToStaticMarkup(
+      <OrchestrationGraph
+        detail={detail({
+          turns: [
+            turn({
+              id: "t1",
+              stepIndex: 0,
+              safeInputSummary: [
+                "You are participating in a shared multi-Agent conversation.",
+                "You are participant p1 (Agent agent-p1), in role Reviewer, at position 0.",
+                "",
+                "<orchestration_task>",
+                "Build a to-do app",
+                "</orchestration_task>",
+                "",
+                "Handoff safety contract:",
+                "- Return only your normal participant response as ordinary output.",
+              ].join("\n"),
+            }),
+          ],
+        })}
+        agents={agents}
+      />,
+    );
+
+    expect(html).toContain("Build a to-do app");
+    expect(html).not.toContain("orchestration_task");
+    expect(html).not.toContain("Handoff safety contract");
+  });
+
   it("says there is nothing to draw before the first turn", () => {
     const html = renderToStaticMarkup(
       <OrchestrationGraph detail={detail()} agents={agents} />,

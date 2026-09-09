@@ -1,3 +1,4 @@
+import { AnimatePresence } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import type {
   Agent,
@@ -166,25 +167,27 @@ export function AgentWorkspaceView({
       </header>
 
       <div className="workspace-body">
-        {showSettings && (
-          <AgentSettingsPanel
-            agent={agent}
-            form={form}
-            modelCatalog={modelCatalog}
-            {...(modelResources === undefined ? {} : { modelResources })}
-            skillCatalog={skillCatalog}
-            skillLoading={skillLoading}
-            skillError={skillError}
-            assignedSkills={controller.agentSkills}
-            disabled={busy}
-            skillsDisabled={busy || agent.status === "busy"}
-            invalidModel={modelCatalog.modelSelectionInvalid}
-            roles={roles}
-            onChange={onFormChange}
-            onSubmit={onSave}
-            onClose={onCloseSettings}
-          />
-        )}
+        <AnimatePresence>
+          {showSettings && (
+            <AgentSettingsPanel
+              agent={agent}
+              form={form}
+              modelCatalog={modelCatalog}
+              {...(modelResources === undefined ? {} : { modelResources })}
+              skillCatalog={skillCatalog}
+              skillLoading={skillLoading}
+              skillError={skillError}
+              assignedSkills={controller.agentSkills}
+              disabled={busy}
+              skillsDisabled={busy || agent.status === "busy"}
+              invalidModel={modelCatalog.modelSelectionInvalid}
+              roles={roles}
+              onChange={onFormChange}
+              onSubmit={onSave}
+              onClose={onCloseSettings}
+            />
+          )}
+        </AnimatePresence>
         <section
           className="conversation-pane"
           aria-label={tab === "runs" ? "Runs" : "Conversation"}

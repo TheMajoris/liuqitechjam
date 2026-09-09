@@ -1,4 +1,6 @@
+import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
+import { transitions, variants } from "../../motion/motion-tokens";
 import type { Agent, OrchestrationSessionDetail } from "../../types";
 import { OrchestrationConversation } from "./OrchestrationConversation";
 import { OrchestrationGraph } from "./OrchestrationGraph";
@@ -105,10 +107,34 @@ export function OrchestrationRunTabs({
                 if (event.key === "ArrowLeft") moveFocus(tab, -1);
               }}
             >
-              {TAB_LABELS[tab]}
+              {/* One pill for the strip, not one per tab: it travels to the
+                  chosen tab, which says where the selection came from. */}
+              {activeTab === tab && (
+                <motion.span
+                  className="orch-run-tab-pill"
+                  layoutId="orch-run-tab-pill"
+                  transition={transitions.travel}
+                  aria-hidden="true"
+                />
+              )}
+              <span className="orch-run-tab-label">{TAB_LABELS[tab]}</span>
             </button>
           ))}
-          <span className="orch-run-tab-note">{TAB_NOTES[activeTab]}</span>
+          {/* The note describes the tab, so it changes with it rather than
+              cutting: the two readings would otherwise be indistinguishable. */}
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.span
+              key={activeTab}
+              className="orch-run-tab-note"
+              variants={variants.fade}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              transition={transitions.fast}
+            >
+              {TAB_NOTES[activeTab]}
+            </motion.span>
+          </AnimatePresence>
         </div>
       </div>
 

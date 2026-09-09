@@ -1,3 +1,4 @@
+import { AnimatePresence, motion } from "motion/react";
 import {
   createContext,
   useCallback,
@@ -8,6 +9,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { transitions, variants } from "../motion/motion-tokens";
 
 export interface ConfirmRequest {
   /** Short sentence naming what is about to happen. */
@@ -58,58 +60,72 @@ export function ConfirmDialog({ request, onClose }: ConfirmDialogProps) {
     };
   }, [onClose, request]);
 
-  if (!request) return null;
-
-  const tone = request.tone ?? "danger";
+  const tone = request?.tone ?? "danger";
 
   return (
-    <div
-      className="modal-backdrop confirm-backdrop"
-      onMouseDown={onClose}
-      role="presentation"
-    >
-      <div
-        className="modal confirm-modal"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="confirm-title"
-        aria-describedby={request.body ? "confirm-body" : undefined}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="confirm-head">
-          <span
-            className={"confirm-glyph is-" + tone}
-            aria-hidden="true"
+    // A confirmation is the one dialog that must not blink out: dismissing it
+    // and confirming it look identical if both vanish in a frame, and the
+    // reader is left unsure which one they just did.
+    <AnimatePresence>
+      {request && (
+        <motion.div
+          className="modal-backdrop confirm-backdrop"
+          onMouseDown={onClose}
+          role="presentation"
+          variants={variants.fade}
+          initial="initial"
+          animate="animate"
+          exit="exit"
+          transition={transitions.fast}
+        >
+          <motion.div
+            className="modal confirm-modal"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="confirm-title"
+            aria-describedby={request.body ? "confirm-body" : undefined}
+            onMouseDown={(event) => event.stopPropagation()}
+            variants={variants.modal}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+            transition={transitions.base}
           >
-            {tone === "danger" ? "!" : "?"}
-          </span>
-          <div>
-            <h2 id="confirm-title">{request.title}</h2>
-            {request.body && <p id="confirm-body">{request.body}</p>}
-          </div>
-        </div>
-        <div className="modal-footer confirm-footer">
-          <button
-            type="button"
-            ref={cancelRef}
-            className="button button-ghost"
-            onClick={onClose}
-          >
-            {request.cancelLabel ?? "Cancel"}
-          </button>
-          <button
-            type="button"
-            className={"button " + (tone === "danger" ? "button-danger" : "button-primary")}
-            onClick={() => {
-              request.onConfirm();
-              onClose();
-            }}
-          >
-            {request.confirmLabel ?? "Delete"}
-          </button>
-        </div>
-      </div>
-    </div>
+            <div className="confirm-head">
+              <span className={"confirm-glyph is-" + tone} aria-hidden="true">
+                {tone === "danger" ? "!" : "?"}
+              </span>
+              <div>
+                <h2 id="confirm-title">{request.title}</h2>
+                {request.body && <p id="confirm-body">{request.body}</p>}
+              </div>
+            </div>
+            <div className="modal-footer confirm-footer">
+              <button
+                type="button"
+                ref={cancelRef}
+                className="button button-ghost"
+                onClick={onClose}
+              >
+                {request.cancelLabel ?? "Cancel"}
+              </button>
+              <button
+                type="button"
+                className={
+                  "button " + (tone === "danger" ? "button-danger" : "button-primary")
+                }
+                onClick={() => {
+                  request.onConfirm();
+                  onClose();
+                }}
+              >
+                {request.confirmLabel ?? "Delete"}
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
 

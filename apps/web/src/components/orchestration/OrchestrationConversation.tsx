@@ -1,3 +1,4 @@
+import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import type {
   Agent,
@@ -5,6 +6,7 @@ import type {
   OrchestrationSessionDetail,
   OrchestrationTurn,
 } from "../../types";
+import { transitions, variants } from "../../motion/motion-tokens";
 import { MarkdownMessage } from "../MarkdownMessage";
 import type { OrchestrationAction } from "./use-orchestration";
 import { StickyComposer } from "../StickyComposer";
@@ -33,6 +35,22 @@ interface OrchestrationConversationProps {
 }
 
 const UNFINISHED: OrchestrationTurn["status"][] = ["failed", "cancelled", "timed_out"];
+
+/**
+ * How a message joins the transcript.
+ *
+ * Every bubble shares this, so a follow-up the reader typed and a reply an
+ * Agent produced arrive the same way. A turn that is still working keeps its
+ * key when it completes, so the typing indicator becomes the reply in place
+ * instead of one message leaving and another arriving.
+ */
+const chatItemMotion = {
+  variants: variants.rise,
+  initial: "initial",
+  animate: "animate",
+  exit: "exit",
+  transition: transitions.base,
+} as const;
 
 function closingNote(detail: OrchestrationSessionDetail): string | null {
   const { session } = detail;
@@ -154,10 +172,21 @@ export function OrchestrationConversation({
           </li>
         )}
 
+        {/* `initial={false}` matters: opening a finished conversation must
+            show its record at once, not replay forty turns arriving. Only
+            what actually appears while the reader is watching animates.
+            Keyed by session because that skip applies to a presence group's
+            first render only — without it, switching conversations would
+            animate every old turn out while every new one arrived. */}
+        <AnimatePresence initial={false} key={session.id}>
         {entries.map((entry) => {
           if (entry.kind === "prompt") {
             return (
-              <li className="orch-chat-item orch-chat-item-user" key={entry.prompt.id}>
+              <motion.li
+                className="orch-chat-item orch-chat-item-user"
+                key={entry.prompt.id}
+                {...chatItemMotion}
+              >
                 <div className="orch-chat-bubble">
                   <div className="orch-chat-topline">
                     <strong>You</strong>
@@ -165,7 +194,7 @@ export function OrchestrationConversation({
                   </div>
                   <p className="orch-chat-text">{entry.prompt.prompt}</p>
                 </div>
-              </li>
+              </motion.li>
             );
           }
 
@@ -181,7 +210,7 @@ export function OrchestrationConversation({
 
           if (turn.status === "dispatched") {
             return (
-              <li className="orch-chat-item" key={turn.id}>
+              <motion.li className="orch-chat-item" key={turn.id} {...chatItemMotion}>
                 <AgentAvatar agentId={turn.agentId} name={name} />
                 <div className="orch-chat-bubble is-typing">
                   <div className="orch-chat-topline">
@@ -195,12 +224,12 @@ export function OrchestrationConversation({
                     <span className="orch-sr-only">{name} is working on its turn</span>
                   </p>
                 </div>
-              </li>
+              </motion.li>
             );
           }
 
           return (
-            <li className="orch-chat-item" key={turn.id}>
+            <motion.li className="orch-chat-item" key={turn.id} {...chatItemMotion}>
               <AgentAvatar agentId={turn.agentId} name={name} />
               <div className={`orch-chat-bubble ${unfinished ? "is-unfinished" : ""}`}>
                 <div className="orch-chat-topline">
@@ -283,12 +312,12 @@ export function OrchestrationConversation({
                   </div>
                 )}
               </div>
-            </li>
+            </motion.li>
           );
         })}
 
         {pending && (
-          <li className="orch-chat-item" key="pending">
+          <motion.li className="orch-chat-item" key="pending" {...chatItemMotion}>
             <AgentAvatar
               agentId={pending.agentId}
               name={agentName(agents, pending.agentId)}
@@ -306,8 +335,9 @@ export function OrchestrationConversation({
                 </span>
               </p>
             </div>
-          </li>
+          </motion.li>
         )}
+        </AnimatePresence>
       </ol>
 
       {ordered.length === 0 && !active && session.status === "draft" && (

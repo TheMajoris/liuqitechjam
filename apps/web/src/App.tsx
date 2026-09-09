@@ -1,3 +1,4 @@
+import { AnimatePresence } from "motion/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
 import { useConfirm } from "./components/ConfirmDialog";
@@ -687,25 +688,27 @@ export default function App() {
 
       <TutorialOverlay tutorial={tutorial} />
 
-      {showCreate && (
-        <CreateAgentModal
-          form={form}
-          modelCatalog={modelCatalog}
-          modelResources={modelResources.byKey}
-          skillCatalog={skillCatalog.catalog}
-          skillLoading={skillCatalog.loading}
-          skillError={skillCatalog.error}
-          roles={roles}
-          disabled={busy}
-          invalidModel={modelCatalog.modelSelectionInvalid}
-          onChange={(changes) => setForm((current) => ({ ...current, ...changes }))}
-          onSubmit={createAgent}
-          onClose={() => {
-            setShowCreate(false);
-            setResumeComposer(null);
-          }}
-        />
-      )}
+      <AnimatePresence>
+        {showCreate && (
+          <CreateAgentModal
+            form={form}
+            modelCatalog={modelCatalog}
+            modelResources={modelResources.byKey}
+            skillCatalog={skillCatalog.catalog}
+            skillLoading={skillCatalog.loading}
+            skillError={skillCatalog.error}
+            roles={roles}
+            disabled={busy}
+            invalidModel={modelCatalog.modelSelectionInvalid}
+            onChange={(changes) => setForm((current) => ({ ...current, ...changes }))}
+            onSubmit={createAgent}
+            onClose={() => {
+              setShowCreate(false);
+              setResumeComposer(null);
+            }}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

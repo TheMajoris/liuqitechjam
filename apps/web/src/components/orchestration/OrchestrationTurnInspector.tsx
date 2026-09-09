@@ -1,4 +1,7 @@
-import type { Agent, WorkspaceCheckpointView } from "../../types";
+import { useMemo } from "react";
+import type { Agent, OrchestrationParticipant, WorkspaceCheckpointView } from "../../types";
+import { MarkdownMessage } from "../MarkdownMessage";
+
 import {
   agentName,
   eventLabel,
@@ -9,10 +12,20 @@ import {
   turnStatusLabel,
 } from "./orchestration-utils";
 import type { GraphNode } from "./orchestration-graph";
+import {
+  buildTurnBriefing,
+  digestReply,
+  type NarrativeExcerpt,
+} from "./turn-narrative";
 
 export interface OrchestrationTurnInspectorProps {
   node: GraphNode;
   agents: Agent[];
+  /**
+   * The roster, used only to name the Agents quoted inside a turn's briefing.
+   * Absent for callers that do not hold one; the Agent name is then enough.
+   */
+  participants?: readonly OrchestrationParticipant[];
   /** Absent when the caller cannot retry, which closes the affordance. */
   onRetry?: ((fromStepIndex: number) => void) | undefined;
   retryPending?: boolean;
@@ -38,8 +51,39 @@ export interface OrchestrationTurnInspectorProps {
 }
 
 /**
- * What one dot on the graph actually records: its status, its timings, and the
- * journal entries written against its Run.
+ * Name the Agent behind one quoted excerpt, in the reader's vocabulary.
+ *
+ * The prompt identifies speakers by opaque ID. A reader knows them by the name
+ * on the roster and the job they were given, so both are recovered and the ID
+ * is never shown.
+ */
+function speakerLabel(
+  agents: readonly Agent[],
+  participants: readonly OrchestrationParticipant[],
+  excerpt: NarrativeExcerpt,
+): string {
+  const role =
+    participants.find((participant) => participant.id === excerpt.participantId)?.role.trim() ??
+    "";
+  const name = excerpt.agentId ? agentName(agents, excerpt.agentId) : "";
+  if (name && role && role !== name) return name + " · " + role;
+  return name || role || "Another Agent";
+}
+
+function stepTag(stepNumber: number | undefined): string {
+  return stepNumber === undefined ? "··" : String(stepNumber).padStart(2, "0");
+}
+
+/**
+ * What one dot on the graph actually records: its status, its timings, what it
+ * was asked to do, what it answered, and the journal entries written against
+ * its Run.
+ *
+ * The record the server keeps is the rendered handoff prompt — delimiters,
+ * identifiers, safety contract and all. That text is kept verbatim behind a
+ * disclosure, because it is the truthful artefact, but it is not what the panel
+ * leads with: a reader opening a step wants the task, the role, the result
+ * handed over, and the conversation so far, in their own words.
  *
  * A failed turn offers the legacy retry, which reruns the Agent against the
  * files as they are now. A completed turn with a recorded source checkpoint
@@ -49,6 +93,7 @@ export interface OrchestrationTurnInspectorProps {
 export function OrchestrationTurnInspector({
   node,
   agents,
+  participants = [],
   onRetry,
   retryPending = false,
   retryBlocked = false,
@@ -64,17 +109,23 @@ export function OrchestrationTurnInspector({
   const { turn } = node;
   const reason = node.reason && !isInternalWording(node.reason) ? node.reason.trim() : "";
   const canRetry = Boolean(onRetry) && turn.stepIndex !== undefined;
-  const name = agentName(agents, turn.agentId);
   const completed = turn.status === "completed";
   const recoverable = completed && checkpoint !== undefined && checkpoint.recoverable;
   const canRecover = recoverable && Boolean(onRecover);
+  const briefing = useMemo(
+    () => buildTurnBriefing(turn.safeInputSummary),
+    [turn.safeInputSummary],
+  );
+  const reply = useMemo(() => digestReply(turn.safeOutput), [turn.safeOutput]);
+  const speaker = (excerpt: NarrativeExcerpt) =>
+    speakerLabel(agents, participants, excerpt);
 
   return (
     <aside className="orch-inspector" aria-labelledby="orch-inspector-heading">
       <div className="orch-inspector-head">
         <div>
           <span className="orch-eyebrow">Step {node.stepNumber}</span>
-          <h3 id="orch-inspector-heading">{name}</h3>
+          <h3 id="orch-inspector-heading">{agentName(agents, turn.agentId)}</h3>
         </div>
         <button
           type="button"
@@ -141,16 +192,114 @@ export function OrchestrationTurnInspector({
 
       <section className="orch-inspector-section">
         <h4>Asked to do</h4>
-        <p className="orch-inspector-quote">{turn.safeInputSummary || "—"}</p>
+        {briefing.task ? (
+          <div className="orch-brief-item">
+            <span className="orch-brief-label">The task</span>
+            <p className="orch-brief-text">{briefing.task}</p>
+          </div>
+        ) : (
+          <p className="orch-inspector-empty">
+            No instructions were recorded for this turn.
+          </p>
+        )}
+
+        {briefing.role && (
+          <div className="orch-brief-item">
+            <span className="orch-brief-label">Its job on the team</span>
+            <p className="orch-brief-text">{briefing.role}</p>
+          </div>
+        )}
+
+        {briefing.handoff && (
+          <div className="orch-brief-item">
+            <span className="orch-brief-label">
+              Handed over by {speaker(briefing.handoff)}
+            </span>
+            <p className="orch-brief-text orch-inspector-quote">
+              {briefing.handoff.text}
+              {briefing.handoff.truncated && <em> (shortened)</em>}
+            </p>
+          </div>
+        )}
+
+        {briefing.context.length > 0 && (
+          <div className="orch-brief-item">
+            <span className="orch-brief-label">
+              What had happened before ({briefing.context.length}{" "}
+              {briefing.context.length === 1 ? "turn" : "turns"})
+            </span>
+            <ol className="orch-brief-context">
+              {briefing.context.map((entry, index) => (
+                <li key={index}>
+                  <span className="orch-brief-step">{stepTag(entry.stepNumber)}</span>
+                  <div className="orch-brief-context-body">
+                    <span className="orch-brief-speaker">{speaker(entry)}</span>
+                    <p className="orch-brief-text orch-inspector-quote">
+                      {entry.text}
+                      {entry.truncated && <em> (shortened)</em>}
+                    </p>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
+
+        {briefing.truncated && (
+          <p className="orch-inspector-note">
+            This record was shortened when it was written, so some of it is missing.
+          </p>
+        )}
+
+        {/* Kept verbatim: the briefing above is a reading of this text, and a
+            reader checking the Agent's behaviour needs the text itself. */}
+        {briefing.recognized && (
+          <details className="orch-verbatim">
+            <summary>Exact text sent to this Agent</summary>
+            <pre>{turn.safeInputSummary}</pre>
+          </details>
+        )}
       </section>
 
-      {turn.safeOutput && !node.failed && (
+      {turn.safeOutput && !reply.empty && !node.failed && (
         <section className="orch-inspector-section">
           <h4>Replied</h4>
-          <p className="orch-inspector-quote">
-            {turn.safeOutput}
-            {turn.outputTruncated && <em> (truncated)</em>}
-          </p>
+          {/* A reply with no structure of its own is already readable, and
+              summarising it to one sentence would only hide the rest. Only a
+              structured reply earns an at-a-glance list above its full text. */}
+          {reply.keyPoints.length === 0 ? (
+            <MarkdownMessage
+              content={turn.safeOutput}
+              className="orch-inspector-markdown"
+            />
+          ) : (
+            <>
+              {reply.headline && <p className="orch-brief-text">{reply.headline}</p>}
+              <ul className="orch-brief-points">
+                {reply.keyPoints.map((point) => (
+                  <li key={point}>{point}</li>
+                ))}
+              </ul>
+              {reply.codeBlocks > 0 && (
+                <p className="orch-inspector-note">
+                  Includes {reply.codeBlocks} code{" "}
+                  {reply.codeBlocks === 1 ? "block" : "blocks"}, shown in the full reply.
+                </p>
+              )}
+              <details className="orch-verbatim">
+                <summary>Full reply</summary>
+                <MarkdownMessage
+                  content={turn.safeOutput}
+                  className="orch-inspector-markdown"
+                />
+              </details>
+            </>
+          )}
+          {turn.outputTruncated && (
+            <p className="orch-inspector-note">
+              This reply was shortened when it was recorded.
+            </p>
+          )}
         </section>
       )}
 
@@ -179,7 +328,7 @@ export function OrchestrationTurnInspector({
             disabled={recoverPending || recoverBlocked || recoverDisabled}
             onClick={() => onRecover?.(checkpoint.checkpointId)}
           >
-            {recoverPending ? "Restoring…" : `Restore after ${name} and resume`}
+            {recoverPending ? "Restoring…" : `Restore after ${agentName(agents, turn.agentId)} and resume`}
           </button>
           <p className="orch-inspector-note" role={recoverPending ? "status" : undefined}>
             {recoverBlocked
@@ -210,7 +359,7 @@ export function OrchestrationTurnInspector({
                 ? "Retrying this Agent turn using the current files…"
                 : retryDisabled
                   ? "Wait for the current action to finish."
-                  : "This reruns the Agent turn using the current files and continues from there. Earlier turns stay in the record. Workspace files are not rolled back."}
+                  : "This reruns the Agent turn using the current files and continues from there. Earlier turns stay in the record. Shared Workspace files are not rolled back."}
           </p>
         </section>
       )}
