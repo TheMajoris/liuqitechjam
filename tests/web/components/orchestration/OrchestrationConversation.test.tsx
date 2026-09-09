@@ -129,8 +129,54 @@ describe("Team conversation composer", () => {
 
     expect(html).toContain("Retry from this turn");
     expect(html).toContain("Web access was denied. Assign this Agent a role that allows the requested web tool, then retry this turn.");
-    expect(html).toContain("This reruns the Agent turn");
+    expect(html).toContain("This reruns the Agent turn using the current files");
     expect(html).toContain("Shared Workspace files are not rolled back.");
+    expect(html).not.toContain("continuing from the checkpoint");
+  });
+
+  it("offers a restore for a completed turn with a recoverable checkpoint", () => {
+    const detail = detailFor("completed");
+    detail.turns = [
+      {
+        ...failedTurn(),
+        status: "completed",
+        errorCode: null,
+        safeOutput: "Done.",
+        workspaceCheckpointId: "cp-9",
+      },
+    ];
+    detail.checkpoints = [
+      {
+        checkpointId: "cp-9",
+        projectId: "project-1",
+        ordinal: 3,
+        kind: "turn_success",
+        state: "ready",
+        orchestrationId: "session-1",
+        turnId: "turn-1",
+        runId: "run-1",
+        stepIndex: 0,
+        createdAt: "2026-01-01T00:00:06.000Z",
+        fileCount: 4,
+        byteCount: 100,
+        excludedFileCount: 0,
+        recoverable: true,
+        unavailableReason: null,
+      },
+    ];
+    const html = renderToStaticMarkup(
+      <OrchestrationConversation
+        detail={detail}
+        agents={agents}
+        onRecover={() => undefined}
+        onContinue={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("Checkpoint #3");
+    expect(html).toContain("Restore after fe builder2 and resume");
+    expect(html).toContain("safety checkpoint");
+    expect(html).not.toContain("cp-9");
   });
 
   it("disables retry while the session is active or retry is pending", () => {

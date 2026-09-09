@@ -21,8 +21,10 @@ import type {
   RuntimeReconciliationResult,
   RunnerRequest,
   RunnerResult,
+  WorkspaceWriterSettlement,
 } from "./types.js";
 import {
+  isPositiveRuntimeAbsence,
   reconcileOwnedContainerRuntimes,
   type RuntimeContainerEngineExec,
 } from "./runtime-reconciliation.js";
@@ -376,7 +378,7 @@ export class ContainerCodexRunner implements AgentRunner {
     containerName: string,
     child: ChildProcess | undefined,
     sandboxAudit: SandboxAuditSink | undefined,
-  ): Promise<ContainerState | null> {
+  ): Promise<{ state: ContainerState | null; settlement: WorkspaceWriterSettlement }> {
     const cleanupStartedAt = Date.now();
     let state: ContainerState | null = null;
     try {
@@ -388,15 +390,22 @@ export class ContainerCodexRunner implements AgentRunner {
     } catch {
       state = null;
     }
+    // Settlement is positive evidence only: a successful forced removal, or
+    // the engine stating that the named container does not exist. An engine
+    // failure or timeout is unknown, even when a model result exists.
+    let settlement: WorkspaceWriterSettlement = "unknown";
     try {
       await this.execEngine(
         ["rm", "--force", containerName],
         REMOVE_TIMEOUT_MS,
       );
-    } catch {
-      // Only a stop path owns the container's removal; on the normal path the
-      // container is already gone and a rejection is expected.
-      if (child) {
+      settlement = "settled";
+    } catch (error) {
+      if (isPositiveRuntimeAbsence(error)) {
+        settlement = "settled";
+      } else if (child) {
+        // Only a stop path owns the container's removal; on the normal path
+        // the container is already gone and a rejection is expected.
         sandboxAudit?.cleanupFailed({
           stage: "remove",
           durationMs: Date.now() - cleanupStartedAt,
@@ -406,7 +415,7 @@ export class ContainerCodexRunner implements AgentRunner {
         forceKill.unref();
       }
     }
-    return state;
+    return { state, settlement };
   }
 
   async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -456,11 +465,12 @@ export class ContainerCodexRunner implements AgentRunner {
         request.agentId,
         this.config.runtimeInstanceId,
       );
-      let termination: Promise<ContainerState | null> | null = null;
+      let termination: Promise<{ state: ContainerState | null; settlement: WorkspaceWriterSettlement }> | null = null;
       let inspectedState: ContainerState | null = null;
+      let settlement: WorkspaceWriterSettlement = "unknown";
       // Inspect + remove is idempotent per run: the stop path and the normal
       // path share one promise so the container is never inspected twice.
-      const cleanup = (child?: ChildProcess): Promise<ContainerState | null> => {
+      const cleanup = async (child?: ChildProcess): Promise<ContainerState | null> => {
         if (!termination) {
           termination = this.inspectAndRemove(
             activeContainerName,
@@ -468,7 +478,9 @@ export class ContainerCodexRunner implements AgentRunner {
             request.sandboxAudit,
           );
         }
-        return termination;
+        const outcome = await termination;
+        settlement = outcome.settlement;
+        return outcome.state;
       };
       let execution: ChildProcessExecution;
       request.sandboxAudit?.started({
@@ -527,13 +539,14 @@ export class ContainerCodexRunner implements AgentRunner {
         inspectedState = await cleanup();
         const cleanupControlError = this.operationError(context);
         if (cleanupControlError) throw cleanupControlError;
-        return finalizeCodexRun(parsed, result, {
+        const finalized = finalizeCodexRun(parsed, result, {
           timeout: "Runtime timed out after " + this.config.codexTimeoutMs + " ms",
           exit: "Container runtime exited with code " + result.exitCode,
           missing: "Codex completed without an agent message",
           missingTruncated:
             "Codex completed without an agent message after an oversized event was dropped; raise CODEX_MAX_OUTPUT_BYTES",
         });
+        return { ...finalized, workspaceSettlement: settlement };
       } finally {
         this.active.delete(request.agentId);
         this.healthSampler?.stop(runId);

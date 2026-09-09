@@ -1,6 +1,7 @@
 import type { AgentService } from "../agent-service.js";
 import { isAuthorizationError } from "../access/authorization-service.js";
-import { ProjectPermissionDeniedError } from "../errors.js";
+import { CHECKPOINT_CAPTURE_FAILED, ProjectPermissionDeniedError } from "../errors.js";
+import type { WorkspaceExecutionContext } from "../projects/workspace-checkpoint-types.js";
 
 export interface PlatformAgentInvokerInput {
   agentId: string;
@@ -11,6 +12,8 @@ export interface PlatformAgentInvokerInput {
   orchestrationId?: string | undefined;
   /** Audit span of the dispatching participant; the child Run parents under it. */
   parentSpan?: { traceId: string; spanId: string } | undefined;
+  /** Trusted checkpoint execution identity; never read from Agent output. */
+  workspace?: WorkspaceExecutionContext | undefined;
   timeoutMs: number;
   signal?: AbortSignal;
   /** Absolute deadline for this participant operation, including acceptance. */
@@ -19,8 +22,15 @@ export interface PlatformAgentInvokerInput {
   onRunAccepted?: (runId: string) => void | Promise<void>;
 }
 
+export interface PlatformAgentInvokerResult {
+  runId: string;
+  output: string;
+  /** The captured candidate for a checkpoint-enabled turn. */
+  workspaceCheckpointId?: string | undefined;
+}
+
 export interface PlatformAgentInvokerContract {
-  invoke(input: PlatformAgentInvokerInput): Promise<{ runId: string; output: string }>;
+  invoke(input: PlatformAgentInvokerInput): Promise<PlatformAgentInvokerResult>;
   cancel(runId: string): Promise<void>;
   /** Physical-only cancellation for storage-fatal shutdown. */
   cancelForStorageFailure?(runId: string): Promise<void>;
@@ -113,7 +123,7 @@ export class PlatformAgentInvoker implements PlatformAgentInvokerContract {
 
   async invoke(
     input: PlatformAgentInvokerInput,
-  ): Promise<{ runId: string; output: string }> {
+  ): Promise<PlatformAgentInvokerResult> {
     if (!Number.isFinite(input.timeoutMs) || input.timeoutMs < 0) {
       throw new TypeError("timeoutMs must be a non-negative finite number");
     }
@@ -136,6 +146,7 @@ export class PlatformAgentInvoker implements PlatformAgentInvokerContract {
           ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
           ...(input.orchestrationId === undefined ? {} : { orchestrationId: input.orchestrationId }),
           ...(input.parentSpan === undefined ? {} : { parentSpan: input.parentSpan }),
+          ...(input.workspace === undefined ? {} : { workspace: input.workspace }),
           signal: operation.signal,
           deadlineAt: operation.deadlineAt,
         });
@@ -198,7 +209,18 @@ export class PlatformAgentInvoker implements PlatformAgentInvokerContract {
       if (run.output === null || run.output.trim().length === 0) {
         throw new Error("Agent Run " + run.id + " completed without output");
       }
-      return { runId: run.id, output: run.output };
+      if (input.workspace !== undefined && run.workspaceCheckpointId === undefined) {
+        // A checkpoint-enabled turn without a captured candidate is not a
+        // recoverable success, whatever the Run status says.
+        const error = new Error("Agent Run " + run.id + " completed without a source checkpoint");
+        Object.assign(error, { orchestrationErrorCode: CHECKPOINT_CAPTURE_FAILED });
+        throw error;
+      }
+      return {
+        runId: run.id,
+        output: run.output,
+        ...(run.workspaceCheckpointId === undefined ? {} : { workspaceCheckpointId: run.workspaceCheckpointId }),
+      };
     } finally {
       operation.dispose();
     }

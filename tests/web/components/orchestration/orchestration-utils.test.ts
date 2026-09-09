@@ -1,11 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  checkpointForTurn,
+  eventLabel,
   humanizeAgentRunFailure,
   humanizeFailure,
+  isRecoveryPending,
+  recoveryStageLabel,
   validateDraft,
   validateWorkspaceTask,
 } from "../../../../apps/web/src/components/orchestration/orchestration-utils";
-import type { Agent } from "../../../../apps/web/src/types";
+import type {
+  Agent,
+  OrchestrationTurn,
+  WorkspaceCheckpointView,
+} from "../../../../apps/web/src/types";
 import type {
   OrchestrationDraft,
   OrchestrationParticipant,
@@ -103,5 +111,107 @@ describe("runtime failure wording", () => {
     expect(humanizeAgentRunFailure(undefined, "a provider request id")).toBe(
       "The Agent could not complete this run.",
     );
+  });
+
+  it("explains a failed checkpoint capture without discarding the reply", () => {
+    const expected =
+      "The Agent finished, but its Workspace files could not be checkpointed. Its reply is kept; restore an earlier checkpoint or retry once the Workspace is settled.";
+
+    expect(humanizeFailure("CHECKPOINT_CAPTURE_FAILED")).toBe(expected);
+    expect(humanizeAgentRunFailure("CHECKPOINT_CAPTURE_FAILED", "git detail")).toBe(expected);
+    expect(humanizeFailure("CHECKPOINT_PUBLISH_FAILED")).toContain("reply is kept");
+    expect(humanizeFailure("CHECKPOINT_RUNTIME_UNSUPPORTED")).toContain("not available");
+  });
+});
+
+describe("workspace checkpoint wording", () => {
+  it("labels every checkpoint and recovery event in product words", () => {
+    expect(eventLabel("workspace_checkpoint_created")).toBe("Workspace checkpoint saved");
+    expect(eventLabel("workspace_checkpoint_failed")).toBe("Workspace checkpoint failed");
+    expect(eventLabel("workspace_checkpoint_restore_started")).toBe("Workspace restore started");
+    expect(eventLabel("workspace_checkpoint_restored")).toBe("Workspace source restored");
+    expect(eventLabel("workspace_checkpoint_restore_failed")).toBe("Workspace restore failed");
+    expect(eventLabel("workspace_recovery_resumed")).toBe("Resumed from a restored checkpoint");
+  });
+
+  it("treats only the in-progress stages as pending", () => {
+    for (const stage of ["reserved", "preparing", "backed_up", "restoring", "restored"] as const) {
+      expect(isRecoveryPending(stage)).toBe(true);
+    }
+    for (const stage of ["resume_accepted", "settled", "failed", "recovery_required"] as const) {
+      expect(isRecoveryPending(stage)).toBe(false);
+    }
+    expect(isRecoveryPending(undefined)).toBe(false);
+    expect(isRecoveryPending(null)).toBe(false);
+  });
+
+  it("names the stage a recovery is at, with its code when it needs attention", () => {
+    expect(recoveryStageLabel("preparing")).toBe("Saving safety checkpoint…");
+    expect(recoveryStageLabel("restoring")).toBe("Restoring source…");
+    expect(recoveryStageLabel("restored")).toBe("Source restored, resuming…");
+    expect(recoveryStageLabel("recovery_required", "CHECKPOINT_RESTORE_FAILED")).toBe(
+      "Recovery needs attention (CHECKPOINT_RESTORE_FAILED).",
+    );
+  });
+});
+
+describe("checkpointForTurn", () => {
+  const checkpoint = (overrides: Partial<WorkspaceCheckpointView>): WorkspaceCheckpointView => ({
+    checkpointId: "cp-a",
+    projectId: "project-1",
+    ordinal: 1,
+    kind: "turn_success",
+    state: "ready",
+    orchestrationId: "session-1",
+    turnId: "turn-a",
+    runId: "run-a",
+    stepIndex: 0,
+    createdAt: "2026-09-08T00:00:00.000Z",
+    fileCount: 1,
+    byteCount: 10,
+    excludedFileCount: 0,
+    recoverable: true,
+    unavailableReason: null,
+    ...overrides,
+  });
+  const turn = (overrides: Partial<OrchestrationTurn>): OrchestrationTurn => ({
+    id: "turn-a",
+    sessionId: "session-1",
+    participantId: "p1",
+    agentId: "agent-1",
+    runId: "run-a",
+    stepIndex: 0,
+    position: 0,
+    status: "completed",
+    safeInputSummary: "",
+    safeOutput: null,
+    outputTruncated: false,
+    errorCode: null,
+    createdAt: "2026-09-08T00:00:00.000Z",
+    completedAt: "2026-09-08T00:00:01.000Z",
+    ...overrides,
+  });
+
+  it("joins by the turn's recorded checkpoint ID, never by Agent or position", () => {
+    const detail = {
+      checkpoints: [
+        checkpoint({ checkpointId: "cp-a", ordinal: 1, turnId: "turn-a" }),
+        checkpoint({ checkpointId: "cp-b", ordinal: 2, turnId: "turn-b", stepIndex: 1 }),
+      ],
+    };
+    // The same Agent spoke twice; the second turn must resolve to its own snapshot.
+    const second = turn({ id: "turn-b", stepIndex: 1, workspaceCheckpointId: "cp-b" });
+
+    expect(checkpointForTurn(detail, second)?.ordinal).toBe(2);
+    expect(checkpointForTurn(detail, turn({ workspaceCheckpointId: "cp-a" }))?.ordinal).toBe(1);
+  });
+
+  it("returns nothing for a turn without a checkpoint or a detail without any", () => {
+    const detail = { checkpoints: [checkpoint({})] };
+
+    expect(checkpointForTurn(detail, turn({}))).toBeUndefined();
+    expect(checkpointForTurn(detail, turn({ workspaceCheckpointId: "missing" }))).toBeUndefined();
+    expect(checkpointForTurn({}, turn({ workspaceCheckpointId: "cp-a" }))).toBeUndefined();
+    expect(checkpointForTurn(null, turn({ workspaceCheckpointId: "cp-a" }))).toBeUndefined();
   });
 });

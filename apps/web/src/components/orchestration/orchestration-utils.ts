@@ -6,8 +6,11 @@ import type {
   OrchestrationEventType,
   OrchestrationMode,
   OrchestrationParticipant,
+  OrchestrationSessionDetail,
   OrchestrationStatus,
   OrchestrationTurn,
+  WorkspaceCheckpointView,
+  WorkspaceOperationStage,
 } from "../../types";
 
 export const ORCHESTRATION_ACTIVE_STATUSES: OrchestrationStatus[] = [
@@ -70,6 +73,59 @@ export type DraftErrors = Partial<
 
 export function isOrchestrationActive(status: OrchestrationStatus): boolean {
   return ORCHESTRATION_ACTIVE_STATUSES.includes(status);
+}
+
+/** Stages during which a restore-and-resume is still being carried out. */
+export const RECOVERY_PENDING_STAGES: WorkspaceOperationStage[] = [
+  "reserved",
+  "preparing",
+  "backed_up",
+  "restoring",
+  "restored",
+];
+
+export function isRecoveryPending(stage: WorkspaceOperationStage | null | undefined): boolean {
+  return stage !== null && stage !== undefined && RECOVERY_PENDING_STAGES.includes(stage);
+}
+
+/**
+ * The source checkpoint saved after one turn. Joined by the turn's recorded
+ * checkpoint ID only — never by Agent or position, since a round-robin Agent
+ * speaks more than once and a restore rewrites what "latest" means.
+ */
+export function checkpointForTurn(
+  detail: Pick<OrchestrationSessionDetail, "checkpoints"> | null | undefined,
+  turn: Pick<OrchestrationTurn, "workspaceCheckpointId"> | null | undefined,
+): WorkspaceCheckpointView | undefined {
+  const checkpointId = turn?.workspaceCheckpointId;
+  if (!checkpointId || !detail?.checkpoints) return undefined;
+  return detail.checkpoints.find((checkpoint) => checkpoint.checkpointId === checkpointId);
+}
+
+export function recoveryStageLabel(
+  stage: WorkspaceOperationStage,
+  errorCode?: string | null,
+): string {
+  switch (stage) {
+    case "reserved":
+    case "preparing":
+    case "backed_up":
+      return "Saving safety checkpoint…";
+    case "restoring":
+      return "Restoring source…";
+    case "restored":
+      return "Source restored, resuming…";
+    case "resume_accepted":
+      return "Resumed from the restored checkpoint.";
+    case "settled":
+      return "Recovery complete.";
+    case "failed":
+      return "Recovery failed" + (errorCode ? ` (${errorCode})` : "") + ".";
+    case "recovery_required":
+      return "Recovery needs attention" + (errorCode ? ` (${errorCode})` : "") + ".";
+    default:
+      return String(stage).replaceAll("_", " ");
+  }
 }
 
 /**
@@ -310,6 +366,12 @@ export function humanizeFailure(
       return "An Agent replied with something that could not be passed on safely.";
     case "INVALID_INPUT":
       return "This conversation was set up with values the server rejected.";
+    case "CHECKPOINT_CAPTURE_FAILED":
+      return CHECKPOINT_CAPTURE_FAILED_MESSAGE;
+    case "CHECKPOINT_PUBLISH_FAILED":
+      return "The Workspace checkpoint was saved but could not be recorded against this conversation. Its reply is kept; the next successful turn records a fresh checkpoint.";
+    case "CHECKPOINT_RUNTIME_UNSUPPORTED":
+      return "This Workspace runtime cannot record source checkpoints, so restore-and-resume is not available here.";
     default:
       {
         const fallbackText = fallback?.trim() ?? "";
@@ -330,6 +392,8 @@ export const MODEL_INFERENCE_LIMIT_MESSAGE =
   "This model is paused because its provider inference limit was reached. Review Safe Experience Mode in the provider's Model Activation settings, or choose another available model, then retry.";
 export const PROJECT_PERMISSION_DENIED_MESSAGE =
   "This Agent is not allowed to write to the Workspace. Add Allow Agent runs (agent.invoke) and Edit workspace files (project.write) to the Agent's role, make sure it has editable Workspace membership, then retry.";
+export const CHECKPOINT_CAPTURE_FAILED_MESSAGE =
+  "The Agent finished, but its Workspace files could not be checkpointed. Its reply is kept; restore an earlier checkpoint or retry once the Workspace is settled.";
 
 export function humanizeAgentRunFailure(
   errorCode: AgentRunErrorCode | null | undefined,
@@ -340,6 +404,8 @@ export function humanizeAgentRunFailure(
       return MODEL_INFERENCE_LIMIT_MESSAGE;
     case "WEB_TOOL_PERMISSION_DENIED":
       return "Web access was denied. Assign this Agent a role that allows the requested web tool, then retry this turn.";
+    case "CHECKPOINT_CAPTURE_FAILED":
+      return CHECKPOINT_CAPTURE_FAILED_MESSAGE;
     default:
       return "The Agent could not complete this run.";
   }
@@ -362,6 +428,12 @@ export function eventLabel(type: OrchestrationEventType): string {
     orchestration_failed: "Session failed",
     orchestration_interrupted: "Session interrupted",
     orchestration_completed: "Session completed",
+    workspace_checkpoint_created: "Workspace checkpoint saved",
+    workspace_checkpoint_failed: "Workspace checkpoint failed",
+    workspace_checkpoint_restore_started: "Workspace restore started",
+    workspace_checkpoint_restored: "Workspace source restored",
+    workspace_checkpoint_restore_failed: "Workspace restore failed",
+    workspace_recovery_resumed: "Resumed from a restored checkpoint",
   };
   return labels[type] ?? type.replaceAll("_", " ");
 }

@@ -6,6 +6,7 @@ import type {
   Agent,
   OrchestrationEvent,
   OrchestrationTurn,
+  WorkspaceCheckpointView,
 } from "../../../../apps/web/src/types";
 
 const agents = [
@@ -74,6 +75,27 @@ function event(
     type,
     status: "running",
     createdAt: "2026-09-07T10:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function checkpoint(overrides: Partial<WorkspaceCheckpointView> = {}): WorkspaceCheckpointView {
+  return {
+    checkpointId: "cp-1",
+    projectId: "project-1",
+    ordinal: 7,
+    kind: "turn_success",
+    state: "ready",
+    orchestrationId: "session-1",
+    turnId: "t1",
+    runId: "9f8e7d6c-0000-4000-8000-000000000001",
+    stepIndex: 2,
+    createdAt: "2026-09-07T10:00:06.000Z",
+    fileCount: 12,
+    byteCount: 40_000,
+    excludedFileCount: 1,
+    recoverable: true,
+    unavailableReason: null,
     ...overrides,
   };
 }
@@ -162,9 +184,125 @@ describe("OrchestrationTurnInspector", () => {
 
     expect(html).toContain("Retry from this turn");
     expect(html).toContain("not rolled back");
+    // The legacy retry is explicit that it reruns against the files as they
+    // are now; it never claims to rewind them.
+    expect(html).toContain("using the current files");
+    expect(html).not.toContain("continuing from the checkpoint");
     // The failure is explained in product wording, with the code kept.
     expect(html).toContain("An Agent could not complete its turn.");
     expect(html).toContain("RUN_FAILED");
+  });
+
+  it("says the pending retry uses the current files", () => {
+    const html = renderToStaticMarkup(
+      <OrchestrationTurnInspector
+        node={node({ turn: turn({ status: "failed" }) })}
+        agents={agents}
+        onRetry={() => {}}
+        retryPending
+        onClose={() => {}}
+      />,
+    );
+
+    expect(html).toContain("Retrying this Agent turn using the current files…");
+    expect(html).not.toContain("continuing from the checkpoint");
+  });
+
+  it("shows the checkpoint badge and a restore for a completed turn with a recoverable checkpoint", () => {
+    const html = renderToStaticMarkup(
+      <OrchestrationTurnInspector
+        node={node()}
+        agents={agents}
+        checkpoint={checkpoint()}
+        checkpointsEnabled
+        onRecover={() => {}}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(html).toContain("Workspace checkpoint #7");
+    expect(html).toContain("Restore after Researcher and resume");
+    expect(html).toContain("safety checkpoint");
+    expect(html).toContain("fresh Project context");
+    // The ordinal is the identity shown; the checkpoint ID never is.
+    expect(html).not.toContain("cp-1");
+    // A completed turn still has no legacy retry.
+    expect(html).not.toContain("Retry from this turn");
+  });
+
+  it("states that no checkpoint was recorded for a completed turn on an enabled detail", () => {
+    const html = renderToStaticMarkup(
+      <OrchestrationTurnInspector
+        node={node()}
+        agents={agents}
+        checkpointsEnabled
+        onRecover={() => {}}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(html).toContain("No workspace checkpoint was recorded for this turn.");
+    expect(html).not.toContain("Restore after");
+  });
+
+  it("says nothing about checkpoints when the server records none", () => {
+    const html = renderToStaticMarkup(
+      <OrchestrationTurnInspector node={node()} agents={agents} onClose={() => {}} />,
+    );
+
+    expect(html).not.toContain("No workspace checkpoint");
+    expect(html).not.toContain("Restore after");
+  });
+
+  it("shows the badge but no restore for a checkpoint that cannot be restored", () => {
+    const html = renderToStaticMarkup(
+      <OrchestrationTurnInspector
+        node={node()}
+        agents={agents}
+        checkpoint={checkpoint({ recoverable: false, unavailableReason: "CHECKPOINT_CORRUPT" })}
+        checkpointsEnabled
+        onRecover={() => {}}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(html).toContain("Workspace checkpoint #7");
+    expect(html).toContain("not restorable");
+    expect(html).not.toContain("Restore after");
+  });
+
+  it("disables the restore while the conversation is still running", () => {
+    const html = renderToStaticMarkup(
+      <OrchestrationTurnInspector
+        node={node()}
+        agents={agents}
+        checkpoint={checkpoint()}
+        checkpointsEnabled
+        onRecover={() => {}}
+        recoverBlocked
+        onClose={() => {}}
+      />,
+    );
+
+    expect(html).toMatch(/<button[^>]*class="orch-inspector-restore-action"[^>]*disabled/);
+    expect(html).toContain("Stop the conversation before restoring its files.");
+  });
+
+  it("shows progress while a restore is in flight", () => {
+    const html = renderToStaticMarkup(
+      <OrchestrationTurnInspector
+        node={node()}
+        agents={agents}
+        checkpoint={checkpoint()}
+        checkpointsEnabled
+        onRecover={() => {}}
+        recoverPending
+        onClose={() => {}}
+      />,
+    );
+
+    expect(html).toContain("Restoring…");
+    expect(html).toMatch(/<button[^>]*class="orch-inspector-restore-action"[^>]*disabled/);
   });
 
   it("hides the retry when the caller cannot perform one", () => {

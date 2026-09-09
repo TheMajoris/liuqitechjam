@@ -23,7 +23,10 @@ export interface ApplicationLifecycleFailure {
   readonly code:
     | "EXECUTION_FINALIZATION_FAILED"
     | "RUNTIME_CANCELLATION_FAILED"
-    | "PROJECT_LEASE_RELEASE_FAILED";
+    | "PROJECT_LEASE_RELEASE_FAILED"
+    | "WORKSPACE_WRITER_UNSETTLED"
+    | "WORKSPACE_RECOVERY_REQUIRED"
+    | "WORKSPACE_CHECKPOINT_CLEANUP_FAILED";
   readonly message: string;
   readonly runId?: string;
   readonly agentId?: string;

@@ -210,6 +210,8 @@ export class PreviewService implements PreviewLifecycleCleanup {
   private readonly terminalLogs = new Map<string, PreviewLogResult>();
   private readonly ownerResolver: PreviewOwnerResolver;
   private readonly telemetry: RuntimeTelemetry | undefined;
+  /** Rejects Project preview starts while a checkpoint operation owns the Project. */
+  private workspaceAdmission: ((projectId: string) => void) | undefined;
 
   constructor(
     private readonly store: Storage,
@@ -231,6 +233,32 @@ export class PreviewService implements PreviewLifecycleCleanup {
       },
     };
     this.telemetry = options.telemetry;
+  }
+
+  /** Attach the workspace reservation gate after the service graph exists. */
+  setWorkspaceAdmissionGuard(guard: ((projectId: string) => void) | undefined): void {
+    this.workspaceAdmission = guard;
+  }
+
+  /**
+   * Stop any Project preview under the preview lock and prove it stopped.
+   * A development preview mounts the shared workspace writable, so a
+   * checkpoint or restore must never begin while one is alive.
+   */
+  async quiesceForWorkspaceOperation(projectId: string): Promise<void> {
+    const owner: PreviewOwnerRef = { kind: "project", projectId };
+    await this.withLock(owner, async () => {
+      const current = this.latest(owner);
+      if (!current || (!isActiveStatus(current.status) && !current.runtimeId)) return;
+      const stopped = await this.stopInternal(current);
+      if (stopped.runtimeId !== null || isActiveStatus(stopped.status)) {
+        throw new PreviewError(
+          "PREVIEW_STOP_FAILED",
+          409,
+          "The Project preview could not be positively stopped",
+        );
+      }
+    });
   }
 
   /** Mark in-flight records interrupted after a control-plane restart. */
@@ -438,6 +466,7 @@ export class PreviewService implements PreviewLifecycleCleanup {
   }
 
   private async startInternal(owner: PreviewOwnerRef): Promise<PreviewView> {
+    if (owner.kind === "project") this.workspaceAdmission?.(owner.projectId);
     const target = await this.resolveOwner(owner);
     const ownerKey = previewOwnerKey(owner);
 
@@ -527,6 +556,9 @@ export class PreviewService implements PreviewLifecycleCleanup {
 
     let handle: PreviewRuntimeHandle | null = null;
     try {
+      // A reservation may have been taken while the record was being
+      // inserted; repeat the gate immediately before a process exists.
+      if (owner.kind === "project") this.workspaceAdmission?.(owner.projectId);
       handle = await this.runtime.start({
         previewId: record.id,
         ownerKey,

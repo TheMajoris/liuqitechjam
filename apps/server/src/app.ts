@@ -51,6 +51,10 @@ import {
 } from "./models/index.js";
 import {
   ContinueOrchestrationSchema,
+  RecoverOrchestrationSchema,
+  RecoveryRouteParamsSchema,
+  RestoreSafetySchema,
+  ResumeRecoverySchema,
   RetryOrchestrationSchema,
   CreateOrchestrationSchema,
   OrchestrationRouteParamsSchema,
@@ -61,8 +65,17 @@ import type {
   CreateOrchestrationInput,
   OrchestrationSession,
   OrchestrationSessionDetail,
+  RecoverOrchestrationInput,
+  RestoreSafetyInput,
+  ResumeRecoveryInput,
 } from "./orchestration/types.js";
 import { isProjectError } from "./projects/project-errors.js";
+import {
+  isWorkspaceCheckpointError,
+  type WorkspaceCheckpointStatusView,
+  type WorkspaceCheckpointView,
+  type WorkspaceRecoveryView,
+} from "./projects/workspace-checkpoint-types.js";
 import type {
   CreateProjectInput,
   ProjectRole,
@@ -93,6 +106,22 @@ export interface OrchestrationServiceContract {
   deleteSession(id: string): Promise<{ deleted: boolean }>;
   /** Root trace span for this orchestration; optional so route tests can omit it. */
   orchestrationSpan?(id: string): AuditSpan;
+  /** Source restore-and-resume; optional so servers without checkpoints omit it. */
+  recoverFromCheckpoint?(
+    id: string,
+    input: RecoverOrchestrationInput,
+  ): Promise<{ recovery: WorkspaceRecoveryView; duplicate: boolean }>;
+  getRecovery?(id: string, operationId: string): Promise<WorkspaceRecoveryView>;
+  resumeRecovery?(
+    id: string,
+    operationId: string,
+    input: ResumeRecoveryInput,
+  ): Promise<WorkspaceRecoveryView>;
+  restoreSafety?(
+    id: string,
+    operationId: string,
+    input: RestoreSafetyInput,
+  ): Promise<WorkspaceRecoveryView>;
 }
 
 /** Narrow HTTP-facing seam for the Project control plane. */
@@ -112,6 +141,16 @@ export interface ProjectServiceContract {
   detachAgent(projectId: string, agentId: string): Promise<ProjectView>;
   attachTeam(projectId: string, teamId: string): Promise<ProjectView>;
   detachTeam(projectId: string): Promise<ProjectView>;
+  /** Safe checkpoint projections; optional so route tests can omit them. */
+  listWorkspaceCheckpoints?(
+    projectId: string,
+    query: { limit?: number | undefined; beforeOrdinal?: number | undefined },
+  ): Promise<{
+    checkpoints: WorkspaceCheckpointView[];
+    nextBeforeOrdinal: number | null;
+    status: WorkspaceCheckpointStatusView;
+  }>;
+  getWorkspaceCheckpoint?(projectId: string, checkpointId: string): Promise<WorkspaceCheckpointView>;
 }
 
 /** Narrow HTTP-facing seam for the trusted preview control plane. */
@@ -318,6 +357,50 @@ function orchestrationHumanEvent(
     ...(session.projectId ? { projectId: session.projectId } : {}),
     ...(span === undefined ? {} : { span }),
     metadata: { participantCount: session.participants.length, trigger: "http" },
+  };
+}
+
+function parseRecoverInput(value: unknown): RecoverOrchestrationInput {
+  const parsed = RecoverOrchestrationSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new OrchestrationValidationError(
+      "Invalid recovery request",
+      parsed.error.issues,
+    );
+  }
+  return parsed.data;
+}
+
+function parseRecoveryParams(value: unknown): { id: string; operationId: string } {
+  const parsed = RecoveryRouteParamsSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new OrchestrationValidationError(
+      "Invalid recovery route parameters",
+      parsed.error.issues,
+    );
+  }
+  return parsed.data;
+}
+
+/** The recovery routes exist only when the service implements them. */
+function requireRecoveryRoutes(
+  service: OrchestrationServiceContract,
+): Required<
+  Pick<OrchestrationServiceContract, "recoverFromCheckpoint" | "getRecovery" | "resumeRecovery" | "restoreSafety">
+> {
+  if (
+    !service.recoverFromCheckpoint ||
+    !service.getRecovery ||
+    !service.resumeRecovery ||
+    !service.restoreSafety
+  ) {
+    throw new HttpError(503, "Workspace checkpoints are not configured on this server");
+  }
+  return {
+    recoverFromCheckpoint: service.recoverFromCheckpoint.bind(service),
+    getRecovery: service.getRecovery.bind(service),
+    resumeRecovery: service.resumeRecovery.bind(service),
+    restoreSafety: service.restoreSafety.bind(service),
   };
 }
 
@@ -678,6 +761,112 @@ export async function createApp(
     return reply.code(202).send({ session });
   });
 
+  // ------------------------------------------------ workspace recovery
+  // Restore the shared Workspace's eligible source files to a recorded
+  // checkpoint and resume the remaining work. The body names only a
+  // checkpoint and the client's own idempotency key; Git revisions, host
+  // paths, saved state, and operation owners are rejected by the strict schema.
+
+  app.post("/api/orchestrations/:id/recover", async (request, reply) => {
+    requireApplicationAvailability(applicationHealth);
+    const { id } = parseOrchestrationParams(request.params);
+    const input = parseRecoverInput(request.body);
+    const orchestration = requireOrchestrationService(orchestrationService);
+    const routes = requireRecoveryRoutes(orchestration);
+    const result = await routes.recoverFromCheckpoint(id, input);
+    if (!result.duplicate) {
+      const span = childSpan(orchestration.orchestrationSpan?.(id));
+      await recordHumanAction(
+        mcp?.auditService,
+        {
+          type: "workspace_checkpoint_restore_started",
+          status: "success",
+          summary: "Workspace restore requested",
+          principal: humanPrincipal(),
+          actorType: "human",
+          orchestrationId: id,
+          projectId: result.recovery.projectId,
+          ...(span === undefined ? {} : { span }),
+          metadata: {
+            checkpointId: input.checkpointId,
+            operationId: result.recovery.operationId,
+            requestId: input.requestId,
+            trigger: "http",
+          },
+        },
+        request.log,
+      );
+    }
+    const settled =
+      result.recovery.stage === "settled" ||
+      result.recovery.stage === "failed" ||
+      result.recovery.stage === "recovery_required";
+    return reply.code(result.duplicate && settled ? 200 : 202).send({ recovery: result.recovery });
+  });
+
+  app.get("/api/orchestrations/:id/recoveries/:operationId", async (request) => {
+    const { id, operationId } = parseRecoveryParams(request.params);
+    const routes = requireRecoveryRoutes(requireOrchestrationService(orchestrationService));
+    return { recovery: await routes.getRecovery(id, operationId) };
+  });
+
+  app.post("/api/orchestrations/:id/recoveries/:operationId/resume", async (request, reply) => {
+    requireApplicationAvailability(applicationHealth);
+    const { id, operationId } = parseRecoveryParams(request.params);
+    const parsed = ResumeRecoverySchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new OrchestrationValidationError("Invalid resume request", parsed.error.issues);
+    }
+    const routes = requireRecoveryRoutes(requireOrchestrationService(orchestrationService));
+    const recovery = await routes.resumeRecovery(id, operationId, parsed.data);
+    await recordHumanAction(
+      mcp?.auditService,
+      {
+        type: "workspace_recovery_resumed",
+        status: "success",
+        summary: "Workspace recovery resume requested",
+        principal: humanPrincipal(),
+        actorType: "human",
+        orchestrationId: id,
+        projectId: recovery.projectId,
+        metadata: { operationId, requestId: parsed.data.requestId, trigger: "http" },
+      },
+      request.log,
+    );
+    return reply.code(202).send({ recovery });
+  });
+
+  app.post("/api/orchestrations/:id/recoveries/:operationId/restore-safety", async (request, reply) => {
+    requireApplicationAvailability(applicationHealth);
+    const { id, operationId } = parseRecoveryParams(request.params);
+    const parsed = RestoreSafetySchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new OrchestrationValidationError("Invalid safety restore request", parsed.error.issues);
+    }
+    const routes = requireRecoveryRoutes(requireOrchestrationService(orchestrationService));
+    const recovery = await routes.restoreSafety(id, operationId, parsed.data);
+    await recordHumanAction(
+      mcp?.auditService,
+      {
+        type: "workspace_checkpoint_restore_started",
+        status: "success",
+        summary: "Workspace safety restore requested",
+        principal: humanPrincipal(),
+        actorType: "human",
+        orchestrationId: id,
+        projectId: recovery.projectId,
+        metadata: {
+          operationId,
+          ...(recovery.safetyCheckpointId === null ? {} : { checkpointId: recovery.safetyCheckpointId }),
+          requestId: parsed.data.requestId,
+          trigger: "http",
+        },
+      },
+      request.log,
+    );
+    return reply.code(202).send({ recovery });
+  });
+
   /**
    * Prompt-policy settings for one Conversation.
    *
@@ -979,6 +1168,36 @@ export async function createApp(
     return { project: await requireProjectService(projectService).detachTeam(id) };
   });
 
+  // Safe checkpoint projections. No SHA, path, prompt, or saved context
+  // crosses this boundary, and there is no restore-by-revision route.
+  const checkpointListQuery = z.object({
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+    beforeOrdinal: z.coerce.number().int().positive().optional(),
+  });
+  const checkpointParams = z.object({
+    id: z.string().uuid(),
+    checkpointId: z.string().min(1).max(128),
+  });
+
+  app.get("/api/projects/:id/checkpoints", async (request) => {
+    const { id } = projectIdParams.parse(request.params);
+    const query = checkpointListQuery.parse(request.query);
+    const projects = requireProjectService(projectService);
+    if (!projects.listWorkspaceCheckpoints) {
+      throw new HttpError(503, "Workspace checkpoints are not configured on this server");
+    }
+    return projects.listWorkspaceCheckpoints(id, query);
+  });
+
+  app.get("/api/projects/:id/checkpoints/:checkpointId", async (request) => {
+    const { id, checkpointId } = checkpointParams.parse(request.params);
+    const projects = requireProjectService(projectService);
+    if (!projects.getWorkspaceCheckpoint) {
+      throw new HttpError(503, "Workspace checkpoints are not configured on this server");
+    }
+    return { checkpoint: await projects.getWorkspaceCheckpoint(id, checkpointId) };
+  });
+
   app.post("/api/projects/:id/preview/start", async (request, reply) => {
     requireApplicationAvailability(applicationHealth);
     const { id } = projectIdParams.parse(request.params);
@@ -1147,6 +1366,7 @@ export async function createApp(
     const toolError = error instanceof ToolError ? error : null;
     const previewError = isPreviewError(error) ? error : null;
     const projectError = isProjectError(error) ? error : null;
+    const checkpointError = isWorkspaceCheckpointError(error) ? error : null;
     const skillError = isSkillError(error) ? error : null;
     const roleError = isRoleError(error) ? error : null;
     const storageUnavailable = appError.name === "StorageUnavailableError";
@@ -1188,6 +1408,7 @@ export async function createApp(
       toolError?.code ??
       previewError?.code ??
       projectError?.code ??
+      checkpointError?.code ??
       skillError?.code ??
       roleError?.code ??
       (storageUnavailable ? STORAGE_UNAVAILABLE_CODE : undefined);

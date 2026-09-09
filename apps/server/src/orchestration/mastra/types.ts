@@ -15,6 +15,7 @@ import type {
   OrchestrationMode,
   OrchestrationParticipant,
 } from "../types.js";
+import type { WorkspaceExecutionContext } from "../../projects/workspace-checkpoint-types.js";
 
 /** Full state carried from one Mastra loop iteration to the next. */
 export interface MastraExecutionState {
@@ -49,6 +50,8 @@ export interface MastraOrchestrationStepOptions {
   handoffLimits?: HandoffLimits;
   /** Ask before acting; prompt-shaping only, forwarded to the handoff builder. */
   clarifyFirst?: boolean | undefined;
+  /** Trusted checkpoint execution identity forwarded to the invoker. */
+  workspace?: WorkspaceExecutionContext | undefined;
   signal?: AbortSignal;
   hooks?: OrchestrationExecutionHooks;
   /** Preserve the original child failure when Mastra wraps a step error. */

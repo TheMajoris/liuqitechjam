@@ -27,6 +27,11 @@ import type {
 import type { AgentRole } from "./roles/role-types.js";
 import type { InstalledSkillRecord } from "./skills/skill-types.js";
 import type { AgentRunErrorCode } from "./errors.js";
+import type {
+  WorkspaceCheckpoint,
+  WorkspaceExecutionCycle,
+  WorkspaceOperation,
+} from "./projects/workspace-checkpoint-types.js";
 
 export type {
   AgentRole,
@@ -193,6 +198,16 @@ export interface AgentRun {
   traceId?: string;
   /** Set on direct runs only, mirroring the message that started them. */
   conversationId?: string | undefined;
+  /** Shared Project this Run executed against; absent on private Runs. */
+  projectId?: string | undefined;
+  /** Parent Team conversation; absent on direct Runs. */
+  orchestrationId?: string | undefined;
+  /** Checkpoint-enabled execution identity, set only by trusted server options. */
+  executionCycleId?: string | undefined;
+  workspaceOperationId?: string | undefined;
+  workspaceEpoch?: number | undefined;
+  /** The source checkpoint captured after this Run's successful turn. */
+  workspaceCheckpointId?: string | undefined;
   status: RunStatus;
   prompt: string;
   output: string | null;
@@ -245,6 +260,10 @@ export interface Database {
   roles: AgentRole[];
   /** Additive instruction-only skill installation collection. */
   installedSkills: InstalledSkillRecord[];
+  /** Additive workspace checkpoint collections; absent in stores written before them. */
+  workspaceCheckpoints: WorkspaceCheckpoint[];
+  workspaceExecutionCycles: WorkspaceExecutionCycle[];
+  workspaceOperations: WorkspaceOperation[];
 }
 
 /**
@@ -297,10 +316,19 @@ export interface UpdateAgentInput {
   globalRoleId?: string | null | undefined;
 }
 
+/**
+ * Whether the runner positively proved that no descendant of the worker can
+ * still write to the workspace. `settled` is asserted only on explicit
+ * evidence (a removed or absent container); `unknown` is an engine failure or
+ * timeout. Runners that cannot prove it leave the field absent.
+ */
+export type WorkspaceWriterSettlement = "settled" | "unknown";
+
 export interface RunnerResult {
   output: string;
   threadId: string | null;
   usage: RunUsage | null;
+  workspaceSettlement?: WorkspaceWriterSettlement | undefined;
 }
 
 /**

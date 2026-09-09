@@ -177,4 +177,43 @@ describe("diagnoseFailure", () => {
     expect(result?.agentId).toBeNull();
     expect(result?.summary).toContain("Automatic turn taking");
   });
+
+  it("points a failed checkpoint capture at the last workspace checkpoint", () => {
+    const result = diagnoseFailure(
+      detail(
+        "failed",
+        [turn({ agentId: "a1", status: "failed", errorCode: "CHECKPOINT_CAPTURE_FAILED" })],
+        { errorCode: "CHECKPOINT_CAPTURE_FAILED" },
+      ),
+      [agent({ id: "a1", name: "One" })],
+    );
+    expect(result?.summary).toContain("could not be checkpointed");
+    expect(result?.fixes).toContainEqual({
+      label: "Restore the last workspace checkpoint from the Activity tab",
+      target: "retry",
+    });
+    // The checkpoint-specific retry replaces the generic one.
+    expect(result?.fixes.filter((fix) => fix.target === "retry")).toHaveLength(1);
+  });
+
+  it("leads with the stalled recovery when one needs attention", () => {
+    const failed = detail("failed", [turn({ agentId: "a1", status: "failed" })], {
+      errorCode: "RUN_FAILED",
+    });
+    failed.recovery = {
+      operationId: "op-1",
+      projectId: "project-1",
+      orchestrationId: "session-1",
+      kind: "recovery",
+      checkpointId: "cp-1",
+      safetyCheckpointId: "cp-2",
+      stage: "recovery_required",
+      resumeCycleId: null,
+      errorCode: "CHECKPOINT_RESTORE_FAILED",
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+    const result = diagnoseFailure(failed, [agent({ id: "a1", name: "One" })]);
+    expect(result?.fixes[0]?.label).toContain("pending Workspace recovery");
+  });
 });

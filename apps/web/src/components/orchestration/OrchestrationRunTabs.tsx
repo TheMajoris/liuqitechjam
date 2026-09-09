@@ -31,6 +31,8 @@ interface OrchestrationRunTabsProps {
   onContinue?: (prompt: string, sessionId: string) => void;
   /** Retries the run from one recorded step; omitted when unavailable. */
   onRetry?: (fromStepIndex: number) => void;
+  /** Restores source files to a turn's checkpoint and resumes; omitted when unavailable. */
+  onRecover?: (checkpointId: string) => void;
   /** Prompt-policy edit, surfaced beside the composer's send button. */
   onClarifyFirstChange?: ((clarifyFirst: boolean) => void) | undefined;
   activeTab: RunTab;
@@ -54,6 +56,7 @@ export function OrchestrationRunTabs({
   action = null,
   onContinue,
   onRetry,
+  onRecover,
   onClarifyFirstChange,
   activeTab,
   onTabChange,
@@ -155,6 +158,7 @@ export function OrchestrationRunTabs({
             action={action}
             onContinue={onContinue}
             onRetry={onRetry}
+            onRecover={onRecover}
             onClarifyFirstChange={onClarifyFirstChange}
           />
         ) : activeTab === "activity" ? (
@@ -171,6 +175,13 @@ export function OrchestrationRunTabs({
                 detail ? isOrchestrationActive(detail.session.status) : false
               }
               retryDisabled={action !== null && action !== "retry"}
+              onRecover={onRecover}
+              recoverPending={action === "recover"}
+              // A restore rewrites the files a running Agent is editing.
+              recoverBlocked={
+                detail ? isOrchestrationActive(detail.session.status) : false
+              }
+              recoverDisabled={action !== null && action !== "recover"}
             />
             <details className="orch-journal">
               <summary>

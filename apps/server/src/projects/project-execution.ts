@@ -1,6 +1,19 @@
 import type { AgentPreviewStatus } from "../preview/preview-context-provider.js";
-import type { Agent, OperationOptions } from "../types.js";
+import type { Agent, Database, OperationOptions } from "../types.js";
 import type { ProjectService } from "./project-service.js";
+import type { WorkspaceExecutionContext } from "./workspace-checkpoint-types.js";
+
+/**
+ * How the coordinator decides that the worker can no longer write. Container
+ * execution proves it; local-process execution can only trust the child exit
+ * and is admitted solely under an explicit development override.
+ */
+export type WorkspaceSettlementPolicy = "require_proof" | "trust_process_exit";
+
+/** Trusted checkpoint identity carried through one Project turn. */
+export interface ProjectRunWorkspaceBinding extends WorkspaceExecutionContext {
+  settlementPolicy: WorkspaceSettlementPolicy;
+}
 
 /** Everything a Project-scoped turn needs, resolved at the runtime boundary. */
 export interface ProjectRunBinding {
@@ -11,6 +24,8 @@ export interface ProjectRunBinding {
   /** Thread for this (Agent, Project) pair, never the Agent's private one. */
   codexThreadId: string | null;
   previewStatus: AgentPreviewStatus;
+  /** Present only for a checkpoint-enabled cycle turn. */
+  workspace?: ProjectRunWorkspaceBinding | undefined;
 }
 
 /**
@@ -26,7 +41,17 @@ export interface ProjectExecutionScope {
     projectId: string,
     agentId: string,
     operation?: OperationOptions,
+    workspace?: WorkspaceExecutionContext,
   ): void | Promise<void>;
+  /**
+   * Synchronous reservation/epoch recheck inside the acceptance mutation, so a
+   * restore that landed while acceptance waited in the queue is not missed.
+   */
+  assertAdmission?(
+    database: Database,
+    projectId: string,
+    workspace?: WorkspaceExecutionContext,
+  ): void;
   /**
    * Takes the single-writer lease and prepares the shared workspace for the
    * acting Agent. Callers must pair this with `endTurn` in a `finally`.
@@ -36,6 +61,7 @@ export interface ProjectExecutionScope {
     projectId: string,
     runId: string,
     operation?: OperationOptions,
+    workspace?: WorkspaceExecutionContext,
   ): Promise<ProjectRunBinding>;
   /**
    * Releases the lease, and persists the resumed thread only when the turn
@@ -46,7 +72,20 @@ export interface ProjectExecutionScope {
     agentId: string,
     runId: string,
     outcome: { codexThreadId: string | null } | null,
+    workspace?: WorkspaceExecutionContext,
   ): Promise<void>;
+  /**
+   * Capture the source after a successful turn, while the per-Run lease is
+   * still held and the worker is proven settled. Returns the candidate
+   * checkpoint; it becomes ready only through the orchestration hook.
+   */
+  captureSuccessfulTurn?(
+    binding: ProjectRunBinding,
+    run: { runId: string; agentId: string },
+    operation?: OperationOptions,
+  ): Promise<{ checkpointId: string }>;
+  /** Keep a lease whose worker could not be proven settled; never time it out. */
+  retainLeaseForRecovery?(projectId: string, runId: string): void;
   /**
    * Reserves every Project owned by an Agent while its membership and lease
    * records are removed or restored. Optional keeps lightweight test/runtime
@@ -80,10 +119,32 @@ export class ProjectServiceExecutionScope implements ProjectExecutionScope {
     projectId: string,
     agentId: string,
     operation: OperationOptions = {},
+    workspace?: WorkspaceExecutionContext,
   ): Promise<void> {
     assertOperationActive(operation);
     await this.projects.authorizeAgentExecution(projectId, agentId);
     assertOperationActive(operation);
+    this.projects.assertWorkspaceAdmission(projectId, workspace);
+  }
+
+  assertAdmission(
+    database: Database,
+    projectId: string,
+    workspace?: WorkspaceExecutionContext,
+  ): void {
+    this.projects.assertWorkspaceAdmission(projectId, workspace, database);
+  }
+
+  captureSuccessfulTurn(
+    binding: ProjectRunBinding,
+    run: { runId: string; agentId: string },
+    operation: OperationOptions = {},
+  ): Promise<{ checkpointId: string }> {
+    return this.projects.captureSuccessfulTurn(binding, run, operation);
+  }
+
+  retainLeaseForRecovery(projectId: string, runId: string): void {
+    this.projects.retainLeaseForRecovery(projectId, runId);
   }
 
   async beginTurn(
@@ -91,17 +152,24 @@ export class ProjectServiceExecutionScope implements ProjectExecutionScope {
     projectId: string,
     runId: string,
     operation: OperationOptions = {},
+    workspace?: WorkspaceExecutionContext,
   ): Promise<ProjectRunBinding> {
     assertOperationActive(operation);
     // This check is deliberately before the lease mutation. A denied or
     // revoked Agent must never occupy the Project's single-writer slot.
     await this.projects.authorizeAgentExecution(projectId, agent.id);
+    this.projects.assertWorkspaceAdmission(projectId, workspace);
+    const owner =
+      workspace === undefined
+        ? undefined
+        : { workspaceOperationId: workspace.workspaceOperationId, workspaceEpoch: workspace.workspaceEpoch };
     // Lease first: preparing the workspace writes AGENTS.md, which must never
     // race another Agent's turn.
     await this.projects.acquireWriteLease(projectId, agent.id, runId, {
       principal: { kind: "agent", id: agent.id },
       ...(operation.signal === undefined ? {} : { signal: operation.signal }),
       ...(operation.deadlineAt === undefined ? {} : { deadlineAt: operation.deadlineAt }),
+      ...(owner === undefined ? {} : { workspaceOwner: owner }),
     });
     try {
       assertOperationActive(operation);
@@ -111,7 +179,7 @@ export class ProjectServiceExecutionScope implements ProjectExecutionScope {
       // shared workspace.
       await this.projects.authorizeAgentExecution(projectId, agent.id);
       assertOperationActive(operation);
-      await this.projects.prepareTurn(scope.project, agent, operation);
+      await this.projects.prepareTurn(scope.project, agent, operation, owner);
       assertOperationActive(operation);
       const currentPreviewStatus = await this.previewStatus(projectId);
       assertOperationActive(operation);
@@ -121,6 +189,14 @@ export class ProjectServiceExecutionScope implements ProjectExecutionScope {
         workspacePath: scope.workspacePath,
         codexThreadId: scope.codexThreadId,
         previewStatus: currentPreviewStatus,
+        ...(workspace === undefined
+          ? {}
+          : {
+              workspace: {
+                ...workspace,
+                settlementPolicy: this.projects.workspaceSettlementPolicy(),
+              },
+            }),
       };
     } catch (error) {
       // Preparation never dispatched a worker, so the lease owner is known
@@ -137,10 +213,20 @@ export class ProjectServiceExecutionScope implements ProjectExecutionScope {
     agentId: string,
     runId: string,
     outcome: { codexThreadId: string | null } | null,
+    workspace?: WorkspaceExecutionContext,
   ): Promise<void> {
     try {
       if (outcome) {
-        await this.projects.recordProjectThread(projectId, agentId, outcome.codexThreadId);
+        // A thread written after a restore would resurrect memory of files
+        // that no longer exist; the epoch check inside skips a stale outcome.
+        await this.projects.recordProjectThread(
+          projectId,
+          agentId,
+          outcome.codexThreadId,
+          workspace === undefined
+            ? undefined
+            : { workspaceOperationId: workspace.workspaceOperationId, workspaceEpoch: workspace.workspaceEpoch },
+        );
       }
     } finally {
       // AgentRunCoordinator enters endTurn only after a terminal Run fact is

@@ -2,7 +2,8 @@ export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type AgentRunErrorCode =
   | "WEB_TOOL_PERMISSION_DENIED"
-  | "MODEL_INFERENCE_LIMIT_EXCEEDED";
+  | "MODEL_INFERENCE_LIMIT_EXCEEDED"
+  | "CHECKPOINT_CAPTURE_FAILED";
 
 export type PreviewStatus =
   | "starting"
@@ -564,7 +565,13 @@ export type OrchestrationEventType =
   | "orchestration_stopped"
   | "orchestration_failed"
   | "orchestration_interrupted"
-  | "orchestration_completed";
+  | "orchestration_completed"
+  | "workspace_checkpoint_created"
+  | "workspace_checkpoint_failed"
+  | "workspace_checkpoint_restore_started"
+  | "workspace_checkpoint_restored"
+  | "workspace_checkpoint_restore_failed"
+  | "workspace_recovery_resumed";
 
 export type OrchestrationErrorCode =
   | "INVALID_INPUT"
@@ -590,7 +597,96 @@ export type OrchestrationErrorCode =
   | "SUPERVISOR_FAILED"
   | "SUPERVISOR_TIMED_OUT"
   | "SUPERVISOR_UNAVAILABLE"
+  | "CHECKPOINT_CAPTURE_FAILED"
+  | "CHECKPOINT_PUBLISH_FAILED"
+  | "CHECKPOINT_RUNTIME_UNSUPPORTED"
   | "INTERNAL_ERROR";
+
+/* Workspace source checkpoints and restore-after-turn recovery. */
+
+export type WorkspaceCheckpointKind = "baseline" | "turn_success" | "safety";
+
+export type WorkspaceCheckpointState =
+  | "preparing"
+  | "captured"
+  | "ready"
+  | "failed"
+  | "invalid";
+
+export type WorkspaceCheckpointErrorCode =
+  | "CHECKPOINT_NOT_FOUND"
+  | "CHECKPOINT_NOT_READY"
+  | "CHECKPOINT_CONTEXT_MISMATCH"
+  | "CHECKPOINT_NO_REMAINING_STEPS"
+  | "CHECKPOINT_IDEMPOTENCY_CONFLICT"
+  | "CHECKPOINT_EXECUTION_ALREADY_ACCEPTED"
+  | "CHECKPOINT_RESTORE_CONFLICT"
+  | "CHECKPOINT_POLICY_MISMATCH"
+  | "CHECKPOINT_INVALID_INPUT"
+  | "CHECKPOINT_SECRET_DETECTED"
+  | "CHECKPOINT_LIMIT_EXCEEDED"
+  | "CHECKPOINT_UNAVAILABLE"
+  | "CHECKPOINT_DIRECT_PROJECT_RUN_UNSUPPORTED"
+  | "CHECKPOINT_RUNTIME_UNSUPPORTED"
+  | "CHECKPOINT_WRITER_UNSETTLED"
+  | "CHECKPOINT_CORRUPT"
+  | "CHECKPOINT_CAPTURE_FAILED"
+  | "CHECKPOINT_RESTORE_FAILED"
+  | "CHECKPOINT_OPERATION_STAGE_INVALID";
+
+export type WorkspaceOperationStage =
+  | "reserved"
+  | "preparing"
+  | "backed_up"
+  | "restoring"
+  | "restored"
+  | "resume_accepted"
+  | "settled"
+  | "failed"
+  | "recovery_required";
+
+/** One private source snapshot of a Project workspace. Carries no paths or SHAs. */
+export interface WorkspaceCheckpointView {
+  checkpointId: string;
+  projectId: string;
+  ordinal: number;
+  kind: WorkspaceCheckpointKind;
+  state: WorkspaceCheckpointState;
+  orchestrationId: string | null;
+  turnId: string | null;
+  runId: string | null;
+  stepIndex: number | null;
+  createdAt: string;
+  fileCount: number;
+  byteCount: number;
+  excludedFileCount: number;
+  recoverable: boolean;
+  unavailableReason: WorkspaceCheckpointErrorCode | null;
+}
+
+/** The durable record of one restore-and-resume; its stage is the truth. */
+export interface WorkspaceRecoveryView {
+  operationId: string;
+  projectId: string;
+  orchestrationId: string;
+  kind: "cycle" | "recovery";
+  checkpointId: string | null;
+  safetyCheckpointId: string | null;
+  stage: WorkspaceOperationStage;
+  resumeCycleId: string | null;
+  errorCode: WorkspaceCheckpointErrorCode | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkspaceCheckpointStatus {
+  enabled: boolean;
+  available: boolean;
+  scope: "source-v1";
+  busy: boolean;
+  recoveryRequired: boolean;
+  errorCode: WorkspaceCheckpointErrorCode | null;
+}
 
 export interface OrchestrationParticipant {
   id: string;
@@ -634,6 +730,10 @@ export interface OrchestrationSession {
   updatedAt: string;
   startedAt: string | null;
   completedAt: string | null;
+  /** The cycle currently executing, when checkpoints are recorded. */
+  activeExecutionCycleId?: string | null;
+  /** The checkpoint whose files the current cycle started from. */
+  acceptedContextCheckpointId?: string | null;
 }
 
 export interface OrchestrationTurn {
@@ -652,6 +752,9 @@ export interface OrchestrationTurn {
   errorCode: OrchestrationErrorCode | null;
   createdAt: string;
   completedAt: string | null;
+  executionCycleId?: string;
+  /** The source checkpoint saved after this turn succeeded, when one exists. */
+  workspaceCheckpointId?: string;
 }
 
 export interface OrchestrationEvent {
@@ -667,6 +770,8 @@ export interface OrchestrationEvent {
   safeSummary?: string;
   errorCode?: OrchestrationErrorCode;
   completionReason?: OrchestrationCompletionReason;
+  checkpointId?: string;
+  recoveryOperationId?: string;
   createdAt: string;
 }
 
@@ -675,6 +780,10 @@ export interface OrchestrationSessionDetail {
   turns: OrchestrationTurn[];
   events: OrchestrationEvent[];
   continuationPrompts: OrchestrationContinuationPrompt[];
+  /** Absent when checkpoints are disabled or the Conversation has no Project. */
+  checkpoints?: WorkspaceCheckpointView[];
+  /** The latest recovery operation, when checkpoints are enabled. */
+  recovery?: WorkspaceRecoveryView | null;
 }
 
 export interface OrchestrationContinuationPrompt {
@@ -711,6 +820,14 @@ export interface Project {
   status: ProjectStatus;
   createdAt: string;
   updatedAt: string;
+  workspaceCheckpoints?: {
+    enabled: boolean;
+    available: boolean;
+    busy: boolean;
+    recoveryRequired: boolean;
+    workspaceEpoch: number;
+  };
+  recoveryRequired?: true;
 }
 
 export type ProjectRole = "owner" | "editor" | "viewer";

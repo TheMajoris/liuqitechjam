@@ -29,6 +29,9 @@ import type {
   AuditTraceSummary,
   RunHistoryEntry,
   RunStatus,
+  WorkspaceCheckpointStatus,
+  WorkspaceCheckpointView,
+  WorkspaceRecoveryView,
 } from "./types";
 
 /** A suggested Agent, as returned by the drafting endpoint. */
@@ -483,6 +486,67 @@ export const api = {
     request<{ session: OrchestrationSession }>(
       "/api/orchestrations/" + id + "/retry",
       { method: "POST", body: JSON.stringify({ fromStepIndex }) },
+    ),
+  /**
+   * Restore the Project's eligible source files to a recorded checkpoint and
+   * resume the remaining participants. `requestId` is generated once per
+   * confirmed action and reused on transport retries, so a repeated send can
+   * never start a second restore.
+   */
+  recoverOrchestration: (
+    id: string,
+    body: { checkpointId: string; requestId: string; acknowledgeSourceRestore: true },
+  ) =>
+    request<{ recovery: WorkspaceRecoveryView }>(
+      "/api/orchestrations/" + encodeURIComponent(id) + "/recover",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  getWorkspaceRecovery: (id: string, operationId: string) =>
+    request<{ recovery: WorkspaceRecoveryView }>(
+      "/api/orchestrations/" + encodeURIComponent(id) + "/recoveries/" +
+        encodeURIComponent(operationId),
+    ),
+  /** Resume an operation that stalled after its restore. */
+  resumeWorkspaceRecovery: (id: string, operationId: string, body: { requestId: string }) =>
+    request<{ recovery: WorkspaceRecoveryView }>(
+      "/api/orchestrations/" + encodeURIComponent(id) + "/recoveries/" +
+        encodeURIComponent(operationId) + "/resume",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  /** Put the files back the way they were before the restore began. */
+  restoreWorkspaceSafety: (
+    id: string,
+    operationId: string,
+    body: { requestId: string; acknowledgeSourceRestore: true },
+  ) =>
+    request<{ recovery: WorkspaceRecoveryView }>(
+      "/api/orchestrations/" + encodeURIComponent(id) + "/recoveries/" +
+        encodeURIComponent(operationId) + "/restore-safety",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  getWorkspaceCheckpoints: (
+    projectId: string,
+    query: { limit?: number; beforeOrdinal?: number } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (query.limit !== undefined) params.set("limit", String(query.limit));
+    if (query.beforeOrdinal !== undefined) {
+      params.set("beforeOrdinal", String(query.beforeOrdinal));
+    }
+    const suffix = params.toString();
+    return request<{
+      checkpoints: WorkspaceCheckpointView[];
+      nextBeforeOrdinal: number | null;
+      status: WorkspaceCheckpointStatus;
+    }>(
+      "/api/projects/" + encodeURIComponent(projectId) + "/checkpoints" +
+        (suffix ? "?" + suffix : ""),
+    );
+  },
+  getWorkspaceCheckpoint: (projectId: string, checkpointId: string) =>
+    request<{ checkpoint: WorkspaceCheckpointView }>(
+      "/api/projects/" + encodeURIComponent(projectId) + "/checkpoints/" +
+        encodeURIComponent(checkpointId),
     ),
   /** Prompt-policy edit for one Conversation; grants nothing. */
   updateOrchestration: (id: string, body: { clarifyFirst: boolean }) =>

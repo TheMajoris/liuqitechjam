@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import {
   DEMO_HUMAN_PRINCIPAL,
   type AuthorizationService,
@@ -15,6 +16,19 @@ import {
   ProjectWriteLeaseCoordinator,
   type ProjectWriteLeaseOptions,
 } from "./project-write-lease-coordinator.js";
+import type { ProjectRunBinding, WorkspaceSettlementPolicy } from "./project-execution.js";
+import type { WorkspaceCheckpointService } from "./workspace-checkpoint-service.js";
+import {
+  CHECKPOINT_POLICY_VERSION,
+  WorkspaceCheckpointError,
+  type WorkspaceCheckpointStatusView,
+  type WorkspaceCheckpointView,
+  type WorkspaceExecutionContext,
+} from "./workspace-checkpoint-types.js";
+import type {
+  WorkspaceOperationCoordinator,
+  WorkspaceOwner,
+} from "./workspace-operation-coordinator.js";
 import {
   PROJECT_LIMITS,
   type CreateProjectInput,
@@ -74,6 +88,8 @@ export type ProjectEventSink = (event: {
 /** Narrow trusted seam for stopping a Project-owned Preview during archive. */
 export interface ProjectPreviewLifecycleCleanup {
   stopForProject(projectId: string): Promise<void>;
+  /** Positively stop any Project preview before a checkpoint operation. */
+  quiesceForWorkspaceOperation?(projectId: string): Promise<void>;
 }
 
 /** Narrow lifecycle seam for stopping/removing Project-owned conversations. */
@@ -87,7 +103,10 @@ export interface ProjectConversationLifecycleCleanup {
 export function publicProject(
   project: Project,
   membershipsOrAgentIds: readonly ProjectAgentAttachment[] | readonly string[] | readonly ProjectMembershipView[],
-  options: { recoveryRequired?: boolean } = {},
+  options: {
+    recoveryRequired?: boolean;
+    workspaceCheckpoints?: ProjectView["workspaceCheckpoints"] | undefined;
+  } = {},
 ): ProjectView {
   const memberships: ProjectMembershipView[] = (
     project.status === "archived" ? [] : membershipsOrAgentIds
@@ -108,6 +127,9 @@ export function publicProject(
     memberships,
     status: project.status,
     ...(options.recoveryRequired === true ? { recoveryRequired: true as const } : {}),
+    ...(options.workspaceCheckpoints === undefined
+      ? {}
+      : { workspaceCheckpoints: options.workspaceCheckpoints }),
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
   };
@@ -146,6 +168,10 @@ export class ProjectService {
   private conversationLifecycle: ProjectConversationLifecycleCleanup | undefined;
   private lifecycleFailureSink: ApplicationLifecycleFailureSink | undefined;
   private startupReconciliation: RuntimeReconciliationResult | undefined;
+  private checkpoints: WorkspaceCheckpointService | undefined;
+  private operations: WorkspaceOperationCoordinator | undefined;
+  private settlementPolicy: WorkspaceSettlementPolicy = "require_proof";
+  private checkpointRuntimeSupported = false;
 
   constructor(
     private readonly store: Storage,
@@ -190,6 +216,234 @@ export class ProjectService {
     this.lifecycleFailureSink = sink;
   }
 
+  /**
+   * Attach source checkpointing. Once attached, every Project-scoped turn
+   * must belong to a reserved cycle; the lease coordinator repeats that check
+   * inside its own mutation.
+   */
+  setWorkspaceCheckpoints(
+    checkpoints: WorkspaceCheckpointService,
+    operations: WorkspaceOperationCoordinator,
+    options: { settlementPolicy: WorkspaceSettlementPolicy; runtimeSupported: boolean },
+  ): void {
+    this.checkpoints = checkpoints;
+    this.operations = operations;
+    this.settlementPolicy = options.settlementPolicy;
+    this.checkpointRuntimeSupported = options.runtimeSupported;
+    this.leaseCoordinator.setAdmissionGuard((database, projectId, owner) =>
+      operations.assertAdmission(database, projectId, owner),
+    );
+  }
+
+  workspaceCheckpointService(): WorkspaceCheckpointService | undefined {
+    return this.checkpoints;
+  }
+
+  workspaceOperationCoordinator(): WorkspaceOperationCoordinator | undefined {
+    return this.operations;
+  }
+
+  workspaceCheckpointsEnabled(): boolean {
+    return this.checkpoints?.isEnabled() === true;
+  }
+
+  workspaceSettlementPolicy(): WorkspaceSettlementPolicy {
+    return this.settlementPolicy;
+  }
+
+  /** Enabled checkpointing on a runtime that cannot prove settlement fails closed. */
+  assertCheckpointRuntimeSupported(): void {
+    if (!this.workspaceCheckpointsEnabled()) return;
+    this.checkpoints?.assertAvailable();
+    if (!this.checkpointRuntimeSupported) {
+      throw new WorkspaceCheckpointError(
+        "CHECKPOINT_RUNTIME_UNSUPPORTED",
+        "Source checkpoints need the container runtime, or the explicit local-process override, to prove that a worker has stopped writing",
+      );
+    }
+  }
+
+  /**
+   * Admission for a Project-scoped Run. With checkpoints enabled, a direct
+   * (non-cycle) Project Run is rejected before any record exists; a cycle Run
+   * must name the held reservation and the current epoch.
+   */
+  assertWorkspaceAdmission(
+    projectId: string,
+    workspace?: WorkspaceExecutionContext,
+    database: Pick<Database, "workspaceOperations" | "projects"> = this.store.snapshot(),
+  ): void {
+    if (this.workspaceCheckpointsEnabled() && workspace === undefined) {
+      throw new WorkspaceCheckpointError(
+        "CHECKPOINT_DIRECT_PROJECT_RUN_UNSUPPORTED",
+        "Shared Workspace files are checkpointed per Team cycle; start or continue a Conversation instead of running this Agent directly on the Workspace",
+      );
+    }
+    if (workspace !== undefined && workspace.projectId !== projectId) {
+      throw new ProjectError("PROJECT_BUSY", 409, "The execution context names a different Project");
+    }
+    this.operations?.assertAdmission(
+      database,
+      projectId,
+      workspace === undefined
+        ? undefined
+        : { workspaceOperationId: workspace.workspaceOperationId, workspaceEpoch: workspace.workspaceEpoch },
+    );
+  }
+
+  /** Capture the source after a successful turn, while the per-Run lease is held. */
+  async captureSuccessfulTurn(
+    binding: ProjectRunBinding,
+    run: { runId: string; agentId: string },
+    operation: OperationOptions = {},
+  ): Promise<{ checkpointId: string }> {
+    if (!this.checkpoints || !binding.workspace) {
+      throw new WorkspaceCheckpointError("CHECKPOINT_UNAVAILABLE", "Workspace checkpoints are not configured for this turn");
+    }
+    assertOperationActive(operation);
+    const checkpoint = await this.checkpoints.captureTurn({
+      projectId: binding.projectId,
+      operationId: binding.workspace.workspaceOperationId,
+      workspaceEpoch: binding.workspace.workspaceEpoch,
+      orchestrationId: binding.workspace.orchestrationId,
+      executionCycleId: binding.workspace.executionCycleId,
+      runId: run.runId,
+      agentId: run.agentId,
+      ...(operation.signal === undefined ? {} : { signal: operation.signal }),
+    });
+    return { checkpointId: checkpoint.id };
+  }
+
+  retainLeaseForRecovery(projectId: string, runId: string): void {
+    this.leaseCoordinator.retainLeaseForRecovery(projectId, runId);
+  }
+
+  /** Safe checkpoint listing for one Project, newest first. */
+  async listWorkspaceCheckpoints(
+    projectId: string,
+    query: { limit?: number | undefined; beforeOrdinal?: number | undefined } = {},
+    principal: Principal = DEMO_HUMAN_PRINCIPAL,
+  ): Promise<{
+    checkpoints: WorkspaceCheckpointView[];
+    nextBeforeOrdinal: number | null;
+    status: WorkspaceCheckpointStatusView;
+  }> {
+    await this.authorization.require({
+      principal,
+      permission: "project.read",
+      projectId,
+      resource: { kind: "project", id: projectId },
+    });
+    this.requireProject(projectId);
+    if (!this.checkpoints) {
+      return { checkpoints: [], nextBeforeOrdinal: null, status: this.workspaceCheckpointStatus(projectId) };
+    }
+    const page = this.checkpoints.listProjectCheckpoints(projectId, {
+      ...(query.limit === undefined ? {} : { limit: query.limit }),
+      ...(query.beforeOrdinal === undefined ? {} : { beforeOrdinal: query.beforeOrdinal }),
+    });
+    return {
+      checkpoints: page.checkpoints.map((checkpoint) => this.checkpoints!.toView(checkpoint)),
+      nextBeforeOrdinal: page.nextBeforeOrdinal,
+      status: this.workspaceCheckpointStatus(projectId),
+    };
+  }
+
+  /** One checkpoint; a foreign Project's identity is simply not found. */
+  async getWorkspaceCheckpoint(
+    projectId: string,
+    checkpointId: string,
+    principal: Principal = DEMO_HUMAN_PRINCIPAL,
+  ): Promise<WorkspaceCheckpointView> {
+    await this.authorization.require({
+      principal,
+      permission: "project.read",
+      projectId,
+      resource: { kind: "project", id: projectId },
+    });
+    this.requireProject(projectId);
+    if (!this.checkpoints) {
+      throw new WorkspaceCheckpointError("CHECKPOINT_NOT_FOUND", "Checkpoint not found");
+    }
+    return this.checkpoints.toView(this.checkpoints.requireCheckpoint(projectId, checkpointId));
+  }
+
+  workspaceCheckpointStatus(projectId: string): WorkspaceCheckpointStatusView {
+    const capability = this.checkpoints?.capability();
+    const gate = this.operations?.recoveryGate(projectId) ?? null;
+    return {
+      enabled: capability?.enabled === true,
+      available: capability?.available === true && this.checkpointRuntimeSupported,
+      scope: CHECKPOINT_POLICY_VERSION,
+      busy: (this.operations?.heldOperation(projectId) ?? null) !== null,
+      recoveryRequired: gate !== null || this.leaseCoordinator.isRecoveryRequired(projectId),
+      errorCode:
+        capability?.enabled && !capability.available
+          ? capability.errorCode
+          : capability?.enabled && !this.checkpointRuntimeSupported
+            ? "CHECKPOINT_RUNTIME_UNSUPPORTED"
+            : gate?.errorCode ?? null,
+    };
+  }
+
+  /** The human must currently hold Project write authority to restore files. */
+  async authorizeWorkspaceRecovery(
+    projectId: string,
+    principal: Principal = DEMO_HUMAN_PRINCIPAL,
+  ): Promise<void> {
+    await this.authorization.require({
+      principal,
+      permission: "project.write",
+      projectId,
+      resource: { kind: "project", id: projectId },
+    });
+    this.requireActiveProject(projectId);
+  }
+
+  workspaceEpoch(projectId: string): number {
+    return this.requireProject(projectId).workspaceEpoch ?? 0;
+  }
+
+  /** No lease may be held and no unresolved writer may remain. */
+  requireNoPhysicalWriter(projectId: string): void {
+    this.leaseCoordinator.assertProjectRecoveryClear(projectId);
+    if (this.leaseCoordinator.writeLeaseHolder(projectId)) {
+      throw new ProjectError("PROJECT_BUSY", 409, "Another Agent is currently writing to this Project");
+    }
+  }
+
+  /** Positively stop the Project preview before a checkpoint operation. */
+  async quiescePreviewsForWorkspaceOperation(projectId: string): Promise<void> {
+    const lifecycle = this.projectPreviewLifecycle;
+    if (!lifecycle) return;
+    if (lifecycle.quiesceForWorkspaceOperation) {
+      await lifecycle.quiesceForWorkspaceOperation(projectId);
+      return;
+    }
+    await lifecycle.stopForProject(projectId);
+    this.assertNoActiveProjectPreview(projectId);
+  }
+
+  /**
+   * The atomic tail of a verified restore: advance the epoch, clear every
+   * Project-scoped thread so no Agent resumes memory of files that no longer
+   * exist, and record the verified boundary. Runs inside the caller's mutation.
+   */
+  resetWorkspaceIn(database: Database, projectId: string, checkpointId: string): number {
+    const project = database.projects.find((item) => item.id === projectId);
+    if (!project) throw new ProjectError("PROJECT_NOT_FOUND", 404, "Project not found");
+    const nextEpoch = (project.workspaceEpoch ?? 0) + 1;
+    project.workspaceEpoch = nextEpoch;
+    project.currentCheckpointId = checkpointId;
+    project.updatedAt = now();
+    for (const attachment of database.projectAgents) {
+      if (attachment.projectId !== projectId) continue;
+      attachment.codexThreadId = null;
+      attachment.updatedAt = project.updatedAt;
+    }
+    return nextEpoch;
+  }
+
   /** Supply the verified runtime evidence before stale leases are considered. */
   setStartupReconciliation(result: RuntimeReconciliationResult): void {
     this.startupReconciliation = {
@@ -208,6 +462,24 @@ export class ProjectService {
   async initialize(reconciliation = this.startupReconciliation): Promise<void> {
     await this.workspaces.initialize();
     await this.leaseCoordinator.initialize(reconciliation);
+    // Reservations are quarantined only after lease evidence is known, so a
+    // Project with an unresolved writer keeps every gate it had.
+    if (this.operations) {
+      const unresolvedProjectIds = new Set(
+        this.store
+          .snapshot()
+          .projects.map((project) => project.id)
+          .filter((projectId) => this.leaseCoordinator.isRecoveryRequired(projectId)),
+      );
+      const { retained } = await this.operations.initialize({ unresolvedProjectIds });
+      for (const operation of retained) {
+        this.lifecycleFailureSink?.reportLifecycleFailure({
+          code: "WORKSPACE_RECOVERY_REQUIRED",
+          message: "A workspace checkpoint operation was interrupted; operator recovery is required",
+          projectId: operation.projectId,
+        });
+      }
+    }
   }
 
   /**
@@ -538,8 +810,28 @@ export class ProjectService {
           database.permitApprovalCorrelations = database.permitApprovalCorrelations.filter(
             (item) => item.projectId !== projectId,
           );
+          database.workspaceCheckpoints = database.workspaceCheckpoints.filter(
+            (item) => item.projectId !== projectId,
+          );
+          database.workspaceExecutionCycles = database.workspaceExecutionCycles.filter(
+            (item) => item.projectId !== projectId,
+          );
+          database.workspaceOperations = database.workspaceOperations.filter(
+            (item) => item.projectId !== projectId,
+          );
         });
         this.onEvent({ type: "project_deleted", projectId, status: "deleted" });
+        // The private snapshot store is removed only after the rows are gone.
+        // A failed physical cleanup is reported, never claimed as complete.
+        try {
+          await this.checkpoints?.deleteProjectData(projectId);
+        } catch {
+          this.lifecycleFailureSink?.reportLifecycleFailure({
+            code: "WORKSPACE_CHECKPOINT_CLEANUP_FAILED",
+            message: "Project checkpoint storage could not be removed after permanent deletion",
+            projectId,
+          });
+        }
         return { deleted: true };
       } catch (error) {
         // The JSON store mutation is atomic. If local cleanup fails, restore
@@ -1012,6 +1304,15 @@ export class ProjectService {
         "That Agent is not attached to this Project",
       );
     }
+    // With checkpoints enabled the mount and the snapshot must be the same
+    // directory. Derive it, and refuse a persisted path that disagrees.
+    const canonical = this.workspaces.workspacePath(projectId);
+    if (
+      this.workspaceCheckpointsEnabled() &&
+      path.resolve(project.workspacePath) !== path.resolve(canonical)
+    ) {
+      throw this.workspaceRecoveryRequired();
+    }
     return {
       project,
       workspacePath: project.workspacePath,
@@ -1024,15 +1325,26 @@ export class ProjectService {
     projectId: string,
     agentId: string,
     codexThreadId: string | null,
+    owner?: WorkspaceOwner,
   ): Promise<void> {
-    this.leaseCoordinator.assertProjectMutationAllowed(projectId);
+    const ownerWithoutEpoch =
+      owner === undefined ? undefined : { workspaceOperationId: owner.workspaceOperationId };
+    this.leaseCoordinator.assertProjectMutationAllowed(projectId, ownerWithoutEpoch);
     await this.store.mutate((database) => {
-      this.leaseCoordinator.assertProjectMutationAllowed(projectId);
+      this.leaseCoordinator.assertProjectMutationAllowed(projectId, ownerWithoutEpoch);
+      const project = database.projects.find((item) => item.id === projectId);
+      // A restore advanced the epoch after this turn was accepted: its thread
+      // remembers files that are gone, so the cleared pointer is kept.
+      if (
+        owner?.workspaceEpoch !== undefined &&
+        (project?.workspaceEpoch ?? 0) !== owner.workspaceEpoch
+      ) {
+        return;
+      }
       const attachment = database.projectAgents.find(
         (item) => item.projectId === projectId && item.agentId === agentId,
       );
       if (attachment) attachment.codexThreadId = codexThreadId;
-      const project = database.projects.find((item) => item.id === projectId);
       if (project) project.updatedAt = now();
     });
   }
@@ -1050,8 +1362,14 @@ export class ProjectService {
     project: Project,
     agent: Agent,
     operation: OperationOptions = {},
+    owner?: WorkspaceOwner,
   ): Promise<void> {
     assertOperationActive(operation);
+    // The contract refresh below writes into the live workspace; the owning
+    // cycle is admitted, any other caller is not.
+    if (this.operations) {
+      this.operations.assertAdmission(this.store.snapshot(), project.id, owner);
+    }
     await this.authorization.require({
       principal: { kind: "agent", id: agent.id },
       permission: "project.write",
@@ -1123,8 +1441,21 @@ export class ProjectService {
     project: Project,
     memberships: readonly ProjectAgentAttachment[] | readonly string[] | readonly ProjectMembershipView[],
   ): ProjectView {
+    const capability = this.checkpoints?.capability();
+    const recoveryGate = this.operations?.recoveryGate(project.id) ?? null;
     return publicProject(project, memberships, {
-      recoveryRequired: this.leaseCoordinator.isRecoveryRequired(project.id),
+      recoveryRequired: this.leaseCoordinator.isRecoveryRequired(project.id) || recoveryGate !== null,
+      ...(capability === undefined || !capability.enabled
+        ? {}
+        : {
+            workspaceCheckpoints: {
+              enabled: true,
+              available: capability.available,
+              busy: this.operations?.heldOperation(project.id) !== null,
+              recoveryRequired: recoveryGate !== null,
+              workspaceEpoch: project.workspaceEpoch ?? 0,
+            },
+          }),
     });
   }
 
@@ -1253,6 +1584,35 @@ export class ProjectService {
         .filter((item) => item.projectId !== projectId)
         .concat(
           snapshot.permitApprovalCorrelations
+            .filter((item) => item.projectId === projectId)
+            .map((item) => structuredClone(item)),
+        );
+      // Checkpoint records are Project-owned evidence. Restore them with the
+      // rest, but never resurrect an operation accepted after the snapshot.
+      const acceptedSince = new Set(
+        database.workspaceOperations
+          .filter((item) => item.projectId === projectId)
+          .filter((item) => !snapshot.workspaceOperations.some((prior) => prior.id === item.id))
+          .map((item) => item.id),
+      );
+      database.workspaceCheckpoints = database.workspaceCheckpoints
+        .filter((item) => item.projectId !== projectId || acceptedSince.has(item.operationId))
+        .concat(
+          snapshot.workspaceCheckpoints
+            .filter((item) => item.projectId === projectId)
+            .map((item) => structuredClone(item)),
+        );
+      database.workspaceExecutionCycles = database.workspaceExecutionCycles
+        .filter((item) => item.projectId !== projectId || acceptedSince.has(item.operationId))
+        .concat(
+          snapshot.workspaceExecutionCycles
+            .filter((item) => item.projectId === projectId)
+            .map((item) => structuredClone(item)),
+        );
+      database.workspaceOperations = database.workspaceOperations
+        .filter((item) => item.projectId !== projectId || acceptedSince.has(item.id))
+        .concat(
+          snapshot.workspaceOperations
             .filter((item) => item.projectId === projectId)
             .map((item) => structuredClone(item)),
         );

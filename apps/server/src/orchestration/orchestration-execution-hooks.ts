@@ -18,6 +18,10 @@ import type {
   OrchestrationErrorCode,
   OrchestrationParticipant,
 } from "./types.js";
+import { buildCheckpointResumeState } from "./checkpoint-resume-state.js";
+import type { OrchestrationWorkspaceCycle } from "./orchestration-runtime.js";
+import type { OrchestrationWorkspaceRecovery } from "../projects/workspace-recovery-facade.js";
+import type { WorkspaceCheckpoint } from "../projects/workspace-checkpoint-types.js";
 
 /** Runtime state shared by the service and its persistence hooks. */
 export interface OrchestrationHookContext {
@@ -25,6 +29,8 @@ export interface OrchestrationHookContext {
   stepOffset: number;
   controller: AbortController;
   currentRunId: string | null;
+  /** Present for a checkpoint-enabled cycle; publication becomes mandatory. */
+  workspace?: OrchestrationWorkspaceCycle | undefined;
 }
 
 export interface OrchestrationHookDependencies {
@@ -34,6 +40,11 @@ export interface OrchestrationHookDependencies {
     options?: { allowErrored?: boolean },
   ): Promise<void>;
   cancelChildRun(runId: string): Promise<void>;
+  /** Required when the context carries a workspace cycle. */
+  workspaceRecovery?: Pick<
+    OrchestrationWorkspaceRecovery,
+    "publishTurnCheckpoint" | "invalidateCandidate" | "auditCheckpointCreated"
+  > | undefined;
 }
 
 /** Stable error used when an execution callback observes a lifecycle race. */
@@ -163,6 +174,9 @@ export function createOrchestrationExecutionHooks(
             runId,
             position: participant.position,
             stepIndex: context.stepOffset + stepIndex,
+            ...(context.workspace === undefined
+              ? {}
+              : { executionCycleId: context.workspace.cycleId }),
             status: "dispatched",
             safeInputSummary: safeInputSummary(prompt),
             safeOutput: null,
@@ -185,49 +199,129 @@ export function createOrchestrationExecutionHooks(
       }
     },
 
-    onRunCompleted: async ({ participant, runId, envelope, stepIndex }) => {
+    onRunCompleted: async ({ participant, runId, envelope, stepIndex, nextState, workspaceCheckpointId }) => {
+      const workspace = context.workspace;
+      const recovery = dependencies.workspaceRecovery;
+      if (workspace !== undefined && (recovery === undefined || workspaceCheckpointId === undefined || nextState === undefined)) {
+        // A checkpoint-enabled turn without a candidate or a next state is
+        // not a recoverable success. Stop here; never dispatch the next Agent.
+        if (workspaceCheckpointId !== undefined) {
+          await recovery?.invalidateCandidate(workspaceCheckpointId, "CHECKPOINT_NOT_READY").catch(() => undefined);
+        }
+        throw new DispatchLifecycleError(
+          "CHECKPOINT_PUBLISH_FAILED",
+          "The turn completed without a publishable source checkpoint",
+        );
+      }
       context.currentRunId = null;
-      await store.mutate((database) => {
-        const session = database.orchestrations.find(
-          (item) => item.id === context.id,
-        );
-        if (!session || statusIsTerminal(session.status)) return;
-        const completedAt = now();
-        const turn = database.orchestrationTurns.find(
-          (candidate) =>
-            candidate.runId === runId && candidate.sessionId === context.id,
-        );
-        if (turn && turn.status === "dispatched") {
-          turn.status = "completed";
-          turn.safeOutput = boundedSafeText(
-            envelope.content,
-            ORCHESTRATION_LIMITS.maxSafeOutputLength,
-            "[OUTPUT TRUNCATED]",
+      let published: WorkspaceCheckpoint | null = null;
+      try {
+        published = await store.mutate((database) => {
+          const session = database.orchestrations.find(
+            (item) => item.id === context.id,
           );
-          turn.outputTruncated = envelope.truncated;
-          turn.completedAt = completedAt;
-        }
-        session.currentParticipantId = null;
-        session.currentRunId = null;
-        session.stepIndex = Math.max(
-          session.stepIndex,
-          context.stepOffset + stepIndex + 1,
-        );
-        session.updatedAt = completedAt;
-        const fields: OrchestrationEventFields = {
-          participantId: participant.id,
-          agentId: participant.agentId,
-          runId,
-          safeSummary: "Participant completed",
-        };
-        if (turn?.createdAt) {
-          fields.durationMs = Math.max(
-            0,
-            Date.parse(completedAt) - Date.parse(turn.createdAt),
+          if (!session || statusIsTerminal(session.status)) return null;
+          const completedAt = now();
+          const turn = database.orchestrationTurns.find(
+            (candidate) =>
+              candidate.runId === runId && candidate.sessionId === context.id,
           );
+          if (turn && turn.status === "dispatched") {
+            turn.status = "completed";
+            turn.safeOutput = boundedSafeText(
+              envelope.content,
+              ORCHESTRATION_LIMITS.maxSafeOutputLength,
+              "[OUTPUT TRUNCATED]",
+            );
+            turn.outputTruncated = envelope.truncated;
+            turn.completedAt = completedAt;
+          }
+          session.currentParticipantId = null;
+          session.currentRunId = null;
+          session.stepIndex = Math.max(
+            session.stepIndex,
+            context.stepOffset + stepIndex + 1,
+          );
+          session.updatedAt = completedAt;
+          const fields: OrchestrationEventFields = {
+            participantId: participant.id,
+            agentId: participant.agentId,
+            runId,
+            safeSummary: "Participant completed",
+          };
+          if (turn?.createdAt) {
+            fields.durationMs = Math.max(
+              0,
+              Date.parse(completedAt) - Date.parse(turn.createdAt),
+            );
+          }
+          appendEvent(database, session, "run_completed", fields);
+
+          if (workspace === undefined || recovery === undefined || workspaceCheckpointId === undefined || nextState === undefined) {
+            return null;
+          }
+          // Checkpoint-enabled: link the turn, save the exact continuation,
+          // promote the candidate, and advance the accepted branch head, all
+          // in this same transaction.
+          const cycle = database.workspaceExecutionCycles.find(
+            (item) => item.id === workspace.cycleId,
+          );
+          if (!turn || !cycle) {
+            throw new DispatchLifecycleError(
+              "CHECKPOINT_PUBLISH_FAILED",
+              "The accepted turn or its execution cycle is missing",
+            );
+          }
+          const parent = database.workspaceCheckpoints
+            .filter(
+              (item) =>
+                item.executionCycleId === cycle.id && item.state === "ready" && item.kind !== "safety",
+            )
+            .sort((left, right) => right.ordinal - left.ordinal)[0];
+          const resume = buildCheckpointResumeState(cycle.initialState, {
+            nextEngineStepIndex: nextState.nextStepIndex,
+            lastRunId: nextState.lastRunId,
+            lastOutput: nextState.lastOutput,
+            turns: nextState.turns,
+            parentCheckpointId: parent?.id ?? null,
+          });
+          const checkpoint = recovery.publishTurnCheckpoint(database, {
+            checkpointId: workspaceCheckpointId,
+            runId,
+            executionCycleId: cycle.id,
+            turnId: turn.id,
+            participantId: participant.id,
+            stepIndex: context.stepOffset + stepIndex,
+            resume,
+          });
+          turn.workspaceCheckpointId = checkpoint.id;
+          turn.executionCycleId = cycle.id;
+          if (!cycle.acceptedTurnIds.includes(turn.id)) cycle.acceptedTurnIds.push(turn.id);
+          cycle.status = "running";
+          session.acceptedContextCheckpointId = checkpoint.id;
+          appendEvent(database, session, "workspace_checkpoint_created", {
+            participantId: participant.id,
+            agentId: participant.agentId,
+            runId,
+            checkpointId: checkpoint.id,
+            safeSummary:
+              "Workspace checkpoint #" + String(checkpoint.ordinal) + " saved after " + participant.role,
+          });
+          return structuredClone(checkpoint);
+        });
+      } catch (error) {
+        if (workspace !== undefined && workspaceCheckpointId !== undefined) {
+          await recovery?.invalidateCandidate(workspaceCheckpointId, "CHECKPOINT_NOT_READY").catch(() => undefined);
         }
-        appendEvent(database, session, "run_completed", fields);
-      });
+        if (error instanceof DispatchLifecycleError) throw error;
+        throw new DispatchLifecycleError(
+          "CHECKPOINT_PUBLISH_FAILED",
+          "The turn's source checkpoint could not be published",
+        );
+      }
+      if (published !== null) {
+        await recovery?.auditCheckpointCreated(published).catch(() => undefined);
+      }
     },
 
     onParticipantFailed: async ({ participant, runId, error, errorCode }) => {

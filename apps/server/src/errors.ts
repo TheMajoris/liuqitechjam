@@ -25,9 +25,12 @@ export const MODEL_INFERENCE_LIMIT_MESSAGE =
 /** Public wording for a pre-run Project write authorization denial. */
 export const PROJECT_PERMISSION_DENIED_MESSAGE =
   "This Agent is not allowed to write to the Workspace. Add Allow Agent runs (agent.invoke) and Edit workspace files (project.write) to the Agent's role, make sure it has editable Workspace membership, then retry.";
+/** The Agent finished, but its source checkpoint could not be established. */
+export const CHECKPOINT_CAPTURE_FAILED = "CHECKPOINT_CAPTURE_FAILED" as const;
 export type AgentRunErrorCode =
   | typeof WEB_TOOL_PERMISSION_DENIED
-  | typeof MODEL_INFERENCE_LIMIT_EXCEEDED;
+  | typeof MODEL_INFERENCE_LIMIT_EXCEEDED
+  | typeof CHECKPOINT_CAPTURE_FAILED;
 
 /** A web-tool denial observed through the authenticated MCP session. */
 export class WebToolPermissionDeniedError extends Error {

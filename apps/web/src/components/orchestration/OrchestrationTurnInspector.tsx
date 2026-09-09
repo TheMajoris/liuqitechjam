@@ -1,6 +1,10 @@
+<<<<<<< HEAD
 import { useMemo } from "react";
 import type { Agent, OrchestrationParticipant } from "../../types";
 import { MarkdownMessage } from "../MarkdownMessage";
+=======
+import type { Agent, WorkspaceCheckpointView } from "../../types";
+>>>>>>> fbac588 (feat: add Git-backed workspace source checkpoints with restore-and-resume)
 import {
   agentName,
   eventLabel,
@@ -32,6 +36,20 @@ export interface OrchestrationTurnInspectorProps {
   retryBlocked?: boolean;
   /** True while another lifecycle action is in flight. */
   retryDisabled?: boolean;
+  /**
+   * The source checkpoint saved after this turn, resolved by the caller from
+   * the turn's own `workspaceCheckpointId`. Absent when none was recorded.
+   */
+  checkpoint?: WorkspaceCheckpointView | undefined;
+  /** True when the detail carries checkpoints at all, so an absence is worth stating. */
+  checkpointsEnabled?: boolean;
+  /** Absent when the caller cannot restore, which closes the affordance. */
+  onRecover?: ((checkpointId: string) => void) | undefined;
+  recoverPending?: boolean;
+  /** True while the conversation is running, when a restore must not be offered. */
+  recoverBlocked?: boolean;
+  /** True while another lifecycle action is in flight. */
+  recoverDisabled?: boolean;
   onClose: () => void;
 }
 
@@ -70,8 +88,10 @@ function stepTag(stepNumber: number | undefined): string {
  * leads with: a reader opening a step wants the task, the role, the result
  * handed over, and the conversation so far, in their own words.
  *
- * A failed turn is also the one place a retry is offered, because a successful
- * turn has no failure checkpoint to recover.
+ * A failed turn offers the legacy retry, which reruns the Agent against the
+ * files as they are now. A completed turn with a recorded source checkpoint
+ * offers the restore: the files go back to how they were after that turn and
+ * the remaining participants resume from there.
  */
 export function OrchestrationTurnInspector({
   node,
@@ -81,11 +101,18 @@ export function OrchestrationTurnInspector({
   retryPending = false,
   retryBlocked = false,
   retryDisabled = false,
+  checkpoint,
+  checkpointsEnabled = false,
+  onRecover,
+  recoverPending = false,
+  recoverBlocked = false,
+  recoverDisabled = false,
   onClose,
 }: OrchestrationTurnInspectorProps) {
   const { turn } = node;
   const reason = node.reason && !isInternalWording(node.reason) ? node.reason.trim() : "";
   const canRetry = Boolean(onRetry) && turn.stepIndex !== undefined;
+<<<<<<< HEAD
   const briefing = useMemo(
     () => buildTurnBriefing(turn.safeInputSummary),
     [turn.safeInputSummary],
@@ -93,13 +120,19 @@ export function OrchestrationTurnInspector({
   const reply = useMemo(() => digestReply(turn.safeOutput), [turn.safeOutput]);
   const speaker = (excerpt: NarrativeExcerpt) =>
     speakerLabel(agents, participants, excerpt);
+=======
+  const name = agentName(agents, turn.agentId);
+  const completed = turn.status === "completed";
+  const recoverable = completed && checkpoint !== undefined && checkpoint.recoverable;
+  const canRecover = recoverable && Boolean(onRecover);
+>>>>>>> fbac588 (feat: add Git-backed workspace source checkpoints with restore-and-resume)
 
   return (
     <aside className="orch-inspector" aria-labelledby="orch-inspector-heading">
       <div className="orch-inspector-head">
         <div>
           <span className="orch-eyebrow">Step {node.stepNumber}</span>
-          <h3 id="orch-inspector-heading">{agentName(agents, turn.agentId)}</h3>
+          <h3 id="orch-inspector-heading">{name}</h3>
         </div>
         <button
           type="button"
@@ -129,6 +162,26 @@ export function OrchestrationTurnInspector({
           <dd><code>{turn.runId.slice(0, 8)}</code></dd>
         </div>
       </dl>
+
+      {completed && checkpoint && (
+        <p className="orch-inspector-checkpoint">
+          <span className="orch-checkpoint-badge">
+            Workspace checkpoint #{checkpoint.ordinal}
+          </span>
+          <span className="orch-inspector-checkpoint-facts">
+            {checkpoint.fileCount} {checkpoint.fileCount === 1 ? "file" : "files"}
+            {checkpoint.excludedFileCount > 0 &&
+              ` · ${checkpoint.excludedFileCount} excluded`}
+            {!checkpoint.recoverable && " · not restorable"}
+          </span>
+        </p>
+      )}
+
+      {completed && !checkpoint && checkpointsEnabled && (
+        <p className="orch-inspector-note">
+          No workspace checkpoint was recorded for this turn.
+        </p>
+      )}
 
       {node.failed && (
         <p className="orch-inspector-failure">
@@ -274,6 +327,28 @@ export function OrchestrationTurnInspector({
         )}
       </section>
 
+      {canRecover && checkpoint && (
+        <section className="orch-inspector-restore">
+          <button
+            type="button"
+            className="orch-inspector-restore-action"
+            disabled={recoverPending || recoverBlocked || recoverDisabled}
+            onClick={() => onRecover?.(checkpoint.checkpointId)}
+          >
+            {recoverPending ? "Restoring…" : `Restore after ${name} and resume`}
+          </button>
+          <p className="orch-inspector-note" role={recoverPending ? "status" : undefined}>
+            {recoverBlocked
+              ? "Stop the conversation before restoring its files."
+              : recoverPending
+                ? "Saving a safety checkpoint, then restoring the source files…"
+                : recoverDisabled
+                  ? "Wait for the current action to finish."
+                  : "Source files go back to how they were after this turn. A safety checkpoint of the current files is saved first, and the next Agent starts with fresh Project context. Credentials, generated files and external tool actions are not rolled back."}
+          </p>
+        </section>
+      )}
+
       {node.failed && canRetry && (
         <section className="orch-inspector-resume">
           <button
@@ -282,16 +357,16 @@ export function OrchestrationTurnInspector({
             disabled={retryPending || retryBlocked || retryDisabled}
             onClick={() => onRetry?.(turn.stepIndex as number)}
           >
-            {retryPending ? "Retrying…" : "Retry from this turn"}
+            {retryPending ? "Retrying…" : "Retry from this turn (current files)"}
           </button>
           <p className="orch-inspector-note">
             {retryBlocked
               ? "Stop the conversation before retrying it."
               : retryPending
-                ? "Retrying this Agent turn and continuing from the checkpoint…"
+                ? "Retrying this Agent turn using the current files…"
                 : retryDisabled
                   ? "Wait for the current action to finish."
-                  : "This reruns the Agent turn and continues from there. Earlier turns stay in the record. Shared Workspace files are not rolled back."}
+                  : "This reruns the Agent turn using the current files and continues from there. Earlier turns stay in the record. Workspace files are not rolled back."}
           </p>
         </section>
       )}

@@ -12,6 +12,7 @@ import type {
   OrchestrationParticipant,
 } from "./types.js";
 import type { SupervisorRequestBudget } from "./supervisor/types.js";
+import type { WorkspaceExecutionContext } from "../projects/workspace-checkpoint-types.js";
 
 /**
  * Application-owned projection of one orchestration execution turn.
@@ -136,6 +137,19 @@ export type OrchestrationExecutionInput = Pick<
     contextTurns?: readonly SharedConversationTurn[];
   };
 
+/**
+ * The exact engine state after one accepted turn: what the next iteration
+ * would receive. Persisted beside the turn's source checkpoint so a recovery
+ * resumes from a recorded boundary rather than a reconstruction.
+ */
+export interface CompletedTurnState {
+  nextStepIndex: number;
+  lastRunId: string;
+  lastOutput: string;
+  /** The current cycle's accepted turns, including the one just completed. */
+  turns: OrchestrationExecutionTurn[];
+}
+
 /** Lifecycle hooks owned by the platform service, not by a workflow engine. */
 export interface OrchestrationExecutionHooks {
   /** Journal one validated supervisor decision before any child dispatch. */
@@ -169,6 +183,10 @@ export interface OrchestrationExecutionHooks {
     envelope: HandoffEnvelope;
     turn: OrchestrationExecutionTurn;
     stepIndex: number;
+    /** Present on engines updated for checkpoint publication. */
+    nextState?: CompletedTurnState | undefined;
+    /** The candidate source checkpoint the platform captured for this Run. */
+    workspaceCheckpointId?: string | undefined;
   }) => void | Promise<void>;
   onParticipantFailed?: (input: {
     participant: OrchestrationParticipant;
@@ -201,6 +219,8 @@ export interface OrchestrationExecutionOptions {
    * before doing the work. It changes no permission and no routing.
    */
   clarifyFirst?: boolean | undefined;
+  /** Trusted checkpoint execution identity forwarded to every child Run. */
+  workspace?: WorkspaceExecutionContext | undefined;
   signal?: AbortSignal;
   hooks?: OrchestrationExecutionHooks;
 }

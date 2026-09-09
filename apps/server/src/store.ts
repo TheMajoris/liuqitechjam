@@ -13,6 +13,11 @@ import {
   ProjectWriteLeaseSchema,
 } from "./projects/project-types.js";
 import { ArkModelCatalogSchema } from "./models/catalog.js";
+import {
+  WorkspaceCheckpointSchema,
+  WorkspaceExecutionCycleSchema,
+  WorkspaceOperationSchema,
+} from "./projects/workspace-checkpoint-types.js";
 import type { Database } from "./types.js";
 
 /** Create a fresh, normalized application database snapshot. */
@@ -38,6 +43,9 @@ export const emptyDatabase = (): Database => ({
   permitApprovalCorrelations: [],
   roles: [],
   installedSkills: [],
+  workspaceCheckpoints: [],
+  workspaceExecutionCycles: [],
+  workspaceOperations: [],
 });
 
 const ORCHESTRATION_COLLECTIONS = [
@@ -54,6 +62,11 @@ const ACCESS_COLLECTIONS = [
   "permitApprovalCorrelations",
 ] as const;
 const ROLE_COLLECTIONS = ["roles", "installedSkills"] as const;
+const WORKSPACE_CHECKPOINT_COLLECTIONS = [
+  "workspaceCheckpoints",
+  "workspaceExecutionCycles",
+  "workspaceOperations",
+] as const;
 // Core Agent data, validated by shape like agents/messages/runs rather than
 // by a Zod projection, so additive fields survive a round trip.
 const AGENT_COLLECTIONS = ["agentConversations"] as const;
@@ -64,6 +77,7 @@ const ADDITIVE_COLLECTIONS = [
   ...ACCESS_COLLECTIONS,
   ...ROLE_COLLECTIONS,
   ...AGENT_COLLECTIONS,
+  ...WORKSPACE_CHECKPOINT_COLLECTIONS,
 ] as const;
 
 type UnknownRecord = Record<string, unknown>;
@@ -182,6 +196,17 @@ export function normalizeDatabase(value: unknown): Database {
   const validProjectLeases = ProjectWriteLeaseSchema.array().safeParse(
     normalized.projectLeases,
   );
+  // A present but malformed checkpoint collection fails loudly. Silently
+  // emptying it would erase the only evidence that a restore was in flight.
+  const validCheckpoints = WorkspaceCheckpointSchema.array().safeParse(
+    normalized.workspaceCheckpoints,
+  );
+  const validCycles = WorkspaceExecutionCycleSchema.array().safeParse(
+    normalized.workspaceExecutionCycles,
+  );
+  const validOperations = WorkspaceOperationSchema.array().safeParse(
+    normalized.workspaceOperations,
+  );
   if (
     !validSessions.success ||
     !validTurns.success ||
@@ -190,7 +215,10 @@ export function normalizeDatabase(value: unknown): Database {
     !validPreviews.success ||
     !validProjects.success ||
     !validProjectAgents.success ||
-    !validProjectLeases.success
+    !validProjectLeases.success ||
+    !validCheckpoints.success ||
+    !validCycles.success ||
+    !validOperations.success
   ) {
     throw new Error("Unsupported database format");
   }

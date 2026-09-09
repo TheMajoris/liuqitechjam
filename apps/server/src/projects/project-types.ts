@@ -25,6 +25,13 @@ export interface Project {
   /** Principal ID of the human owner; absent only on pre-Wave 8 records. */
   ownerPrincipalId?: string;
   status: ProjectStatus;
+  /**
+   * Incremented by every verified source restore. Queued work and thread
+   * writes that carry an older epoch are rejected. Absent means zero.
+   */
+  workspaceEpoch?: number;
+  /** Last verified source boundary; not a live cleanliness guarantee. */
+  currentCheckpointId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -65,6 +72,9 @@ export interface ProjectWriteLease {
   runId: string;
   agentId: string;
   acquiredAt: string;
+  /** Set for leases taken inside a checkpoint-enabled cycle reservation. */
+  workspaceOperationId?: string;
+  workspaceEpoch?: number;
 }
 
 export const ProjectSchema = z.object({
@@ -75,6 +85,8 @@ export const ProjectSchema = z.object({
   teamId: z.string().nullable(),
   ownerPrincipalId: z.string().min(1).optional(),
   status: z.enum(["active", "archived"]),
+  workspaceEpoch: z.number().int().nonnegative().optional(),
+  currentCheckpointId: z.string().min(1).nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -98,6 +110,8 @@ export const ProjectWriteLeaseSchema = z.object({
   runId: z.string().min(1),
   agentId: z.string().min(1),
   acquiredAt: z.string(),
+  workspaceOperationId: z.string().min(1).optional(),
+  workspaceEpoch: z.number().int().nonnegative().optional(),
 });
 
 /** Safe HTTP projection. The host workspace path never crosses the boundary. */
@@ -112,6 +126,14 @@ export interface ProjectView {
   status: ProjectStatus;
   /** Present when the last settled lease cleanup needs operator recovery. */
   recoveryRequired?: true;
+  /** Present when source checkpoints are enabled for this server. */
+  workspaceCheckpoints?: {
+    enabled: boolean;
+    available: boolean;
+    busy: boolean;
+    recoveryRequired: boolean;
+    workspaceEpoch: number;
+  };
   createdAt: string;
   updatedAt: string;
 }

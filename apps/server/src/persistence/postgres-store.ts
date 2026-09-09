@@ -338,11 +338,47 @@ const TABLES: readonly TableDescriptor[] = [
       requiredString(record, "version"), time(record, "installedAt"), time(record, "updatedAt"), ordinal, record,
     ],
   },
+  {
+    collection: "workspaceExecutionCycles",
+    table: "workspace_execution_cycles",
+    columns: "id, project_id, orchestration_id, status, created_at, ordinal, record",
+    keyColumns: ["id"],
+    keyValues: (record) => [requiredString(record, "id")],
+    values: (record, ordinal) => [
+      requiredString(record, "id"), requiredString(record, "projectId"), requiredString(record, "orchestrationId"),
+      requiredString(record, "status"), time(record, "createdAt"), ordinal, record,
+    ],
+  },
+  {
+    collection: "workspaceCheckpoints",
+    table: "workspace_checkpoints",
+    columns: "id, project_id, checkpoint_ordinal, kind, state, run_id, orchestration_id, created_at, ordinal, record",
+    keyColumns: ["id"],
+    keyValues: (record) => [requiredString(record, "id")],
+    values: (record, ordinal) => [
+      requiredString(record, "id"), requiredString(record, "projectId"), requiredNumber(record, "ordinal"),
+      requiredString(record, "kind"), requiredString(record, "state"), nullableString(record, "runId"),
+      nullableString(record, "orchestrationId"), time(record, "createdAt"), ordinal, record,
+    ],
+  },
+  {
+    collection: "workspaceOperations",
+    table: "workspace_operations",
+    columns: "id, project_id, kind, stage, reservation_held, request_id, created_at, ordinal, record",
+    keyColumns: ["id"],
+    keyValues: (record) => [requiredString(record, "id")],
+    values: (record, ordinal) => [
+      requiredString(record, "id"), requiredString(record, "projectId"), requiredString(record, "kind"),
+      requiredString(record, "stage"), Boolean(record.reservationHeld), nullableString(record, "requestId"),
+      time(record, "createdAt"), ordinal, record,
+    ],
+  },
 ];
 
 // The order is child-first for deletes so ordinary runtime roles never need
 // TRUNCATE or owner privileges. Inserts run in the reverse dependency order.
 const DELETE_TABLES = [
+  "workspace_operations", "workspace_checkpoints", "workspace_execution_cycles",
   "orchestration_continuation_prompts", "orchestration_events", "orchestration_turns",
   "permit_approval_correlations", "approval_requests", "capability_grants", "previews",
   "project_leases", "project_agents", "messages", "runs", "agent_conversations",
@@ -354,6 +390,7 @@ const INSERT_TABLES = [
   "orchestration_turns", "orchestration_events", "orchestration_continuation_prompts", "previews",
   "project_agents", "project_leases", "approval_requests", "capability_grants",
   "permit_approval_correlations", "installed_skills",
+  "workspace_execution_cycles", "workspace_checkpoints", "workspace_operations",
 ] as const;
 
 const TABLE_BY_NAME = new Map(TABLES.map((descriptor) => [descriptor.table, descriptor]));
@@ -363,6 +400,7 @@ const KNOWN_DATABASE_KEYS = new Set([
   "orchestrationTurns", "orchestrationEvents", "orchestrationContinuationPrompts", "previews", "projects",
   "projectAgents", "projectLeases", "approvalRequests", "capabilityGrants", "auditEvents", "auditChainAnchor",
   "permitApprovalCorrelations", "roles", "installedSkills",
+  "workspaceCheckpoints", "workspaceExecutionCycles", "workspaceOperations",
 ]);
 
 function topLevelExtras(database: Database): JsonRecord {

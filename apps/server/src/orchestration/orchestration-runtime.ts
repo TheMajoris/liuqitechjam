@@ -2,6 +2,9 @@ import type { Agent, AgentRun, Message } from "../types.js";
 import type { ModelRef } from "../models/types.js";
 import type { AuditRecorder, AuditSpan } from "../audit/audit-types.js";
 import type { Storage } from "../store.js";
+import type { CheckpointResumeState } from "./checkpoint-resume-state.js";
+import type { OrchestrationWorkspaceRecovery } from "../projects/workspace-recovery-facade.js";
+import type { WorkspaceExecutionContext } from "../projects/workspace-checkpoint-types.js";
 import { MastraOrchestrator } from "./mastra/mastra-orchestrator.js";
 import {
   PlatformAgentInvoker,
@@ -81,6 +84,14 @@ export interface OrchestrationServiceDependencies {
   orchestratorFactory?: () => Orchestrator;
   /** Server-owned audit sink for orchestration lifecycle spans. */
   audit?: AuditRecorder;
+  /** Source checkpointing and operator recovery; absent keeps legacy behavior. */
+  workspaceRecovery?: OrchestrationWorkspaceRecovery;
+}
+
+/** The checkpoint-enabled cycle one active session is executing. */
+export interface OrchestrationWorkspaceCycle {
+  context: WorkspaceExecutionContext;
+  cycleId: string;
 }
 
 /** Runtime state for one queued or running orchestration cycle. */
@@ -109,6 +120,17 @@ export interface ActiveOrchestrationSession {
   retryAgentId?: string | undefined;
   /** A retry may consume the one errored-agent recovery allowance once. */
   retryAgentPending: boolean;
+  /**
+   * A recovered cycle re-dispatches the participant whose earlier attempt
+   * failed; its Agent may still be in its error state from that attempt.
+   */
+  allowErroredAgents?: boolean | undefined;
+  /** Present for a checkpoint-enabled cycle. */
+  workspace?: OrchestrationWorkspaceCycle | undefined;
+  /** Exact engine input recorded at cycle acceptance; the engine starts here. */
+  seed?: CheckpointResumeState | undefined;
+  /** Set once the cycle's reservation was settled inside the terminal write. */
+  cycleSettled?: boolean | undefined;
   controller: AbortController;
   invoker: PlatformAgentInvokerContract;
   selector?: OrchestrationParticipantSelector;
@@ -143,6 +165,7 @@ export interface NormalizedOrchestrationDependencies {
   orchestratorFactory: () => Orchestrator;
   projectBinding: OrchestrationProjectBinding | undefined;
   audit: AuditRecorder | undefined;
+  workspaceRecovery: OrchestrationWorkspaceRecovery | undefined;
 }
 
 /**
@@ -186,6 +209,7 @@ export function normalizeOrchestrationDependencies(
       orchestratorFactory,
       projectBinding: configured.projectBinding,
       audit: configured.audit,
+      workspaceRecovery: configured.workspaceRecovery,
     };
   }
 
@@ -208,6 +232,7 @@ export function normalizeOrchestrationDependencies(
     orchestratorFactory: () => new MastraOrchestrator(),
     projectBinding: undefined,
     audit: undefined,
+    workspaceRecovery: undefined,
   };
 }
 

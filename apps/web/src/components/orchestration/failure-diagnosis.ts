@@ -70,9 +70,27 @@ function lastFailedTurn(turns: readonly OrchestrationTurn[]): OrchestrationTurn 
 function fixesFor(
   errorCode: OrchestrationErrorCode | null,
   agent: Agent | undefined,
+  recoveryRequired: boolean,
 ): FailureFix[] {
   const fixes: FailureFix[] = [];
+  // A stalled restore comes first: nothing else can run until it is settled,
+  // and the panel above the tabs is where it is resumed or rolled back.
+  if (recoveryRequired) {
+    fixes.push({ label: "Finish the pending Workspace recovery: resume it, or restore the safety checkpoint" });
+  }
   switch (errorCode) {
+    case "CHECKPOINT_CAPTURE_FAILED":
+      fixes.push(
+        { label: "Restore the last workspace checkpoint from the Activity tab", target: "retry" },
+        { label: "Or retry the turn once the Workspace is settled" },
+      );
+      break;
+    case "CHECKPOINT_PUBLISH_FAILED":
+      fixes.push({ label: "Continue the conversation; the next successful turn records a fresh checkpoint" });
+      break;
+    case "CHECKPOINT_RUNTIME_UNSUPPORTED":
+      fixes.push({ label: "Retry the turn using the current files; restore-and-resume is unavailable on this runtime", target: "retry" });
+      break;
     case "MODEL_INFERENCE_LIMIT_EXCEEDED":
       fixes.push(
         { label: "Assign this Agent a different worker model", target: "settings" },
@@ -166,6 +184,6 @@ export function diagnoseFailure(
     // Agent, which is frequently more concrete than the orchestration code.
     agentError: agent?.lastError?.trim() || null,
     errorCode,
-    fixes: fixesFor(errorCode, agent),
+    fixes: fixesFor(errorCode, agent, detail?.recovery?.stage === "recovery_required"),
   };
 }

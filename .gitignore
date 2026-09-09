@@ -4,6 +4,7 @@ dist/
 .env.production
 .staging.env
 .data/
+.data-demo/
 .local/
 data/
 workspaces/

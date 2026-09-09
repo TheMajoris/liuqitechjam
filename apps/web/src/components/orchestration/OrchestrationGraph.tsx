@@ -4,6 +4,7 @@ import { AgentAvatar } from "./AgentAvatar";
 import {
   agentHue,
   agentName,
+  checkpointForTurn,
   formatDateTime,
   formatDuration,
   turnStatusLabel,
@@ -27,6 +28,11 @@ interface OrchestrationGraphProps {
   retryBlocked?: boolean;
   /** True while another lifecycle action is in flight. */
   retryDisabled?: boolean;
+  /** Omitted when the caller cannot restore a checkpoint, which hides the action. */
+  onRecover?: ((checkpointId: string) => void) | undefined;
+  recoverPending?: boolean;
+  recoverBlocked?: boolean;
+  recoverDisabled?: boolean;
 }
 
 /**
@@ -194,8 +200,13 @@ export function OrchestrationGraph({
   retryPending = false,
   retryBlocked = false,
   retryDisabled = false,
+  onRecover,
+  recoverPending = false,
+  recoverBlocked = false,
+  recoverDisabled = false,
 }: OrchestrationGraphProps) {
   const [openIds, setOpenIds] = useState<Set<string>>(new Set());
+  const checkpointsEnabled = detail?.checkpoints !== undefined;
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [showAll, setShowAll] = useState(false);
 
@@ -439,6 +450,7 @@ export function OrchestrationGraph({
                       content paints over the turns below. An instant
                       disclosure is correct; an overlapping one is not. */}
                   {open && (
+<<<<<<< HEAD
                   <div className="orch-log-detail" id={`orch-log-detail-${row.id}`}>
                     <OrchestrationTurnInspector
                       node={row}
@@ -451,6 +463,28 @@ export function OrchestrationGraph({
                       onClose={() => toggleRow(row.id)}
                     />
                   </Collapse>
+=======
+                    <div className="orch-log-detail" id={`orch-log-detail-${row.id}`}>
+                      <OrchestrationTurnInspector
+                        node={row}
+                        agents={agents}
+                        onRetry={onRetry}
+                        retryPending={retryPending}
+                        retryBlocked={retryBlocked}
+                        retryDisabled={retryDisabled}
+                        // Joined by this turn's own checkpoint ID, never by
+                        // Agent or lane: the same Agent can speak many times.
+                        checkpoint={checkpointForTurn(detail, row.turn)}
+                        checkpointsEnabled={checkpointsEnabled}
+                        onRecover={onRecover}
+                        recoverPending={recoverPending}
+                        recoverBlocked={recoverBlocked}
+                        recoverDisabled={recoverDisabled}
+                        onClose={() => toggleRow(row.id)}
+                      />
+                    </div>
+                  )}
+>>>>>>> fbac588 (feat: add Git-backed workspace source checkpoints with restore-and-resume)
                 </li>
               );
             })}

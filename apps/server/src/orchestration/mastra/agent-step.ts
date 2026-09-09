@@ -555,6 +555,7 @@ export async function executeMastraOrchestrationStep(
       prompt: handoff.prompt,
       ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
       ...(options.orchestrationId === undefined ? {} : { orchestrationId: options.orchestrationId }),
+      ...(options.workspace === undefined ? {} : { workspace: options.workspace }),
       timeoutMs: options.perAgentTimeoutMs,
       deadlineAt: participantDeadlineAt,
       signal: linked.signal,
@@ -616,17 +617,9 @@ export async function executeMastraOrchestrationStep(
       output: envelope.content,
       outputTruncated: envelope.truncated,
     };
-    await options.hooks?.onRunCompleted?.({
-      participant,
-      prompt: handoff.prompt,
-      runId: childResult.runId,
-      output: childResult.output,
-      envelope,
-      turn,
-      stepIndex: decision.stepIndex,
-    });
-
-    return {
+    // The next state is fixed before the platform is told, so what it
+    // publishes beside the checkpoint is exactly what the loop continues with.
+    const nextState: MastraExecutionState = {
       ...state,
       stepIndex: decision.stepIndex + 1,
       lastRunId: childResult.runId,
@@ -636,6 +629,29 @@ export async function executeMastraOrchestrationStep(
       completionReason: null,
       errorCode: null,
     };
+    const workspaceCheckpointId =
+      typeof childResult.workspaceCheckpointId === "string" &&
+      childResult.workspaceCheckpointId.trim().length > 0
+        ? childResult.workspaceCheckpointId
+        : undefined;
+    await options.hooks?.onRunCompleted?.({
+      participant,
+      prompt: handoff.prompt,
+      runId: childResult.runId,
+      output: childResult.output,
+      envelope,
+      turn,
+      stepIndex: decision.stepIndex,
+      nextState: {
+        nextStepIndex: nextState.stepIndex,
+        lastRunId: childResult.runId,
+        lastOutput: envelope.content,
+        turns: nextState.turns.map((item) => ({ ...item })),
+      },
+      ...(workspaceCheckpointId === undefined ? {} : { workspaceCheckpointId }),
+    });
+
+    return nextState;
   } catch (error) {
     if (workflowSignal.aborted || options.signal?.aborted) {
       await notifyParticipantFailed(options.hooks, {
