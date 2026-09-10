@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_STDERR_TAIL_BYTES,
   startChildProcessExecution,
   type ChildProcessExecutionResult,
 } from "../../apps/server/src/child-process-execution.js";
@@ -90,7 +91,7 @@ describe("startChildProcessExecution", () => {
     expect(lines.map((line) => JSON.parse(line).type)).toEqual(["agent_message"]);
   });
 
-  it("ignores stderr volume, which is never retained", async () => {
+  it("keeps stderr out of parsing and bounds what it retains", async () => {
     const { lines, completed } = runNodeScript(
       `process.stderr.write("z".repeat(400_000));
        process.stdout.write(JSON.stringify({ type: "agent_message" }) + "\\n");`,
@@ -101,5 +102,22 @@ describe("startChildProcessExecution", () => {
     expect(result.exitCode).toBe(0);
     expect(result.outputTruncated).toBe(false);
     expect(lines.map((line) => JSON.parse(line).type)).toEqual(["agent_message"]);
+    // Counted in full, retained as a fixed tail: a noisy child cannot grow
+    // the parent, and the byte count stays honest about what it wrote.
+    expect(result.stderrBytes).toBe(400_000);
+    expect(result.stderrTail.length).toBe(MAX_STDERR_TAIL_BYTES);
+  });
+
+  it("retains the end of stderr, where a runtime states its failure", async () => {
+    const { completed } = runNodeScript(
+      `process.stderr.write("starting up\\n".repeat(500));
+       process.stderr.write("fatal: endpoint does not exist\\n");
+       process.exit(1);`,
+      65_536,
+    );
+
+    const result = await completed;
+    expect(result.exitCode).toBe(1);
+    expect(result.stderrTail).toContain("fatal: endpoint does not exist");
   });
 });

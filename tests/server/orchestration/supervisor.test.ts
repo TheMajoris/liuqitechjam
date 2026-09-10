@@ -596,8 +596,26 @@ describe("supervisor selector boundary", () => {
       name: "SupervisorError",
       code: "SUPERVISOR_INVALID_ROUTE",
       orchestrationErrorCode: "SUPERVISOR_INVALID_SELECTION",
+      // Three different rules report SUPERVISOR_INVALID_SELECTION and each
+      // needs a different fix, so the rule is what the trail records.
+      rule: "supervisor_repeated_agent_after_correction",
     });
     expect(provider.calls).toHaveLength(2);
+  });
+
+  it("distinguishes an off-roster selection from a repeated Agent", async () => {
+    const provider = new ControlledProvider([
+      { kind: "invoke", participantId: "nobody" },
+    ]);
+    const selector = createOrchestrationParticipantSelector(provider);
+
+    await expect(selector(supervisorInput({}))).rejects.toMatchObject({
+      code: "SUPERVISOR_INVALID_ROUTE",
+      orchestrationErrorCode: "SUPERVISOR_INVALID_SELECTION",
+      rule: "supervisor_selected_unconfigured_occurrence",
+    });
+    // One call, not two: an off-roster name is never worth a corrective ask.
+    expect(provider.calls).toHaveLength(1);
   });
 
   it("allows duplicate occurrences when they belong to the only configured Agent", async () => {

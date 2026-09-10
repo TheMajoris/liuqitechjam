@@ -18,6 +18,7 @@ import { StickyComposer } from "../StickyComposer";
 import { AgentAvatar } from "./AgentAvatar";
 import {
   agentName,
+  briefFailure,
   checkpointForTurn,
   formatDateTime,
   humanizeFailure,
@@ -101,7 +102,18 @@ function membershipRole(
   return memberships.find((membership) => membership.agentId === agentId)?.role;
 }
 
-function closingNote(detail: OrchestrationSessionDetail): string | null {
+/**
+ * `statedInline` is true when the last turn in the transcript already carries
+ * the failure, which is the common case: an Agent's turn died and its own row
+ * says so directly above this line. Repeating the sentence there, under the
+ * failed turn, and again in the header alert said one thing three times. A
+ * failure with no turn to sit on — the supervisor never picked anyone — has
+ * only this line inside the Conversation, so it keeps it.
+ */
+function closingNote(
+  detail: OrchestrationSessionDetail,
+  statedInline: boolean,
+): string | null {
   const { session } = detail;
   switch (session.status) {
     case "completed":
@@ -111,7 +123,9 @@ function closingNote(detail: OrchestrationSessionDetail): string | null {
     case "interrupted":
       return "The service restarted before this conversation finished.";
     case "failed":
-      return humanizeFailure(session.errorCode, session.errorMessage);
+      return statedInline
+        ? null
+        : humanizeFailure(session.errorCode, session.errorMessage);
     default:
       return null;
   }
@@ -153,6 +167,12 @@ export function OrchestrationConversation({
     .map((turn, index) => ({ turn, step: turnStepNumber(turn, index) }))
     .sort((left, right) => left.step - right.step);
 
+  // A retry re-runs its step as a *new* turn above the original and leaves the
+  // original row `failed` for good. Only the newest turn is still the live end
+  // of the record, so only it can be retried; an older failed row has already
+  // been continued past and its button would rerun settled work.
+  const latestStep = ordered.at(-1)?.step ?? null;
+
   const entries = [
     ...ordered.map(({ turn, step }, index) => ({
       kind: "turn" as const,
@@ -190,7 +210,11 @@ export function OrchestrationConversation({
     );
   }
 
-  const note = closingNote(detail!);
+  const lastTurnStatus = ordered.at(-1)?.turn.status;
+  const note = closingNote(
+    detail!,
+    lastTurnStatus !== undefined && UNFINISHED.includes(lastTurnStatus),
+  );
 
   // Whoever is mid-turn, so the composer can say why it is locked.
   const workingParticipant = session.participants.find(
@@ -255,6 +279,8 @@ export function OrchestrationConversation({
                 }
 
                 const { turn, step } = entry;
+                const supersededBy =
+                  step === latestStep ? null : (ordered[entry.order + 1]?.step ?? null);
                 const name = agentName(agents, turn.agentId);
                 const focus = roleName(agents, roles, turn.agentId);
                 const membership = membershipRole(memberships, turn.agentId);
@@ -321,7 +347,7 @@ export function OrchestrationConversation({
                       {unfinished ? (
                         <p className="orch-chat-unfinished">
                           {turnStatusLabel(turn.status)} —{" "}
-                          {humanizeFailure(turn.errorCode, turn.safeOutput, turn.modelId)}
+                          {briefFailure(turn.errorCode, turn.safeOutput, turn.modelId)}
                         </p>
                       ) : turn.safeOutput ? (
                         <MarkdownMessage className="orch-chat-text" content={turn.safeOutput} />
@@ -333,7 +359,20 @@ export function OrchestrationConversation({
                       {turn.outputTruncated && !unfinished && (
                         <p className="orch-chat-truncated">Reply shortened before it was passed on.</p>
                       )}
+                      {/* Say that an older failure was already recovered rather
+                          than leaving a dead button on it: the run continued
+                          past this row, and the reason it finally stopped is
+                          stated once, at the end of the conversation. */}
                       {(turn.status === "failed" || turn.status === "timed_out") &&
+                        supersededBy !== null && (
+                          <div className="orch-chat-retry">
+                            <p className="orch-chat-retry-note">
+                              Retried — turn {supersededBy} continued from here.
+                            </p>
+                          </div>
+                        )}
+                      {(turn.status === "failed" || turn.status === "timed_out") &&
+                        supersededBy === null &&
                         turn.stepIndex !== undefined &&
                         onRetry && (
                           <div className="orch-chat-retry">
@@ -343,16 +382,16 @@ export function OrchestrationConversation({
                               disabled={retryDisabled}
                               onClick={() => onRetry(turn.stepIndex as number)}
                             >
-                              {retryPending ? "Retrying…" : "Retry from this turn (current files)"}
+                              {retryPending ? "Retrying…" : "Retry this turn"}
                             </button>
                             <p className="orch-chat-retry-note" role={retryPending ? "status" : undefined}>
                               {retryBlocked
                                 ? "Stop the conversation before retrying it."
                                 : retryPending
-                                  ? "Retrying this Agent turn using the current files…"
+                                  ? "Retrying this Agent turn…"
                                   : action !== null
                                     ? "Wait for the current action to finish."
-                                    : "This reruns the Agent turn using the current files and continues from there. Earlier turns stay in the record. Shared Workspace files are not rolled back."}
+                                    : "Reruns this turn with the Workspace files as they are now — nothing is rolled back. Earlier turns stay in the record."}
                             </p>
                           </div>
                         )}

@@ -196,6 +196,140 @@ describe("diagnoseFailure", () => {
     expect(result?.fixes.filter((fix) => fix.target === "retry")).toHaveLength(1);
   });
 
+  it("ignores a failed turn the run was retried past", () => {
+    // The retry re-runs step 3 as step 4 and leaves the original row failed.
+    // The run then died at the supervisor, which records nothing on a turn.
+    const result = diagnoseFailure(
+      detail(
+        "failed",
+        [
+          turn({ agentId: "a1", status: "completed", stepIndex: 2 }),
+          turn({ agentId: "a2", status: "failed", stepIndex: 3, errorCode: "RUN_FAILED" }),
+          turn({ agentId: "a2", status: "completed", stepIndex: 4 }),
+          turn({ agentId: "a3", status: "completed", stepIndex: 5 }),
+        ],
+        {
+          errorCode: "SUPERVISOR_INVALID_SELECTION",
+          errorMessage: "Automatic turn taking selected a participant outside the configured roster",
+        },
+      ),
+      [agent({ id: "a1", name: "One" }), agent({ id: "a2", name: "Two" })],
+    );
+    expect(result?.errorCode).toBe("SUPERVISOR_INVALID_SELECTION");
+    expect(result?.agentName).toBeNull();
+    expect(result?.stepIndex).toBeNull();
+    expect(result?.summary).toContain("supervisor could not choose");
+    expect(result?.fixes).toContainEqual({
+      label: "Check the supervisor model in Insights › Supervisor model",
+    });
+  });
+
+  it("still names the Agent when its failed turn is the one that ended the run", () => {
+    const result = diagnoseFailure(
+      detail(
+        "failed",
+        [
+          turn({ agentId: "a1", status: "completed", stepIndex: 0 }),
+          turn({ agentId: "a2", status: "failed", stepIndex: 1, errorCode: "RUN_FAILED" }),
+        ],
+        { errorCode: "RUN_FAILED" },
+      ),
+      [agent({ id: "a1", name: "One" }), agent({ id: "a2", name: "Two" })],
+    );
+    expect(result?.agentName).toBe("Two");
+    expect(result?.stepIndex).toBe(1);
+    expect(result?.errorCode).toBe("RUN_FAILED");
+  });
+
+  it("names the endpoint that ran out on a paused model", () => {
+    const result = diagnoseFailure(
+      detail(
+        "failed",
+        [
+          turn({
+            agentId: "a1",
+            status: "failed",
+            stepIndex: 4,
+            errorCode: "MODEL_INFERENCE_LIMIT_EXCEEDED",
+            modelId: "ep-20260830033025-z5s5c",
+          }),
+        ],
+        { errorCode: "MODEL_INFERENCE_LIMIT_EXCEEDED" },
+      ),
+      [agent({ id: "a1", name: "Dwayne" })],
+    );
+    expect(result?.summary).toContain("ep-20260830033025-z5s5c");
+    expect(result?.summary).toContain("has no usage left");
+    expect(result?.fixes).toContainEqual({
+      label: "Assign this Agent a different worker model",
+      target: "settings",
+    });
+  });
+
+  it("does not print engine vocabulary as the Agent's detail", () => {
+    const result = diagnoseFailure(
+      detail("failed", [turn({ agentId: "a1", status: "failed" })], {
+        errorCode: "RUN_FAILED",
+      }),
+      [
+        agent({
+          id: "a1",
+          name: "Dwayne",
+          lastError: "Container runtime exited with code 1",
+        }),
+      ],
+    );
+    // The runner talking to itself. It named no cause the reader could act
+    // on, and sat under the summary looking like one.
+    expect(result?.agentError).toBeNull();
+  });
+
+  it("keeps an Agent detail that is written for a person", () => {
+    const result = diagnoseFailure(
+      detail("failed", [turn({ agentId: "a1", status: "failed" })], {
+        errorCode: "RUN_FAILED",
+      }),
+      [
+        agent({
+          id: "a1",
+          name: "Dwayne",
+          lastError: "The task referenced a file that is not in this Workspace.",
+        }),
+      ],
+    );
+    expect(result?.agentError).toBe(
+      "The task referenced a file that is not in this Workspace.",
+    );
+  });
+
+  it("says a rate-limited model was refused, and names it", () => {
+    const result = diagnoseFailure(
+      detail(
+        "failed",
+        [
+          turn({
+            agentId: "a1",
+            status: "failed",
+            stepIndex: 5,
+            errorCode: "MODEL_RATE_LIMITED",
+            modelId: "ep-20260830033025-z5s5c",
+          }),
+        ],
+        { errorCode: "MODEL_RATE_LIMITED" },
+      ),
+      [agent({ id: "a1", name: "Dwayne" })],
+    );
+    expect(result?.summary).toContain("ep-20260830033025-z5s5c");
+    expect(result?.summary).toContain("rate limited");
+    // Both readings are offered, because the runtime cannot tell them apart.
+    expect(result?.summary).toContain("inference limit");
+    expect(result?.fixes).toContainEqual({
+      label: "Wait a moment, then retry this turn",
+      target: "retry",
+    });
+    expect(result?.summary).not.toBe("An Agent could not complete its turn.");
+  });
+
   it("leads with the stalled recovery when one needs attention", () => {
     const failed = detail("failed", [turn({ agentId: "a1", status: "failed" })], {
       errorCode: "RUN_FAILED",

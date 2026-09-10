@@ -13,6 +13,7 @@ import {
 } from "./codex-runner.js";
 import { RetryableModelError, RunCancelledError } from "./errors.js";
 import type { SandboxAuditSink } from "./audit/sandbox-audit.js";
+import { classifyFailureText } from "./audit/failure-classification.js";
 import type { ContainerHealthSampler } from "./telemetry/container-health-sampler.js";
 import { MCP_BEARER_TOKEN_ENV } from "./tools/mcp-session-service.js";
 import type {
@@ -557,6 +558,13 @@ export class ContainerCodexRunner implements AgentRunner {
         this.healthSampler?.stop(runId);
         const peak = this.healthSampler?.peak(runId);
         const inspected = inspectedState !== null;
+        // Stderr is read for its classification and then dropped: a container
+        // that fails before emitting an event names its cause only there, and
+        // "exited with code 1" was otherwise the entire diagnosis.
+        const failureKind =
+          result === undefined || result.exitCode === 0
+            ? undefined
+            : classifyFailureText(result.stderrTail);
         request.sandboxAudit?.exited({
           exitCode: inspected
             ? (inspectedState?.ExitCode ?? null)
@@ -566,6 +574,8 @@ export class ContainerCodexRunner implements AgentRunner {
           inspected,
           cancelled: result?.cancelled ?? context.cancelReason === "cancelled",
           timedOut: result?.timedOut ?? context.cancelReason === "timed-out",
+          ...(result === undefined ? {} : { stderrBytes: result.stderrBytes }),
+          ...(failureKind === undefined ? {} : { failureKind }),
           ...(peak ? { peakCpuPct: peak.peakCpuPct, peakMemBytes: peak.peakMemBytes } : {}),
         });
       }

@@ -4,7 +4,7 @@ import type {
   OrchestrationSessionDetail,
   OrchestrationTurn,
 } from "../../types";
-import { agentName, humanizeFailure } from "./orchestration-utils";
+import { agentName, humanizeFailure, isInternalWording } from "./orchestration-utils";
 
 /**
  * Turning "something failed" into "this Agent failed, here is why, here is
@@ -40,23 +40,33 @@ export interface ConversationFailure {
 
 const TURN_FAILED = new Set(["failed", "timed_out"]);
 
-/** The most recent turn that did not finish, by execution order. */
-function lastFailedTurn(turns: readonly OrchestrationTurn[]): OrchestrationTurn | null {
+/** Execution order: step index first, creation time only to break a tie. */
+function laterTurn(turn: OrchestrationTurn, than: OrchestrationTurn): boolean {
+  const current = turn.stepIndex ?? -1;
+  const best = than.stepIndex ?? -1;
+  if (current !== best) return current > best;
+  return turn.createdAt.localeCompare(than.createdAt) >= 0;
+}
+
+/**
+ * The failed turn that actually ended the Conversation, if a turn ended it.
+ *
+ * "The last failed turn" is not the same thing. A retry re-runs the step as a
+ * *new* turn with a higher step index and leaves the original row `failed`
+ * for good, so a Conversation that was retried and later died somewhere else
+ * still carries an old failed turn. Reading that row named the wrong Agent in
+ * the header while the transcript named the real cause below it.
+ *
+ * A turn failure is terminal for the run, so any turn recorded above a failed
+ * one proves the run continued past it: that failure was recovered, and
+ * whatever ended the Conversation is recorded on the session instead.
+ */
+function endingFailedTurn(turns: readonly OrchestrationTurn[]): OrchestrationTurn | null {
   let latest: OrchestrationTurn | null = null;
   for (const turn of turns) {
-    if (!TURN_FAILED.has(turn.status)) continue;
-    if (latest === null) {
-      latest = turn;
-      continue;
-    }
-    const current = turn.stepIndex ?? -1;
-    const best = latest.stepIndex ?? -1;
-    if (current > best) latest = turn;
-    else if (current === best && turn.createdAt.localeCompare(latest.createdAt) >= 0) {
-      latest = turn;
-    }
+    if (latest === null || laterTurn(turn, latest)) latest = turn;
   }
-  return latest;
+  return latest && TURN_FAILED.has(latest.status) ? latest : null;
 }
 
 /**
@@ -95,6 +105,13 @@ function fixesFor(
       fixes.push(
         { label: "Assign this Agent a different worker model", target: "settings" },
         { label: "Add a fallback model so the next run reroutes automatically", target: "settings" },
+      );
+      break;
+    case "MODEL_RATE_LIMITED":
+      fixes.push(
+        { label: "Wait a moment, then retry this turn", target: "retry" },
+        { label: "Check this model's usage and Safe Experience Mode with the provider" },
+        { label: "Or assign this Agent a different worker model", target: "settings" },
       );
       break;
     case "WEB_TOOL_PERMISSION_DENIED":
@@ -159,6 +176,13 @@ function fixesFor(
   return fixes;
 }
 
+/** The Agent's own last error, when it is written for a person to read. */
+function agentDetail(agent: Agent | undefined): string | null {
+  const detail = agent?.lastError?.trim();
+  if (!detail || isInternalWording(detail)) return null;
+  return detail;
+}
+
 /**
  * Read one failed Conversation. Returns `null` while nothing has failed, so a
  * caller can render the whole diagnosis block conditionally on this alone.
@@ -170,19 +194,29 @@ export function diagnoseFailure(
   const session = detail?.session;
   if (!session || session.status !== "failed") return null;
 
-  const turn = lastFailedTurn(detail?.turns ?? []);
+  const turn = endingFailedTurn(detail?.turns ?? []);
   const agent = turn ? agents.find((item) => item.id === turn.agentId) : undefined;
   // The turn's own code is the specific one; the session's is the roll-up.
+  // Only the turn that ended the run may speak for it — a superseded failure
+  // is not consulted at all, so a supervisor or lifecycle failure keeps its
+  // own code rather than inheriting a retried turn's.
   const errorCode = turn?.errorCode ?? session.errorCode ?? null;
 
   return {
     agentId: turn?.agentId ?? null,
     agentName: turn ? agentName(agents, turn.agentId) : null,
     stepIndex: turn?.stepIndex ?? null,
-    summary: humanizeFailure(errorCode, session.errorMessage),
+    // The failing turn records the endpoint it ran on, and naming it is the
+    // difference between "this model is paused" and knowing which of six
+    // Agents to repoint. The transcript already names it; the header did not.
+    summary: humanizeFailure(errorCode, session.errorMessage, turn?.modelId),
     // `lastError` is the platform's own record of what went wrong inside the
-    // Agent, which is frequently more concrete than the orchestration code.
-    agentError: agent?.lastError?.trim() || null,
+    // Agent, and it is frequently more concrete than the orchestration code.
+    // It is also where engine vocabulary leaks: "Container runtime exited with
+    // code 1" is the runner talking to itself, and printing it under the
+    // summary told the reader nothing they could act on. Anything that reads
+    // as engine wording is dropped rather than shown.
+    agentError: agentDetail(agent),
     errorCode,
     fixes: fixesFor(errorCode, agent, detail?.recovery?.stage === "recovery_required"),
   };

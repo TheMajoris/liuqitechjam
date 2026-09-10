@@ -289,6 +289,56 @@ describe("runtime action observer", () => {
     expect(persisted(event)).not.toContain("refused");
   });
 
+  it("names why a turn failed without quoting the provider", () => {
+    const { audit, observer } = makeObserver();
+    observer.onEvent({ type: "turn.started" });
+    observer.onEvent({
+      type: "turn.failed",
+      error: {
+        message: "The endpoint ep-20260831143538-qk8qn does not exist",
+        code: "ModelNotFound",
+        status: 404,
+      },
+    });
+
+    const event = audit.ofType("model_turn")[0]!;
+    expect(event.metadata).toMatchObject({
+      failureKind: "provider_model_not_found",
+      providerErrorCode: "ModelNotFound",
+      providerStatus: 404,
+    });
+    // The classification is the evidence; the message itself never lands.
+    expect(persisted(event)).not.toContain("does not exist");
+    expect(persisted(event)).toContain("provider_model_not_found");
+  });
+
+  it("falls back to the diagnostic error event when the terminal one is bare", () => {
+    const { audit, observer } = makeObserver();
+    observer.onEvent({ type: "turn.started" });
+    observer.onEvent({
+      type: "error",
+      message: "SetLimitExceeded: no usage left on this endpoint",
+    });
+    observer.onEvent({ type: "turn.failed" });
+
+    expect(audit.ofType("model_turn")[0]!.metadata).toMatchObject({
+      failureKind: "provider_quota_exhausted",
+    });
+  });
+
+  it("does not carry one turn's diagnosis into the next", () => {
+    const { audit, observer } = makeObserver();
+    observer.onEvent({ type: "turn.started" });
+    observer.onEvent({ type: "error", message: "429 rate limit exceeded" });
+    observer.onEvent({ type: "turn.failed" });
+    observer.onEvent({ type: "turn.started" });
+    observer.onEvent({ type: "turn.failed" });
+
+    const [first, second] = audit.ofType("model_turn");
+    expect(first!.metadata).toMatchObject({ failureKind: "provider_rate_limited" });
+    expect(second!.metadata).toMatchObject({ failureKind: "unclassified" });
+  });
+
   it("resets counters between turns", () => {
     const { audit, observer } = makeObserver();
     observer.onEvent({ type: "turn.started" });

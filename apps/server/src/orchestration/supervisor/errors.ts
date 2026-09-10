@@ -1,4 +1,7 @@
-import type { OrchestrationErrorCode } from "../types.js";
+import type {
+  OrchestrationErrorCode,
+  OrchestrationFailureRule,
+} from "../types.js";
 
 export type SupervisorErrorCode =
   | "SUPERVISOR_NOT_CONFIGURED"
@@ -11,15 +14,22 @@ export type SupervisorErrorCode =
 /** A bounded, typed failure from the supervisor policy/provider boundary. */
 export class SupervisorError extends Error {
   readonly orchestrationErrorCode: OrchestrationErrorCode;
+  /**
+   * Which rule tripped, when the code alone cannot say. Several rules roll up
+   * into `SUPERVISOR_INVALID_SELECTION`, and they call for different fixes, so
+   * the trail keeps the distinction the code loses. Audit evidence only.
+   */
+  readonly rule: OrchestrationFailureRule | undefined;
 
   constructor(
     public readonly code: SupervisorErrorCode,
     message: string,
-    options?: ErrorOptions,
+    options?: ErrorOptions & { rule?: OrchestrationFailureRule },
   ) {
     super(message, options);
     this.name = "SupervisorError";
     this.orchestrationErrorCode = orchestrationErrorCodeFor(code);
+    this.rule = options?.rule;
   }
 }
 

@@ -2,6 +2,13 @@ import { createHash } from "node:crypto";
 import { agentPrincipal } from "../access/access-types.js";
 import { newSpanId } from "./audit-span.js";
 import { isSecretLikeFilename, programBasename } from "./audit-redaction.js";
+import type { FailureKind } from "./failure-classification.js";
+import {
+  classifyFailureText,
+  providerErrorCodeFrom,
+  providerStatusFrom,
+  safeProviderErrorCode,
+} from "./failure-classification.js";
 import type {
   AuditEventInput,
   AuditRecorder,
@@ -91,6 +98,9 @@ export function createRuntimeActionObserver(
   const pending = new Map<string, PendingItem>();
   let counters = emptyCounters();
   let turnStartedAt: number | null = null;
+  // Codex reports a diagnostic `error` event before the terminal one. Kept
+  // only until the turn ends, then cleared with the rest of the turn state.
+  let lastErrorEvidence: ReturnType<typeof evidenceFrom> | null = null;
 
   const correlation = {
     agentId: options.agentId,
@@ -230,6 +240,46 @@ export function createRuntimeActionObserver(
     });
   }
 
+  function evidenceFrom(event: Record<string, unknown>): {
+    failureKind: FailureKind;
+    providerErrorCode?: string;
+    providerStatus?: number;
+  } {
+    const error = asRecord(event.error) ?? asRecord(event.turn_error);
+    const message = asString(error?.message) ?? asString(event.message);
+    // The runtime appends the provider's body to a prose message, so the code
+    // is often inside that payload rather than on a field of its own.
+    const providerCode =
+      providerErrorCodeFrom(error?.code, message) ??
+      safeProviderErrorCode(error?.type);
+    const status = providerStatusFrom(error?.status) ?? providerStatusFrom(message);
+    return {
+      failureKind: classifyFailureText(message ?? providerCode),
+      ...(providerCode === undefined ? {} : { providerErrorCode: providerCode }),
+      ...(status === undefined ? {} : { providerStatus: status }),
+    };
+  }
+
+  /**
+   * What the runtime said about a failure, reduced to enum-like evidence.
+   *
+   * A failed turn used to record its item counters and nothing else, so the
+   * trail could not distinguish a dead endpoint from an exhausted quota from
+   * an oversized prompt. The provider's message is read here and discarded:
+   * only the classification, its documented error code, and its HTTP status
+   * are retained.
+   */
+  function failureEvidence(event: Record<string, unknown>): Record<string, unknown> {
+    const evidence = evidenceFrom(event);
+    // A `turn.failed` sometimes carries only the fact of failure while the
+    // preceding `error` event carried the cause, so fall back to that rather
+    // than recording an unclassified turn next to a diagnosis we already saw.
+    if (evidence.failureKind !== "unclassified" || lastErrorEvidence === null) {
+      return evidence;
+    }
+    return lastErrorEvidence;
+  }
+
   function onTurnEnded(event: Record<string, unknown>, failed: boolean): void {
     const usage = failed ? undefined : asRecord(event.usage);
     const inputTokens = usage === undefined ? undefined : asNumber(usage.input_tokens);
@@ -249,10 +299,12 @@ export function createRuntimeActionObserver(
         ...(inputTokens === undefined ? {} : { inputTokens }),
         ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
         ...(outputTokens === undefined ? {} : { outputTokens }),
+        ...(failed ? failureEvidence(event) : {}),
       },
     });
     turnStartedAt = null;
     counters = emptyCounters();
+    lastErrorEvidence = null;
   }
 
   return {
@@ -264,6 +316,12 @@ export function createRuntimeActionObserver(
         if (type === "turn.started") {
           turnStartedAt = now();
           counters = emptyCounters();
+          lastErrorEvidence = null;
+          return;
+        }
+        if (type === "error") {
+          const evidence = evidenceFrom(parsed);
+          if (evidence.failureKind !== "unclassified") lastErrorEvidence = evidence;
           return;
         }
         if (type === "turn.completed" || type === "turn.failed") {

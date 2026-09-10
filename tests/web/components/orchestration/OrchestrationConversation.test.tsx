@@ -181,10 +181,16 @@ describe("Team conversation composer", () => {
       />,
     );
 
-    expect(html).toContain("Retry from this turn");
-    expect(html).toContain("Web access was denied. Assign this Agent a role that allows the requested web tool, then retry this turn.");
-    expect(html).toContain("This reruns the Agent turn using the current files");
-    expect(html).toContain("Shared Workspace files are not rolled back.");
+    expect(html).toContain("Retry this turn");
+    // The transcript states the cause in one line; the steps that go with it
+    // live in the Agent inspector's "What to try", not under every turn.
+    expect(html).toContain("Web access was denied for this Agent.");
+    expect(html).not.toContain("Assign this Agent a role that allows");
+    // The file behaviour is spelled out rather than named: "current files"
+    // was the internal term for it and meant nothing to the reader.
+    expect(html).toContain("Workspace files as they are now");
+    expect(html).toContain("nothing is rolled back");
+    expect(html).not.toContain("current files");
     expect(html).not.toContain("continuing from the checkpoint");
   });
 
@@ -260,6 +266,50 @@ describe("Team conversation composer", () => {
     );
     expect(pendingHtml).toContain("Retrying…");
     expect(pendingHtml).toMatch(/<button[^>]*class="orch-chat-retry-action"[^>]*disabled/);
+  });
+
+  it("states a turn failure once rather than under and after the turn", () => {
+    const detail = detailFor("failed");
+    detail.turns = [failedTurn()];
+    detail.session.errorCode = "RUN_FAILED";
+
+    const html = renderToStaticMarkup(
+      <OrchestrationConversation
+        detail={detail}
+        agents={agents}
+        onRetry={() => undefined}
+        onContinue={() => undefined}
+      />,
+    );
+
+    // The failed turn's own row carries the reason; the closing line below it
+    // repeated the same sentence, and the header alert says it a third time.
+    const failureText = "Could not finish";
+    expect(html).toContain(failureText);
+    expect(html).not.toContain("orch-chat-note is-failure");
+  });
+
+  it("keeps a rate-limited turn to one line and leaves the advice elsewhere", () => {
+    const detail = detailFor("failed");
+    const failed = failedTurn();
+    failed.errorCode = "MODEL_RATE_LIMITED";
+    failed.modelId = "ep-20260830033025-z5s5c";
+    detail.turns = [failed];
+
+    const html = renderToStaticMarkup(
+      <OrchestrationConversation
+        detail={detail}
+        agents={agents}
+        onRetry={() => undefined}
+        onContinue={() => undefined}
+      />,
+    );
+
+    expect(html).toContain(
+      "model ep-20260830033025-z5s5c was rate limited by the provider.",
+    );
+    expect(html).not.toContain("Safe Experience Mode");
+    expect(html).not.toContain("choose another model");
   });
 
   it("explains when supervisor routing needs another try", () => {

@@ -8,6 +8,7 @@ import type {
   HandoffEnvelope,
   OrchestrationCompletionReason,
   OrchestrationErrorCode,
+  OrchestrationFailureRule,
   OrchestrationMode,
   OrchestrationParticipant,
 } from "./types.js";
@@ -108,6 +109,12 @@ export interface OrchestrationExecutionResult {
   turns: OrchestrationExecutionTurn[];
   status: OrchestrationExecutionStatus;
   errorCode: OrchestrationErrorCode | null;
+  /**
+   * Which rule produced `errorCode`, when several roll up into one code.
+   * Audit evidence for technical review; never a product surface, and never
+   * part of the resumable execution input.
+   */
+  errorRule?: OrchestrationFailureRule | undefined;
 }
 
 /**

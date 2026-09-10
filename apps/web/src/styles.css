@@ -2747,7 +2747,13 @@ textarea:focus {
   flex: 1;
 }
 
-.orch-alert button {
+/*
+ * The dismiss glyph only. Written for a bare "\00d7", it strips the border and
+ * background and sets a glyph-sized type scale — which also flattened every
+ * real .orch-button that shares an alert with it, so "Show <Agent>" rendered
+ * as oversized link text instead of a button.
+ */
+.orch-alert button:not(.orch-button) {
   border: 0;
   color: inherit;
   background: transparent;
@@ -10322,12 +10328,19 @@ button.assignment-archive:hover:not(:disabled) {
 .orch-failure-alert {
   align-items: flex-start;
   gap: 14px;
+  /* The copy is a paragraph and the actions are a button plus a code chip;
+     at a narrow width they must stack rather than push each other out of
+     the alert. */
+  flex-wrap: wrap;
 }
 
 .orch-failure-copy {
   display: grid;
   gap: 4px;
   min-width: 0;
+  /* Takes the row, but yields it and wraps rather than squeezing the
+     actions out of the alert. */
+  flex: 1 1 320px;
 }
 
 .orch-failure-agent {
@@ -10346,6 +10359,14 @@ button.assignment-archive:hover:not(:disabled) {
   gap: 8px;
   margin-left: auto;
   flex: 0 0 auto;
+}
+
+/*
+ * The code chip is the last thing in the row and carries a native tooltip, so
+ * keep it inside the alert rather than hard against its edge.
+ */
+.orch-failure-actions .orch-error-code {
+  align-self: center;
 }
 
 .ws-inspector-fixes ul {

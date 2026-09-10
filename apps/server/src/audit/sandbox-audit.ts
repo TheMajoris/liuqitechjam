@@ -25,6 +25,14 @@ export interface SandboxExitedInfo {
   peakCpuPct?: number;
   peakMemBytes?: number;
   imageDigest?: string;
+  /** Total stderr the container produced, retained or not. */
+  stderrBytes?: number;
+  /**
+   * What the container's stderr says went wrong, as a closed-enum token.
+   * A container that dies before emitting an event leaves its reason only
+   * here, and a bare exit code cannot tell a dead endpoint from a bad image.
+   */
+  failureKind?: string;
 }
 
 export interface SandboxCleanupFailedInfo {
@@ -128,6 +136,8 @@ export function createSandboxAuditSink(
           ...(info.peakCpuPct === undefined ? {} : { peakCpuPct: info.peakCpuPct }),
           ...(info.peakMemBytes === undefined ? {} : { peakMemBytes: info.peakMemBytes }),
           ...(info.imageDigest === undefined ? {} : { imageDigest: info.imageDigest }),
+          ...(info.stderrBytes === undefined ? {} : { stderrBytes: info.stderrBytes }),
+          ...(info.failureKind === undefined ? {} : { failureKind: info.failureKind }),
         },
       });
     },

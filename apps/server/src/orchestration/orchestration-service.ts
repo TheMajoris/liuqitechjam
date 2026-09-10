@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { HttpError } from "../errors.js";
+import { HttpError, MODEL_RATE_LIMITED_MESSAGE } from "../errors.js";
 import type { Agent, Database } from "../types.js";
 import type { Storage } from "../store.js";
 import {
@@ -18,6 +18,7 @@ import type {
   CreateOrchestrationInput,
   OrchestrationContinuationPrompt,
   OrchestrationErrorCode,
+  OrchestrationFailureRule,
   OrchestrationParticipant,
   OrchestrationSession,
   OrchestrationSessionDetail,
@@ -2774,23 +2775,31 @@ export class OrchestrationService {
         safeSummary: session.errorMessage,
       });
       this.settleCycleIn(database, context, session.status);
-      return this.terminalOutcome(session, "orchestration_failed", completedAt);
+      return this.terminalOutcome(
+        session,
+        "orchestration_failed",
+        completedAt,
+        result.errorRule,
+      );
     });
     await this.recordTerminal(context.id, outcome);
   }
 
   /**
    * Safe evidence about one terminal transition. Only the stable error code
-   * travels here; the session's error message may quote runtime text.
+   * and, when the engine reported one, the closed-enum rule behind it travel
+   * here; the session's error message may quote runtime text.
    */
   private terminalOutcome(
     session: OrchestrationSession,
     type: "orchestration_completed" | "orchestration_failed" | "orchestration_stopped",
     completedAt: string,
+    errorRule?: OrchestrationFailureRule | undefined,
   ): {
     type: "orchestration_completed" | "orchestration_failed" | "orchestration_stopped";
     durationMs: number;
     errorCode: string | null;
+    errorRule: OrchestrationFailureRule | null;
     stepIndex: number;
   } {
     const startedAt = session.startedAt ?? session.createdAt;
@@ -2798,6 +2807,7 @@ export class OrchestrationService {
       type,
       durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
       errorCode: session.errorCode,
+      errorRule: errorRule ?? null,
       stepIndex: session.stepIndex,
     };
   }
@@ -2821,6 +2831,10 @@ export class OrchestrationService {
         metadata: {
           stepIndex: outcome.stepIndex,
           ...(outcome.errorCode === null ? {} : { errorCode: outcome.errorCode }),
+          // Several rules roll up into one code. Without this, a supervisor
+          // failure could not be told apart from the other two that report
+          // SUPERVISOR_INVALID_SELECTION, and each needs a different fix.
+          ...(outcome.errorRule === null ? {} : { failureRule: outcome.errorRule }),
         },
       },
     );
@@ -2857,6 +2871,8 @@ export class OrchestrationService {
         return "The next participant could not be chosen";
       case "WEB_TOOL_PERMISSION_DENIED":
         return "A participant could not use a web tool because its Agent role lacks the required permission";
+      case "MODEL_RATE_LIMITED":
+        return MODEL_RATE_LIMITED_MESSAGE;
       case "MODEL_INFERENCE_LIMIT_EXCEEDED":
         return "This model is paused because its provider inference limit was reached. Review Safe Experience Mode in the provider's Model Activation settings, or choose another available model, then retry.";
       case "PROJECT_PERMISSION_DENIED":

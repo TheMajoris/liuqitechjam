@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
+import { classifyFailureText } from "./audit/failure-classification.js";
 import {
   CHECKPOINT_CAPTURE_FAILED,
   HttpError,
   MODEL_INFERENCE_LIMIT_EXCEEDED,
+  MODEL_RATE_LIMITED,
   RetryableModelError,
   RunCancelledError,
   WEB_TOOL_PERMISSION_DENIED,
@@ -144,6 +146,7 @@ function modelRefForRuntime(runtimeModel: WorkerRuntimeModelConfig) {
 function runtimeErrorCode(error: unknown):
   | typeof WEB_TOOL_PERMISSION_DENIED
   | typeof MODEL_INFERENCE_LIMIT_EXCEEDED
+  | typeof MODEL_RATE_LIMITED
   | undefined {
   if (typeof error !== "object" || error === null) return undefined;
   const record = error as {
@@ -153,7 +156,8 @@ function runtimeErrorCode(error: unknown):
   };
   const candidate = record.errorCode ?? record.orchestrationErrorCode ?? record.code;
   return candidate === WEB_TOOL_PERMISSION_DENIED ||
-    candidate === MODEL_INFERENCE_LIMIT_EXCEEDED
+    candidate === MODEL_INFERENCE_LIMIT_EXCEEDED ||
+    candidate === MODEL_RATE_LIMITED
     ? candidate
     : undefined;
 }
@@ -1150,6 +1154,8 @@ export class AgentRunCoordinator {
           this.webToolPermissionDenied(run.id));
       const modelInferenceLimitExceeded =
         !cancelled && runtimeErrorCode(error) === MODEL_INFERENCE_LIMIT_EXCEEDED;
+      const modelRateLimited =
+        !cancelled && runtimeErrorCode(error) === MODEL_RATE_LIMITED;
       const checkpointFailure =
         !cancelled && error instanceof CheckpointCaptureFailure ? error : null;
       runSpan?.setStatus(cancelled ? "ok" : "error");
@@ -1174,6 +1180,8 @@ export class AgentRunCoordinator {
               storedRun.errorCode = WEB_TOOL_PERMISSION_DENIED;
             } else if (modelInferenceLimitExceeded) {
               storedRun.errorCode = MODEL_INFERENCE_LIMIT_EXCEEDED;
+            } else if (modelRateLimited) {
+              storedRun.errorCode = MODEL_RATE_LIMITED;
             } else if (checkpointFailure) {
               // The model's work is observed evidence and is retained exactly
               // once; only the recoverable-success claim is withheld.
@@ -1240,12 +1248,18 @@ export class AgentRunCoordinator {
                   ? { errorCode: WEB_TOOL_PERMISSION_DENIED }
                   : modelInferenceLimitExceeded
                     ? { errorCode: MODEL_INFERENCE_LIMIT_EXCEEDED }
+                    : modelRateLimited
+                    ? { errorCode: MODEL_RATE_LIMITED }
                     : checkpointFailure
                       ? { errorCode: CHECKPOINT_CAPTURE_FAILED, checkpointStage: checkpointFailure.reason }
                   : {}),
                 errorClass:
                   (error as { constructor?: { name?: string } } | null)
                     ?.constructor?.name ?? "Error",
+                // `errorClass` is almost always the bare "Error", which said
+                // only that something threw. The classification names what
+                // actually went wrong without retaining the runtime's text.
+                failureKind: classifyFailureText(error),
               },
             },
       );
