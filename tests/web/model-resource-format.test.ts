@@ -45,8 +45,9 @@ describe("model context copy", () => {
     // ceiling is unknown, so only that is withheld.
     expect(modelContextUsage(resource(), lastRun)).toBeNull();
     expect(modelResourceCapacityLabel(resource(), lastRun)).toBe("100K last turn");
-    expect(modelResourceQuotaLabel(resource(), lastRun)).toContain(
-      "Last turn used 100K tokens",
+    // The detail line floats over the room, so it stays one short clause.
+    expect(modelResourceQuotaLabel(resource(), lastRun)).toBe(
+      "No context window set for this model",
     );
   });
 

@@ -199,6 +199,16 @@ export function AgentInspector({
             {/* Stated plainly and left uncoloured: a free grant is shared by
                 every Agent on the model, and running it out changes the price
                 rather than stopping the work. */}
+            {/* The room's hover card has no space for a setting name, so the
+                pointer to it lives here, next to the counters it would give
+                meaning to. */}
+            {agent.modelResource.contextWindowTokens == null && (
+              <p className="ws-inspector-muted">
+                No context window is configured for this model, so how full it
+                is cannot be shown. Set <code>MODEL_CONTEXT_WINDOWS</code> to
+                enable it.
+              </p>
+            )}
             {modelFreeGrantLabel(agent.modelResource) && (
               <p className="ws-inspector-muted">
                 {modelFreeGrantLabel(agent.modelResource)}

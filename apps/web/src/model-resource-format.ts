@@ -224,12 +224,11 @@ export function modelResourceQuotaLabel(
 ): string {
   const context = modelContextUsage(resource, lastRun);
   if (context === null) {
-    const used = lastTurnTokens(lastRun);
-    if (used === null) return "This Agent's last turn reported no counters";
-    return (
-      `Last turn used ${formatCount(used)} tokens. Set MODEL_CONTEXT_WINDOWS ` +
-      "for this model to see how much of its window that is."
-    );
+    // Kept to one short clause: this reads on a hover card floating over the
+    // room, where a long line covers the desks behind it. Operator guidance —
+    // which setting to reach for — belongs in the inspector, which has room.
+    if (lastTurnTokens(lastRun) === null) return "No counters reported";
+    return "No context window set for this model";
   }
   return (
     `${formatCount(context.usedTokens)} of ${formatCount(context.windowTokens)} ` +

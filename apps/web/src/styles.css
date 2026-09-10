@@ -6749,7 +6749,10 @@ textarea:focus {
   left: 50%;
   transform: translate(-50%, -8px);
   display: block;
-  min-width: max-content;
+  /* `width: max-content` keeps a short label on one line while still obeying
+     max-width. `min-width: max-content` did not: a minimum beats a maximum in
+     CSS, so one long string stretched this card across the whole room. */
+  width: max-content;
   max-width: min(220px, calc(100vw - 24px));
   border: 1px solid var(--orch-line);
   border-radius: 9px;
