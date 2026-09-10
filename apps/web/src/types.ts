@@ -130,6 +130,8 @@ export interface ModelEndpointResource {
   } | null;
   /** Account free-token quota for the matching foundation model, when known. */
   quota?: ModelQuotaSnapshot | null;
+  /** Configured context window for this model; null when none is set. */
+  contextWindowTokens?: number | null;
   observedAt: string;
 }
 

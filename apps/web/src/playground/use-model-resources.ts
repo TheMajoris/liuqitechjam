@@ -47,7 +47,8 @@ function endpointStatus(endpoint: ModelEndpointResource): ModelResourceSnapshot[
   return "unknown";
 }
 
-function normalizeResponse(response: ModelResourcesResponse): {
+/** Exported for tests: the wire projection every live surface reads through. */
+export function normalizeResponse(response: ModelResourcesResponse): {
   resources: ModelResourceSnapshot[];
   generatedAt: string | null;
   error: string | null;
@@ -111,6 +112,7 @@ function normalizeResponse(response: ModelResourcesResponse): {
         endpointStatus: endpointStatus(endpoint),
         usage,
         quota: endpoint.quota ?? null,
+        contextWindowTokens: endpoint.contextWindowTokens ?? null,
         freshness,
         observedAt: endpoint.observedAt || view.fetchedAt,
       };
