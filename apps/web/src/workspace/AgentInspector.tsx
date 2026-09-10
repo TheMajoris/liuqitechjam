@@ -12,6 +12,7 @@ import {
   modelResourceStatusLabel,
   modelResourceStatusTone,
   modelResourceUsageRows,
+  modelFreeGrantLabel,
   modelResourceUsageScopeLabel,
 } from "../model-resource-format";
 import {
@@ -191,7 +192,16 @@ export function AgentInspector({
             </dl>
             {agent.modelResource.usage && (
               <p className="ws-inspector-muted">
-                {modelResourceUsageScopeLabel(agent.modelResource)}; counters are not a quota.
+                {modelResourceUsageScopeLabel(agent.modelResource)}; counters are
+                not a quota.
+              </p>
+            )}
+            {/* Stated plainly and left uncoloured: a free grant is shared by
+                every Agent on the model, and running it out changes the price
+                rather than stopping the work. */}
+            {modelFreeGrantLabel(agent.modelResource) && (
+              <p className="ws-inspector-muted">
+                {modelFreeGrantLabel(agent.modelResource)}
               </p>
             )}
             {modelResourceRateLimitLabel(agent.modelResource) && (

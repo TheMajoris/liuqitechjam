@@ -608,7 +608,10 @@ export function AgentSprite({
         <pixiContainer y={-28}>
           <AgentIndicator kind={presentation.indicator} />
         </pixiContainer>
-        <ModelResourceIndicator resource={agent.modelResource} />
+        <ModelResourceIndicator
+          resource={agent.modelResource}
+          lastRun={agent.metrics?.tokens.lastRun ?? null}
+        />
         <pixiContainer ref={sleepBadgeRef} y={-28} visible={false}>
           <AgentIndicator kind="sleep" />
         </pixiContainer>

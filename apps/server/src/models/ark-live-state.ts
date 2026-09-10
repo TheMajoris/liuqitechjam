@@ -33,6 +33,14 @@ export interface ArkLiveModelStateOptions {
    * projection so its consumption remains observable.
    */
   reservedSupervisorModelId?: () => string | null | undefined;
+  /**
+   * Configured context windows, by endpoint id or foundation-model name.
+   *
+   * Neither Codex nor the ModelArk catalogue reports a window, so it is stated
+   * in configuration and carried here: it is the one limit that actually
+   * refuses a turn, unlike a free-token grant, which only changes the price.
+   */
+  contextWindows?: ReadonlyMap<string, number>;
   now?: () => number;
 }
 
@@ -133,6 +141,7 @@ function endpointResource(
   endpoint: ArkEndpointRecord,
   usage?: ArkInferenceUsageRecord,
   activations?: ReadonlyMap<string, ArkModelActivationRecord>,
+  contextWindows?: ReadonlyMap<string, number>,
 ): ModelEndpointResource {
   const usageCounters = endpointUsage(usage, endpoint.id);
   const freeUsage = endpoint.foundationModel === null
@@ -165,6 +174,15 @@ function endpointResource(
     rateLimit: { ...endpoint.rateLimit },
     usage: usageCounters,
     quota,
+    // Endpoint id first so one endpoint can be pinned, then foundation model,
+    // which is how a window is published and which survives an endpoint being
+    // recreated — as one was here mid-session.
+    contextWindowTokens:
+      contextWindows?.get(endpoint.id) ??
+      (endpoint.foundationModel === null
+        ? undefined
+        : contextWindows?.get(endpoint.foundationModel.name)) ??
+      null,
     observedAt: endpoint.observedAt,
   };
 }
@@ -208,6 +226,7 @@ export class ArkLiveModelState implements ArkLiveModelCatalog {
   private readonly reservedSupervisorModelId:
     | (() => string | null | undefined)
     | undefined;
+  private readonly contextWindows: ReadonlyMap<string, number> | undefined;
   private readonly now: () => number;
   private endpointEntry: CacheEntry<ArkEndpointRecord[]> | undefined;
   private usageEntry: CacheEntry<ArkInferenceUsageRecord> | undefined;
@@ -232,6 +251,7 @@ export class ArkLiveModelState implements ArkLiveModelCatalog {
     );
     this.activationTtlMs = this.usageTtlMs;
     this.reservedSupervisorModelId = options.reservedSupervisorModelId;
+    this.contextWindows = options.contextWindows;
     this.now = options.now ?? Date.now;
   }
 
@@ -539,7 +559,12 @@ export class ArkLiveModelState implements ArkLiveModelCatalog {
       fetchedAt: endpointSnapshot.fetchedAt,
       revision: endpointSnapshot.revision,
       endpoints: endpointSnapshot.endpoints.map((endpoint) =>
-        endpointResource(endpoint, usageValue, activationsByFoundationModel),
+        endpointResource(
+          endpoint,
+          usageValue,
+          activationsByFoundationModel,
+          this.contextWindows,
+        ),
       ),
       inferenceUsage:
         usageValue === undefined

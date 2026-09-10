@@ -40,8 +40,8 @@ import {
   modelResourceCapacityLabel,
   modelResourceObservedLabel,
   modelResourceQuotaLabel,
-  modelResourceQuotaPercent,
-  modelResourceQuotaTone,
+  modelContextTone,
+  modelContextUsage,
   modelResourceStatusGlyph,
 } from "../model-resource-format";
 
@@ -411,15 +411,20 @@ export function WorkspaceStage({
             x: anchor.x + PLATE_OFFSET.x,
             y: anchor.y + PLATE_OFFSET.y,
           });
+          // The Agent's own last turn is what fills its context window, so the
+          // plate reads per-Agent rather than repeating one model-wide figure
+          // on every desk.
+          const lastRun = agent.metrics?.tokens.lastRun ?? null;
           const capacityLabel = agent.modelResource
-            ? modelResourceCapacityLabel(agent.modelResource)
+            ? modelResourceCapacityLabel(agent.modelResource, lastRun)
             : agent.modelAssigned
-              ? "Quota unavailable"
+              ? "Context unavailable"
               : "Model assignment required";
           const capacityCardId = `ws-capacity-${agent.agentId}`;
           const showCapacity = hovered === agent.agentId;
-          const capacityPercent = modelResourceQuotaPercent(agent.modelResource);
-          const capacityTone = modelResourceQuotaTone(agent.modelResource);
+          const context = modelContextUsage(agent.modelResource, lastRun);
+          const capacityPercent = context?.usedPercent ?? null;
+          const capacityTone = modelContextTone(agent.modelResource, lastRun);
           const carrying = drag?.agentId === agent.agentId;
           // Desks sit closer together than a fully-written plate is wide, so a
           // plate states only its name at rest and opens its detail while it is
@@ -529,7 +534,7 @@ export function WorkspaceStage({
                   {agent.modelResource && (
                     <>
                       <span className="ws-resource-capacity-detail">
-                        {modelResourceQuotaLabel(agent.modelResource)}
+                        {modelResourceQuotaLabel(agent.modelResource, lastRun)}
                       </span>
                       {/* When the number was last confirmed matters more than
                           the number itself: the provider's free-pack counters

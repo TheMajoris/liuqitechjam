@@ -57,6 +57,14 @@ export interface ModelEndpointResource {
   usage: ModelUsageCounters | null;
   /** Free-token quota from the matching foundation-model activation record. */
   quota: ModelQuotaSnapshot | null;
+  /**
+   * Configured context window for this model, or null when none is set.
+   *
+   * Carried beside the provider's own figures because it is the one limit that
+   * actually constrains a turn: a prompt larger than the window is refused,
+   * while an exhausted free-token grant only changes what the turn costs.
+   */
+  contextWindowTokens: number | null;
   observedAt: string;
 }
 

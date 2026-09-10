@@ -101,49 +101,161 @@ export function modelResourceQuotaPercent(
 }
 
 /**
+ * How full a model's context window one Run left it.
+ *
+ * This is the reading "tokens left" always implied and never delivered. A
+ * context window is a hard limit — a prompt past it is refused — and it is
+ * per-Agent, because each Agent's own thread is what fills it. The free-token
+ * grant that used to occupy this space is neither: it is shared across every
+ * Agent on the model, and exhausting it changes the price rather than stopping
+ * the work.
+ */
+export interface ModelContextUsage {
+  windowTokens: number;
+  usedTokens: number;
+  remainingTokens: number;
+  usedPercent: number;
+}
+
+export function modelContextUsage(
+  resource: ModelResourceSnapshot | null | undefined,
+  lastRun:
+    | { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number }
+    | null
+    | undefined,
+): ModelContextUsage | null {
+  const windowTokens = resource?.contextWindowTokens;
+  if (
+    typeof windowTokens !== "number" ||
+    !Number.isFinite(windowTokens) ||
+    windowTokens <= 0
+  ) {
+    return null;
+  }
+  const input = lastRun?.inputTokens;
+  const output = lastRun?.outputTokens;
+  if (input === undefined && output === undefined) return null;
+  // Billed tokens, cache reads included: a prompt served from cache still
+  // occupies the window it was read from, so removing them would understate
+  // how close the next turn is to being refused.
+  const usedTokens = (input ?? 0) + (output ?? 0);
+  if (usedTokens <= 0) return null;
+  return {
+    windowTokens,
+    usedTokens,
+    remainingTokens: Math.max(0, windowTokens - usedTokens),
+    usedPercent: Math.min(100, Math.round((usedTokens / windowTokens) * 100)),
+  };
+}
+
+/**
  * Compact capacity copy for the room hover/focus surface.
  *
- * Detailed counters belong in AgentInspector/Insights. Keep the unavailable
- * state explicit when the provider has not exposed a quota, and never present
- * a percentage from a snapshot we have stopped confirming: a number that reads
- * as live while the poll is failing is worse than an admitted gap.
+ * Says what is used rather than what is left: the window is a ceiling a turn
+ * grows toward, and "82% left" on a thread about to be refused reads as room
+ * to spare. An unconfigured window says so instead of showing a percentage of
+ * nothing.
  */
-export function modelResourceCapacityLabel(resource: ModelResourceSnapshot | null | undefined): string {
-  const percent = modelResourceQuotaPercent(resource);
-  if (percent === null) return "Tokens left \u2014%";
+export function modelResourceCapacityLabel(
+  resource: ModelResourceSnapshot | null | undefined,
+  lastRun?:
+    | { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number }
+    | null,
+): string {
+  const context = modelContextUsage(resource, lastRun);
+  if (context === null) {
+    // No window configured is not the same as nothing to say. The size of the
+    // last turn is measured, useful on its own, and the number a reader was
+    // looking for anyway; only the share of a ceiling is unknown.
+    const used = lastTurnTokens(lastRun);
+    return used === null ? "Context \u2014" : `${formatCount(used)} last turn`;
+  }
   return resource?.freshness === "fresh"
-    ? `${percent}% tokens left`
-    : `${percent}% tokens left \u00b7 last known`;
+    ? `${context.usedPercent}% of context used`
+    : `${context.usedPercent}% of context used \u00b7 last known`;
+}
+
+/** Billed size of the Agent's last turn, or null when nothing was reported. */
+export function lastTurnTokens(
+  lastRun:
+    | { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number }
+    | null
+    | undefined,
+): number | null {
+  const input = lastRun?.inputTokens;
+  const output = lastRun?.outputTokens;
+  if (input === undefined && output === undefined) return null;
+  const used = (input ?? 0) + (output ?? 0);
+  return used > 0 ? used : null;
 }
 
 export type ModelResourceQuotaTone = "healthy" | "warning" | "critical" | "unknown";
 
 /**
- * Capacity colour is available only for an explicit, fresh provider quota.
- * ModelArk's usage counters and RPM/TPM limits never enter this calculation.
+ * Colour for the context bar, and only for the context bar.
  *
- * Bands: at least 70% left is healthy, under 20% is critical, the rest warns.
+ * A filling context window is the one condition here that genuinely degrades
+ * an Agent: past the ceiling the provider refuses the turn. That is what earns
+ * a critical band. A free-token grant never does — running it out changes the
+ * bill, not the behaviour — so it is deliberately not coloured at all.
+ *
+ * Bands: under 70% used is healthy, at or past 90% is critical.
  */
-export function modelResourceQuotaTone(
+export function modelContextTone(
   resource: ModelResourceSnapshot | null | undefined,
+  lastRun?:
+    | { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number }
+    | null,
 ): ModelResourceQuotaTone {
   if (!resource || resource.freshness !== "fresh") return "unknown";
-  const quota = reportedQuota(resource);
-  if (!quota) return "unknown";
-  const remainingRatio = quota.remainingTokens / quota.totalTokens;
-  if (remainingRatio < 0.2) return "critical";
-  if (remainingRatio < 0.7) return "warning";
+  const context = modelContextUsage(resource, lastRun);
+  if (context === null) return "unknown";
+  if (context.usedPercent >= 90) return "critical";
+  if (context.usedPercent >= 70) return "warning";
   return "healthy";
 }
 
+/** Human-readable context detail for hover/focus surfaces. */
+export function modelResourceQuotaLabel(
+  resource: ModelResourceSnapshot | null | undefined,
+  lastRun?:
+    | { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number }
+    | null,
+): string {
+  const context = modelContextUsage(resource, lastRun);
+  if (context === null) {
+    const used = lastTurnTokens(lastRun);
+    if (used === null) return "This Agent's last turn reported no counters";
+    return (
+      `Last turn used ${formatCount(used)} tokens. Set MODEL_CONTEXT_WINDOWS ` +
+      "for this model to see how much of its window that is."
+    );
+  }
+  return (
+    `${formatCount(context.usedTokens)} of ${formatCount(context.windowTokens)} ` +
+    "context used by the last turn"
+  );
+}
+
 /**
- * Human-readable capacity detail for hover/focus surfaces. It never derives a
- * remaining amount from usage counters, rate limits, or a guessed window.
+ * The free-token grant, stated as what it is.
+ *
+ * Named a trial rather than a capacity, and never coloured: it is one pack
+ * shared by every Agent on the foundation model, so a per-Agent card showing
+ * it as that Agent's allowance invites a reader to add up figures that are all
+ * the same number. Exhausting it moves the model to paid rates and nothing
+ * else.
  */
-export function modelResourceQuotaLabel(resource: ModelResourceSnapshot | null | undefined): string {
+export function modelFreeGrantLabel(
+  resource: ModelResourceSnapshot | null | undefined,
+): string | null {
   const quota = reportedQuota(resource);
-  if (!quota) return "Remaining quota not reported by ModelArk";
-  return `${formatCount(quota.remainingTokens)} remaining of ${formatCount(quota.totalTokens)}`;
+  if (!quota) return null;
+  return (
+    `Free trial: ${formatCount(quota.remainingTokens)} of ` +
+    `${formatCount(quota.totalTokens)} tokens left, shared by every Agent on ` +
+    "this model. After that the model bills at its normal rates."
+  );
 }
 
 /**
@@ -158,7 +270,7 @@ export function modelResourceOptionSuffix(
 ): string | null {
   if (!resource) return null;
   const percent = modelResourceQuotaPercent(resource);
-  if (percent !== null) return `${percent}% tokens left`;
+  if (percent !== null) return `${percent}% of free trial left`;
   const total = resource.usage?.totalTokens;
   return typeof total === "number" ? `${formatCount(total)} used` : null;
 }
@@ -199,7 +311,10 @@ export function modelResourceUsageSummary(resource: ModelResourceSnapshot | null
 }
 
 export function modelResourceUsageScopeLabel(resource: ModelResourceSnapshot): string {
-  return resource.usage?.scope === "provider" ? "Provider window" : "Model window";
+  // "window" alone reads as a context window, which these counters are not.
+  return resource.usage?.scope === "provider"
+    ? "Provider usage window"
+    : "Model usage window";
 }
 
 export function modelResourceRateLimitLabel(resource: ModelResourceSnapshot): string | null {

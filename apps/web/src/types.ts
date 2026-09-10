@@ -180,6 +180,8 @@ export interface ModelResourceSnapshot {
   endpointStatus: ModelEndpointStatus;
   usage: ModelUsageSnapshot | null;
   quota?: ModelQuotaSnapshot | null;
+  /** Configured context window for this model; null when none is set. */
+  contextWindowTokens?: number | null;
   freshness: ModelResourceFreshness;
   observedAt: string | null;
 }

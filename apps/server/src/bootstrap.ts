@@ -226,6 +226,7 @@ export async function bootstrapApplication(
     client: modelArkClient,
     ttlMs: config.workerModelCacheTtlMs,
     reservedSupervisorModelId: resolvedSupervisorModelId,
+    contextWindows: config.modelContextWindows,
   });
 
   try {

@@ -3,8 +3,8 @@ import type { Graphics } from "pixi.js";
 import "./pixi-elements";
 import {
   modelResourceCapacityLabel,
-  modelResourceQuotaPercent,
-  modelResourceQuotaTone,
+  modelContextUsage,
+  modelContextTone,
   modelResourceStatusGlyph,
 } from "../../model-resource-format";
 import type { ModelResourceSnapshot } from "../../types";
@@ -28,7 +28,7 @@ function endpointStatusColour(status: ModelResourceSnapshot["endpointStatus"]): 
   }
 }
 
-function quotaColour(tone: ReturnType<typeof modelResourceQuotaTone>): number | null {
+function quotaColour(tone: ReturnType<typeof modelContextTone>): number | null {
   switch (tone) {
     case "healthy":
       return SCENE.green;
@@ -46,7 +46,16 @@ function quotaColour(tone: ReturnType<typeof modelResourceQuotaTone>): number | 
  * inspector carry the words and counters; this mark only lets a viewer spot
  * endpoint state while watching the room.
  */
-export function ModelResourceIndicator({ resource }: { resource: ModelResourceSnapshot | null }) {
+export function ModelResourceIndicator({
+  resource,
+  lastRun,
+}: {
+  resource: ModelResourceSnapshot | null;
+  /** The Agent's last turn, which is what fills its context window. */
+  lastRun?:
+    | { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number }
+    | null;
+}) {
   const draw = useCallback(
     (graphics: Graphics) => {
       graphics.clear();
@@ -57,9 +66,10 @@ export function ModelResourceIndicator({ resource }: { resource: ModelResourceSn
           : resource.freshness === "fresh"
             ? endpointStatusColour(resource.endpointStatus)
             : SCENE.muted;
-      const capacityColour = quotaColour(modelResourceQuotaTone(resource));
-      // Explicit fresh quota can override the healthy endpoint colour. Stale
-      // quota is ignored so an old snapshot cannot produce a false warning.
+      const capacityColour = quotaColour(modelContextTone(resource, lastRun));
+      // A filling context window can override the healthy endpoint colour: it
+      // is the one condition that will actually refuse the next turn. Stale
+      // readings are ignored so an old snapshot cannot produce a false warning.
       const endpointUnavailable = resource.endpointStatus === "unavailable" || resource.endpointStatus === "stopped";
       const colour = endpointUnavailable ? endpointColour : capacityColour ?? endpointColour;
       graphics
@@ -82,10 +92,11 @@ export function ModelResourceIndicator({ resource }: { resource: ModelResourceSn
       } else {
         graphics.rect(-6, -3, 3, 1).fill(colour).rect(-5, -2, 1, 2).fill(colour);
       }
-      // Remaining capacity reads as a proportional meter rather than a lone
-      // tick, so the badge matches the bar on the plate instead of looking
-      // like an unexplained mark.
-      const percent = modelResourceQuotaPercent(resource);
+      // The meter fills as the context does, so a nearly-full window reads as
+      // a nearly-full bar. It used to draw remaining capacity, which emptied
+      // as pressure rose — the opposite of what a viewer scanning the room
+      // reads a filling bar to mean.
+      const percent = modelContextUsage(resource, lastRun)?.usedPercent ?? null;
       if (capacityColour !== null && percent !== null && !endpointUnavailable) {
         graphics.rect(-1, -3, METER_WIDTH, 3).fill({ color: SCENE.muted, alpha: 0.28 });
         const filled = Math.max(percent > 0 ? 1 : 0, Math.round((METER_WIDTH * percent) / 100));
@@ -106,7 +117,7 @@ export function ModelResourceIndicator({ resource }: { resource: ModelResourceSn
        * bubble being present, so the badge never hops as activity changes.
        */
       y={-48}
-      label={modelResourceCapacityLabel(resource)}
+      label={modelResourceCapacityLabel(resource, lastRun)}
     >
       <pixiGraphics draw={draw} />
     </pixiContainer>
