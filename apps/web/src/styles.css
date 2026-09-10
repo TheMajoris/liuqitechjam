@@ -11076,3 +11076,262 @@ button.assignment-archive:hover:not(:disabled) {
     transition: none;
   }
 }
+
+/* --- Token receipt ---------------------------------------------------
+ *
+ * Shaped like a receipt on purpose: a fixed order, one figure per line, right
+ * aligned on a tabular figure so the column can be read down and checked
+ * against the total. Nothing here re-ranks itself — a reader has to be able to
+ * see that the lines sum.
+ */
+.token-receipt {
+  padding: 2px 2px 4px;
+}
+
+.token-receipt-sub {
+  margin: 3px 0 10px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.token-receipt-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.token-receipt-line,
+.token-receipt-memo-line {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 5px 0;
+  font-size: 12.5px;
+}
+
+.token-receipt-memo-line {
+  grid-template-columns: 1fr auto auto;
+  padding-top: 0;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.token-receipt-label {
+  min-width: 0;
+}
+
+.token-receipt-line .token-receipt-label[title] {
+  text-decoration: underline dotted rgba(120, 120, 128, 0.5);
+  text-underline-offset: 3px;
+  cursor: help;
+}
+
+.token-receipt-share {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.token-receipt-figure {
+  min-width: 68px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The re-sent line is the one a reader can act on, and the one that looks
+   alarming until they see the cache memo under it. Muted rather than flagged:
+   it is a cost, not a fault. */
+.token-receipt-line.is-muted .token-receipt-figure,
+.token-receipt-line.is-muted .token-receipt-share {
+  color: var(--muted);
+}
+
+
+.token-receipt-total {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin: 6px 0 0;
+  padding-top: 9px;
+  border-top: 2px solid var(--hairline);
+  font-size: 13px;
+}
+
+.token-receipt-total strong {
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.token-receipt-sublines {
+  list-style: none;
+  margin: 0;
+  padding: 6px 0 6px 12px;
+  border-left: 2px solid var(--hairline);
+}
+
+.token-receipt-sublines > li {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 11.5px;
+}
+
+.token-receipt-subline-label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+
+.token-receipt-kind {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(120, 120, 128, 0.12);
+  color: var(--muted);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.token-receipt-kind.is-mcp {
+  background: rgba(124, 92, 232, 0.14);
+  color: var(--purple);
+}
+
+.token-receipt-calls {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.token-receipt-estimate-note,
+.token-receipt-note {
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.token-receipt-estimate-note {
+  margin: 5px 0 0;
+}
+
+.token-receipt-note {
+  margin: 8px 0 0;
+}
+
+/* --- Receipt lines that open ----------------------------------------
+ *
+ * A line opens in place rather than navigating away: the total has to stay on
+ * screen while the reader checks a line against it.
+ */
+.token-receipt-label.is-openable {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.token-receipt-caret {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.token-receipt-detail-hint {
+  color: var(--purple);
+  font-size: 10.5px;
+  opacity: 0;
+  transition: opacity 90ms ease;
+}
+
+.token-receipt-label.is-openable:hover .token-receipt-detail-hint,
+.token-receipt-label.is-openable:focus-visible .token-receipt-detail-hint,
+.token-receipt-label.is-openable[aria-expanded="true"] .token-receipt-detail-hint {
+  opacity: 1;
+}
+
+.token-receipt-detail {
+  display: block;
+  padding: 0 0 4px 14px;
+}
+
+.token-receipt-detail-inner {
+  border-left: 2px solid var(--hairline);
+  padding-left: 12px;
+}
+
+.token-receipt-sublines > li code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.token-receipt-sublines > li .is-other {
+  color: var(--muted);
+}
+
+/* A step whose charge is counted on the model call beneath it. Reads as a
+   pointer, never as a second figure. */
+.trace-node-tokens.is-rollup {
+  color: var(--muted);
+  font-style: italic;
+  font-weight: 400;
+}
+
+/* The scope switch sits above the lines, not beside the title: which runs are
+   being billed has to be settled before any figure below is read. */
+.token-receipt-scope {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-bottom: 9px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.token-receipt-scope .insights-range {
+  align-self: flex-start;
+}
+
+.token-receipt-scope-note {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* A memo whose figure is a stated unknown rather than a number. */
+.token-receipt-memo-line.is-unknown .token-receipt-figure {
+  font-style: italic;
+  font-variant-numeric: normal;
+}
+
+/* Money sits in its own right-hand column so the token figures stay a
+   readable column of their own rather than being pushed around by currency. */
+.token-receipt-money {
+  min-width: 62px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.token-receipt-line .token-receipt-money {
+  color: var(--muted);
+}
+
+.token-receipt-total.has-money {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+}
+
+.token-receipt-total .token-receipt-money {
+  color: var(--text);
+}

@@ -765,6 +765,7 @@ export class AgentRunCoordinator {
           run.id,
           operation,
           workspace,
+          orchestrationId,
         );
         // Role changes can happen after acceptance or while waiting for the
         // Project lease. Recheck immediately before invoking the runner.
@@ -855,11 +856,20 @@ export class AgentRunCoordinator {
               }),
         });
       }
+      // Each scope resumes only its own thread. Codex re-sends an entire
+      // thread as the prompt of every turn resuming it, so an orchestration
+      // that inherited the Agent's standing thread would pay for every task
+      // that Agent had ever done — a cost that grows without bound and is
+      // unrelated to the work in front of it.
       const initialThreadId = binding
         ? binding.codexThreadId
         : conversation
           ? conversation.codexThreadId
-          : agentAtStart.codexThreadId;
+          : orchestrationId === undefined
+            ? agentAtStart.codexThreadId
+            : agentAtStart.orchestrationThreadScope === orchestrationId
+              ? agentAtStart.orchestrationThreadId ?? null
+              : null;
       const assignmentSnapshot =
         modelSnapshot === undefined && run.modelSnapshot === undefined
           ? undefined
@@ -1074,7 +1084,14 @@ export class AgentRunCoordinator {
         agent.status = "ready";
         if (binding === null && conversation === null) {
           // A Team turn with no Project: the Agent-level session is its scope.
-          agent.codexThreadId = result.threadId;
+          // An orchestration turn keeps its thread in the orchestration slot so
+          // the Agent's private thread is neither read nor overwritten by it.
+          if (orchestrationId === undefined) {
+            agent.codexThreadId = result.threadId;
+          } else {
+            agent.orchestrationThreadId = result.threadId;
+            agent.orchestrationThreadScope = orchestrationId;
+          }
         }
         if (conversation !== null) {
           const storedConversation = database.agentConversations.find(
@@ -1298,6 +1315,7 @@ export class AgentRunCoordinator {
               run.id,
               outcome,
               workspace,
+              orchestrationId,
             );
           } catch {
             this.reportLifecycleFailure({

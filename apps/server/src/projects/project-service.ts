@@ -164,6 +164,26 @@ function requireText(
  * Agents keep their own identity and private workspace. A Project only owns
  * the artifact a Team collaborates on.
  */
+
+/**
+ * The thread a turn may resume, or null when it must start fresh.
+ *
+ * Continuity is kept per scope rather than per pair. A direct turn resumes the
+ * pair's direct thread; an orchestration resumes only a thread opened by that
+ * same orchestration. The refusal is the point: Codex re-sends an entire thread
+ * as the prompt of every turn resuming it, so letting one orchestration inherit
+ * another's thread makes each task pay for every task before it, without bound.
+ */
+function resumableThread(
+  attachment: ProjectAgentAttachment,
+  orchestrationId: string | undefined,
+): string | null {
+  if (orchestrationId === undefined) return attachment.codexThreadId;
+  return attachment.orchestrationThreadScope === orchestrationId
+    ? attachment.orchestrationThreadId ?? null
+    : null;
+}
+
 export class ProjectService {
   private readonly leaseCoordinator: ProjectWriteLeaseCoordinator;
   private skillService: SkillService | undefined;
@@ -449,7 +469,14 @@ export class ProjectService {
     project.updatedAt = now();
     for (const attachment of database.projectAgents) {
       if (attachment.projectId !== projectId) continue;
+      // Both scopes, without exception. A restore invalidates a thread because
+      // the thread remembers files that are gone, and that is as true of an
+      // orchestration's thread as of a direct one — clearing only the direct
+      // slot would let a mid-orchestration participant resume against a
+      // workspace it no longer recognises.
       attachment.codexThreadId = null;
+      attachment.orchestrationThreadId = null;
+      attachment.orchestrationThreadScope = null;
       attachment.updatedAt = project.updatedAt;
     }
     return nextEpoch;
@@ -1313,6 +1340,14 @@ export class ProjectService {
   projectRunScope(
     projectId: string,
     agentId: string,
+    /**
+     * The orchestration this turn belongs to, or undefined for a direct turn.
+     *
+     * A thread is resumed only by the scope that opened it: an orchestration
+     * resumes its own thread and nothing else, so an unrelated orchestration
+     * starts fresh instead of inheriting a prompt it never sent.
+     */
+    orchestrationId?: string,
   ): { project: Project; workspacePath: string; codexThreadId: string | null } {
     const project = this.requireActiveProject(projectId);
     const attachment = this.store
@@ -1339,7 +1374,7 @@ export class ProjectService {
     return {
       project,
       workspacePath: project.workspacePath,
-      codexThreadId: attachment.codexThreadId,
+      codexThreadId: resumableThread(attachment, orchestrationId),
     };
   }
 
@@ -1349,6 +1384,7 @@ export class ProjectService {
     agentId: string,
     codexThreadId: string | null,
     owner?: WorkspaceOwner,
+    orchestrationId?: string,
   ): Promise<void> {
     const ownerWithoutEpoch =
       owner === undefined ? undefined : { workspaceOperationId: owner.workspaceOperationId };
@@ -1367,7 +1403,14 @@ export class ProjectService {
       const attachment = database.projectAgents.find(
         (item) => item.projectId === projectId && item.agentId === agentId,
       );
-      if (attachment) attachment.codexThreadId = codexThreadId;
+      if (attachment) {
+        if (orchestrationId === undefined) {
+          attachment.codexThreadId = codexThreadId;
+        } else {
+          attachment.orchestrationThreadId = codexThreadId;
+          attachment.orchestrationThreadScope = orchestrationId;
+        }
+      }
       if (project) project.updatedAt = now();
     });
   }

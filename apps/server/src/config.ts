@@ -115,6 +115,16 @@ const envSchema = z.object({
    * unknown rather than being given an invented limit.
    */
   MODEL_CONTEXT_WINDOWS: z.string().default(""),
+  /**
+   * Per-model token prices, as `modelId=miss:hit:output` in USD per 1K tokens.
+   *
+   * Three rates rather than two because a cache read is priced separately and
+   * dramatically lower — on ModelArk by more than an order of magnitude — so
+   * pricing cached input at the miss rate would overstate a cached run's cost
+   * many times over. A model absent from this map reports no cost at all
+   * rather than being priced at another model's rates.
+   */
+  MODEL_TOKEN_PRICES: z.string().default(""),
   WORKER_MODEL_LIST_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(10_000),
   WORKER_MODEL_CACHE_TTL_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(600_000),
   SUPERVISOR_MODEL: z.string().optional(),
@@ -351,6 +361,40 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     }
     modelContextWindows.set(modelId, tokens);
   }
+  const modelTokenPrices = new Map<
+    string,
+    { inputMiss: number; inputHit: number; output: number }
+  >();
+  for (const pair of env.MODEL_TOKEN_PRICES.split(",")) {
+    const entry = pair.trim();
+    if (entry.length === 0) continue;
+    const separator = entry.lastIndexOf("=");
+    if (separator <= 0) {
+      throw new Error(
+        `MODEL_TOKEN_PRICES entry "${entry}" is not a modelId=miss:hit:output pair`,
+      );
+    }
+    const modelId = entry.slice(0, separator).trim();
+    const rates = entry
+      .slice(separator + 1)
+      .split(":")
+      .map((value) => Number(value.trim()));
+    if (
+      modelId.length === 0 ||
+      rates.length !== 3 ||
+      rates.some((rate) => !Number.isFinite(rate) || rate < 0)
+    ) {
+      throw new Error(
+        `MODEL_TOKEN_PRICES entry "${entry}" needs three non-negative ` +
+          "USD-per-1K rates as miss:hit:output",
+      );
+    }
+    modelTokenPrices.set(modelId, {
+      inputMiss: rates[0]!,
+      inputHit: rates[1]!,
+      output: rates[2]!,
+    });
+  }
   const workerCuratedModels = Array.from(
     new Set(
       env.WORKER_CURATED_MODELS.split(",")
@@ -389,6 +433,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     byteplusManagementMaxResponseBytes: env.BYTEPLUS_MANAGEMENT_MAX_RESPONSE_BYTES,
     workerCuratedModels,
     modelContextWindows,
+    modelTokenPrices,
     workerModelListTimeoutMs: env.WORKER_MODEL_LIST_TIMEOUT_MS,
     workerModelCacheTtlMs: env.WORKER_MODEL_CACHE_TTL_MS,
     supervisorModel: env.SUPERVISOR_MODEL?.trim() || "",

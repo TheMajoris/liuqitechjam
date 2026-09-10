@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   categoryColorVar,
+  countedSpanTokens,
   flattenTrace,
   pathToSpan,
   spanLabel,
@@ -194,5 +195,52 @@ describe("statusFilter", () => {
     expect(statusFilter(summaries, "all")).toHaveLength(2);
     expect(statusFilter(summaries, "success").map((t) => t.traceId)).toEqual(["s"]);
     expect(statusFilter(summaries, "failure").map((t) => t.traceId)).toEqual(["f"]);
+  });
+});
+
+describe("countedSpanTokens", () => {
+  const at = (n: number) => new Date(1_700_000_000_000 + n * 1000).toISOString();
+  const record = (id: string, type: string, tokens?: number) => ({
+    id,
+    type,
+    status: "success" as const,
+    summary: type,
+    createdAt: at(1),
+    ...(tokens === undefined ? {} : { metadata: { totalTokens: tokens } }),
+  });
+  const flat = (
+    spanId: string,
+    parentSpanId: string | null,
+    events: ReturnType<typeof record>[],
+  ) => ({
+    spanId,
+    parentSpanId,
+    depth: 0,
+    event: events[0]!,
+    events,
+    category: "model_call",
+    status: "success" as const,
+    startedAt: at(1),
+    endedAt: at(1),
+    durationMs: 0,
+    label: spanId,
+  });
+
+  it("charges a model call once when its Run span reports the same usage", () => {
+    const spans = [
+      flat("run-span", null, [record("e1", "run_completed", 20_000)]),
+      flat("turn-span", "run-span", [record("e2", "model_turn", 20_000)]),
+    ];
+    const counted = countedSpanTokens(spans);
+    expect([...counted.entries()]).toEqual([["turn-span", 20_000]]);
+    expect([...counted.values()].reduce((sum, value) => sum + value, 0)).toBe(20_000);
+  });
+
+  it("keeps a Run span that has no reporting descendant", () => {
+    const spans = [
+      flat("run-span", null, [record("e1", "run_completed", 20_000)]),
+      flat("tool-span", "run-span", [record("e2", "sandbox_command")]),
+    ];
+    expect([...countedSpanTokens(spans).keys()]).toEqual(["run-span"]);
   });
 });

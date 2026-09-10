@@ -283,6 +283,11 @@ export interface AuditReader {
     filter?: import("./audit-trace.js").AuditTraceListQuery,
   ) => import("./audit-trace.js").AuditTraceSummary[];
   runTrace?: (runId: string) => import("./audit-trace.js").AuditTrace | null;
+  /** Configured per-model token rates, empty when none are configured. */
+  modelPrices?: () => Record<
+    string,
+    { inputMiss: number; inputHit: number; output: number }
+  >;
   /** Optional historical Run projection; survives deletion of the Agent. */
   runs?: (
     filter?: import("./run-history.js").RunHistoryQuery,

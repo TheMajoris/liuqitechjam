@@ -267,6 +267,52 @@ describe("Shared Project collaboration", () => {
     expect(runner.requests[2]?.threadId).toBe("thread-" + fe.id);
   });
 
+  it("gives each orchestration its own thread and never touches the direct one", async () => {
+    const runner = new FileWritingRunner();
+    const { agentService, projectService } = await makeStack(runner);
+    const fe = await agentService.createAgent({
+      name: "fe",
+      modelRef: { providerId: "volcengine_ark", modelId: "ep-test" },
+    });
+    const project = await projectService.create({ name: "Todo App" });
+    await projectService.attachAgent(project.id, fe.id);
+
+    const orchestrationTurn = async (orchestrationId: string, prompt: string) => {
+      const { run } = await agentService.sendMessage(fe.id, prompt, {
+        projectId: project.id,
+        orchestrationId,
+      });
+      return agentService.waitForRun(run.id, { timeoutMs: 5_000 });
+    };
+
+    // A direct Project turn establishes the pair's direct thread.
+    await runProjectTurn(agentService, fe.id, project.id, "direct work");
+    expect(runner.requests[0]?.threadId).toBeNull();
+
+    // First dispatch of orchestration A resumes nothing: the direct thread is
+    // a different scope and must not be inherited.
+    await orchestrationTurn("orch-a", "step one");
+    expect(runner.requests[1]?.threadId).toBeNull();
+
+    // A second dispatch inside the SAME orchestration does resume, so a
+    // multi-step session keeps its continuity.
+    await orchestrationTurn("orch-a", "step two");
+    expect(runner.requests[2]?.threadId).toBe("thread-" + fe.id);
+
+    // A different orchestration starts clean rather than inheriting A's
+    // history, which is what made an unrelated task pay for every task before.
+    await orchestrationTurn("orch-b", "unrelated task");
+    expect(runner.requests[3]?.threadId).toBeNull();
+
+    // Through all of it the direct thread survived untouched, so ordinary
+    // Project work is not reset by orchestrations running beside it.
+    await runProjectTurn(agentService, fe.id, project.id, "more direct work");
+    expect(runner.requests[4]?.threadId).toBe("thread-" + fe.id);
+    expect(projectService.projectRunScope(project.id, fe.id).codexThreadId).toBe(
+      "thread-" + fe.id,
+    );
+  });
+
   it("refuses a Project turn for an Agent that is not attached", async () => {
     const { agentService, projectService } = await makeStack();
     const fe = await agentService.createAgent({

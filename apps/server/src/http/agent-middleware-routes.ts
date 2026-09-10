@@ -470,7 +470,7 @@ export function registerAgentMiddlewareRoutes(
     const { traceId } = auditTraceIdParams.parse(request.params);
     const trace = audit.trace(traceId);
     if (!trace) throw new HttpError(404, "Trace not found");
-    return { trace };
+    return { trace, modelPrices: audit.modelPrices?.() ?? {} };
   });
 
   // The Run-centric observability list. One projection serves both the
@@ -496,7 +496,10 @@ export function registerAgentMiddlewareRoutes(
     const { id } = runIdParams.parse(request.params);
     const trace = audit.runTrace(id);
     if (!trace) throw new HttpError(404, "Trace not found");
-    return { trace };
+    // Rates travel with the trace they price: a separate fetch would let a
+    // view render a total before its prices arrived, and a cache read costs a
+    // fraction of a miss, so a briefly wrong rate is a wildly wrong figure.
+    return { trace, modelPrices: audit.modelPrices?.() ?? {} };
   });
 
   app.get("/api/audit/verify", async () => {

@@ -1069,6 +1069,15 @@ export interface AgentMetrics {
 }
 
 /** Safe audit projection the workspace polls to see live tool activity. */
+/** USD per 1K tokens, by model. A cache read is priced apart from a miss. */
+export interface ModelRates {
+  inputMiss: number;
+  inputHit: number;
+  output: number;
+}
+
+export type ModelPrices = Readonly<Record<string, ModelRates>>;
+
 export interface AuditEventRecord {
   id: string;
   type: string;

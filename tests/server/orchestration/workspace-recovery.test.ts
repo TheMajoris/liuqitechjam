@@ -296,8 +296,15 @@ describe("Workspace checkpoints and recovery", () => {
       (checkpoint) => checkpoint.turnId === before.turns.find((turn) => turn.agentId === agents.Builder)?.id,
     )!;
     const failedStep = before.turns.find((turn) => turn.status === "failed")!.stepIndex!;
-    const threadsBefore = stack.store.snapshot().projectAgents.map((item) => item.codexThreadId);
+    // Orchestration turns keep their thread in the orchestration slot, so the
+    // Agent's direct Project thread is never touched by a session.
+    const threadsBefore = stack.store
+      .snapshot()
+      .projectAgents.map((item) => item.orchestrationThreadId ?? null);
     expect(threadsBefore.filter((thread) => thread !== null).length).toBe(2);
+    expect(
+      stack.store.snapshot().projectAgents.every((item) => item.codexThreadId === null),
+    ).toBe(true);
 
     const requestId = "5d1f4a20-0000-4000-8000-000000000001";
     const accepted = await orchestration.recoverFromCheckpoint(session.id, {

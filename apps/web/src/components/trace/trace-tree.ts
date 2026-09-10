@@ -188,6 +188,38 @@ export function spanTokens(span: FlatSpan): number | null {
   return (input ?? 0) + (output ?? 0);
 }
 
+/**
+ * Tokens counted once per model call rather than once per span.
+ *
+ * A Run span carries the Run's usage and its `model_turn` child carries the
+ * same turn's usage, so a naive sum over spans counts a single-turn Run twice
+ * and halves every share computed against that sum. A span that has a
+ * descendant reporting its own counters is treated as a rollup of those
+ * descendants and contributes nothing of its own.
+ */
+export function countedSpanTokens(spans: readonly FlatSpan[]): Map<string, number> {
+  const reported = new Map<string, number>();
+  for (const span of spans) {
+    const tokens = spanTokens(span);
+    if (tokens !== null) reported.set(span.spanId, tokens);
+  }
+  const rollup = new Set<string>();
+  for (const span of spans) {
+    if (!reported.has(span.spanId)) continue;
+    // Walk to the root marking every reporting ancestor as a rollup: the leaf
+    // is the model call that was actually charged.
+    let parentId = span.parentSpanId;
+    const guard = new Set<string>([span.spanId]);
+    while (parentId !== null && parentId !== undefined && !guard.has(parentId)) {
+      guard.add(parentId);
+      if (reported.has(parentId)) rollup.add(parentId);
+      parentId = spans.find((candidate) => candidate.spanId === parentId)?.parentSpanId ?? null;
+    }
+  }
+  for (const spanId of rollup) reported.delete(spanId);
+  return reported;
+}
+
 function spanEnd(events: AuditEventRecord[], fallback: string): string {
   let end = Date.parse(fallback);
   if (!Number.isFinite(end)) end = 0;

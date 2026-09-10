@@ -46,9 +46,12 @@ function unsafeMetadataKey(key: string): boolean {
 const allowedMetadataKeys = new Set([
   "inputTokens",
   "cachedInputTokens",
+  "cacheWriteInputTokens",
   "outputTokens",
+  "reasoningOutputTokens",
   "stdoutBytes",
   "stderrBytes",
+  "resultBytes",
   "commandHash",
   "workspaceFile",
   "pathHash",

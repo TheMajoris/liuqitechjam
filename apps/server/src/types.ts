@@ -103,6 +103,19 @@ export interface Agent {
   fallbackModelRefs?: ModelRef[];
   workspacePath: string;
   codexThreadId: string | null;
+  /**
+   * Resumable thread for the orchestration named by `orchestrationThreadScope`.
+   *
+   * Held apart from `codexThreadId` rather than replacing it: Codex re-sends a
+   * whole thread as the prompt of every turn that resumes it, so one slot
+   * shared by direct turns and orchestrations would either carry an unrelated
+   * orchestration's history into a private turn or discard the private thread
+   * each time an orchestration ran. Two slots keep each scope's continuity and
+   * bound orchestration growth to one orchestration.
+   */
+  orchestrationThreadId?: string | null;
+  /** The orchestration `orchestrationThreadId` belongs to. */
+  orchestrationThreadScope?: string | null;
   lastError: string | null;
   createdAt: string;
   updatedAt: string;

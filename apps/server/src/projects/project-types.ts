@@ -47,6 +47,17 @@ export interface ProjectAgentAttachment {
   projectId: string;
   agentId: string;
   codexThreadId: string | null;
+  /**
+   * Resumable thread for the orchestration named by `orchestrationThreadScope`.
+   *
+   * The pair's direct thread stays in `codexThreadId` and is never reused for
+   * orchestration work. Codex re-sends a whole thread as each resuming turn's
+   * prompt, so a single shared slot would let one orchestration's history be
+   * inherited — and paid for — by every task that followed it.
+   */
+  orchestrationThreadId?: string | null;
+  /** The orchestration `orchestrationThreadId` belongs to. */
+  orchestrationThreadScope?: string | null;
   attachedAt: string;
   /** Missing legacy roles are normalized to `editor`. */
   role?: ProjectRole;
@@ -95,6 +106,8 @@ export const ProjectAgentAttachmentSchema = z.object({
   projectId: z.string().min(1),
   agentId: z.string().min(1),
   codexThreadId: z.string().nullable(),
+  orchestrationThreadId: z.string().nullable().optional(),
+  orchestrationThreadScope: z.string().nullable().optional(),
   attachedAt: z.string(),
   role: ProjectRoleSchema.optional(),
   // `roleId` was a per-Workspace role-template override. It is no longer

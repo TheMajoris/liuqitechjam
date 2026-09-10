@@ -55,11 +55,30 @@ export class AuditService implements AuditRecorder, AuditReader {
      * reported as unknown rather than being given an invented limit.
      */
     private readonly contextWindows?: ReadonlyMap<string, number>,
+    /**
+     * Per-model token rates. A model absent from this map is reported without
+     * a price rather than being priced at another model's rates.
+     */
+    private readonly tokenPrices?: ReadonlyMap<
+      string,
+      { inputMiss: number; inputHit: number; output: number }
+    >,
   ) {}
 
   /** Configured window for a model, or undefined when none is configured. */
   private contextWindowFor = (modelId: string): number | undefined =>
     this.contextWindows?.get(modelId);
+
+  /**
+   * Configured rates, as a plain record for transport beside a trace.
+   *
+   * The whole table travels rather than the models one trace happens to name:
+   * it is a handful of entries, and resolving which model produced which turn
+   * is the reading view's job, not a reason for a second round trip.
+   */
+  modelPrices(): Record<string, { inputMiss: number; inputHit: number; output: number }> {
+    return Object.fromEntries(this.tokenPrices ?? new Map());
+  }
 
   async record(input: AuditEventInput): Promise<AuditEvent> {
     const safe = safeAuditInput(input);

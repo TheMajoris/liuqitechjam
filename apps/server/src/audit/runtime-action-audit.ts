@@ -78,6 +78,24 @@ function asNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+/**
+ * Byte length of a runtime payload, with the payload itself discarded.
+ *
+ * Only the size survives: a tool result may carry file contents, credentials,
+ * or prompt text, none of which belongs in the audit trail. A payload that
+ * cannot be serialized measures as nothing rather than guessing at a size.
+ */
+function serializedByteLength(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") return Buffer.byteLength(value);
+  try {
+    const encoded = JSON.stringify(value);
+    return encoded === undefined ? undefined : Buffer.byteLength(encoded);
+  } catch {
+    return undefined;
+  }
+}
+
 function emptyCounters(): TurnCounters {
   return {
     reasoningItems: 0,
@@ -225,6 +243,7 @@ export function createRuntimeActionObserver(
     } catch {
       argHash = shortHash("{}");
     }
+    const resultBytes = serializedByteLength(item.result ?? item.output);
     record({
       spanId: started?.spanId ?? newSpanId(),
       type: "mcp_tool_call",
@@ -236,6 +255,10 @@ export function createRuntimeActionObserver(
         ...(asString(item.tool) === undefined ? {} : { toolId: asString(item.tool) }),
         argHash,
         itemStatus,
+        // Size only, never the payload. A tool result is appended to the next
+        // prompt verbatim, so its byte count is the one piece of evidence that
+        // explains why the context grew after this call.
+        ...(resultBytes === undefined ? {} : { resultBytes }),
       },
     });
   }
@@ -285,7 +308,13 @@ export function createRuntimeActionObserver(
     const inputTokens = usage === undefined ? undefined : asNumber(usage.input_tokens);
     const cachedInputTokens =
       usage === undefined ? undefined : asNumber(usage.cached_input_tokens);
+    const cacheWriteInputTokens =
+      usage === undefined ? undefined : asNumber(usage.cache_write_input_tokens);
     const outputTokens = usage === undefined ? undefined : asNumber(usage.output_tokens);
+    // Reasoning is a slice of `outputTokens`, not an addend. Recorded so a
+    // receipt can say whether output went to thinking or to the answer.
+    const reasoningOutputTokens =
+      usage === undefined ? undefined : asNumber(usage.reasoning_output_tokens);
     record({
       spanId: newSpanId(),
       type: "model_turn",
@@ -298,7 +327,9 @@ export function createRuntimeActionObserver(
         ...counters,
         ...(inputTokens === undefined ? {} : { inputTokens }),
         ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+        ...(cacheWriteInputTokens === undefined ? {} : { cacheWriteInputTokens }),
         ...(outputTokens === undefined ? {} : { outputTokens }),
+        ...(reasoningOutputTokens === undefined ? {} : { reasoningOutputTokens }),
         ...(failed ? failureEvidence(event) : {}),
       },
     });

@@ -1,4 +1,5 @@
 import type {
+  ModelPrices,
   Agent,
   AgentRun,
   CreateOrchestrationInput,
@@ -216,7 +217,9 @@ export const api = {
     );
   },
   trace: (traceId: string) =>
-    request<{ trace: AuditTrace }>("/api/audit/traces/" + encodeURIComponent(traceId)),
+    request<{ trace: AuditTrace; modelPrices?: ModelPrices }>(
+      "/api/audit/traces/" + encodeURIComponent(traceId),
+    ),
   /**
    * Historical Runs. The same projection backs the Agent's Runs tab and the
    * global observability explorer, including Runs of deleted Agents.
@@ -235,7 +238,9 @@ export const api = {
   runSummary: (runId: string) =>
     request<{ run: RunHistoryEntry }>("/api/audit/runs/" + encodeURIComponent(runId)),
   runTrace: (runId: string) =>
-    request<{ trace: AuditTrace }>("/api/runs/" + encodeURIComponent(runId) + "/trace"),
+    request<{ trace: AuditTrace; modelPrices?: ModelPrices }>(
+      "/api/runs/" + encodeURIComponent(runId) + "/trace",
+    ),
   /**
    * Export is a file download, but the API is bearer-authenticated, so a plain
    * `<a download>` cannot carry the token. The caller gets a Blob instead and

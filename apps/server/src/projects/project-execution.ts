@@ -21,7 +21,10 @@ export interface ProjectRunBinding {
   projectName: string;
   /** Backend-derived mount target for the shared workspace. */
   workspacePath: string;
-  /** Thread for this (Agent, Project) pair, never the Agent's private one. */
+  /**
+   * Thread for this (Agent, Project) pair in this turn's scope, never the
+   * Agent's private one and never another orchestration's.
+   */
   codexThreadId: string | null;
   previewStatus: AgentPreviewStatus;
   /** Present only for a checkpoint-enabled cycle turn. */
@@ -62,6 +65,8 @@ export interface ProjectExecutionScope {
     runId: string,
     operation?: OperationOptions,
     workspace?: WorkspaceExecutionContext,
+    /** Scopes the resumable thread; undefined for a direct turn. */
+    orchestrationId?: string,
   ): Promise<ProjectRunBinding>;
   /**
    * Releases the lease, and persists the resumed thread only when the turn
@@ -73,6 +78,8 @@ export interface ProjectExecutionScope {
     runId: string,
     outcome: { codexThreadId: string | null } | null,
     workspace?: WorkspaceExecutionContext,
+    /** Must match the `beginTurn` scope so the thread is stored beside it. */
+    orchestrationId?: string,
   ): Promise<void>;
   /**
    * Capture the source after a successful turn, while the per-Run lease is
@@ -153,6 +160,7 @@ export class ProjectServiceExecutionScope implements ProjectExecutionScope {
     runId: string,
     operation: OperationOptions = {},
     workspace?: WorkspaceExecutionContext,
+    orchestrationId?: string,
   ): Promise<ProjectRunBinding> {
     assertOperationActive(operation);
     // This check is deliberately before the lease mutation. A denied or
@@ -173,7 +181,7 @@ export class ProjectServiceExecutionScope implements ProjectExecutionScope {
     });
     try {
       assertOperationActive(operation);
-      const scope = this.projects.projectRunScope(projectId, agent.id);
+      const scope = this.projects.projectRunScope(projectId, agent.id, orchestrationId);
       // The role may have changed while waiting for the single-writer lease.
       // Recheck before writing AGENTS.md so a revoked Agent never changes the
       // shared workspace.
@@ -214,6 +222,7 @@ export class ProjectServiceExecutionScope implements ProjectExecutionScope {
     runId: string,
     outcome: { codexThreadId: string | null } | null,
     workspace?: WorkspaceExecutionContext,
+    orchestrationId?: string,
   ): Promise<void> {
     try {
       if (outcome) {
@@ -226,6 +235,7 @@ export class ProjectServiceExecutionScope implements ProjectExecutionScope {
           workspace === undefined
             ? undefined
             : { workspaceOperationId: workspace.workspaceOperationId, workspaceEpoch: workspace.workspaceEpoch },
+          orchestrationId,
         );
       }
     } finally {

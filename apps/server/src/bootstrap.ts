@@ -183,7 +183,12 @@ export async function bootstrapApplication(
     : new JsonStore(legacyJsonPath);
   applicationHealth.attachStorage(store);
   const auditStore = new StorageAuditStoreAdapter(store);
-  const audit = new AuditService(auditStore, auditStore, config.modelContextWindows);
+  const audit = new AuditService(
+    auditStore,
+    auditStore,
+    config.modelContextWindows,
+    config.modelTokenPrices,
+  );
   const telemetry = createRuntimeTelemetry(config);
   const workspaces = new WorkspaceManager(config.workspaceRoot);
   // `containerHealthSampler` is only set for the container runtime provider.

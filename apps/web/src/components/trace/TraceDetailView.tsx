@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../../api";
 import type {
+  ModelPrices,
   AuditEventRecord,
   AuditTrace,
   AuditTraceNode,
@@ -21,6 +22,7 @@ import {
 } from "./run-format";
 import {
   categoryColorVar,
+  countedSpanTokens,
   flattenTrace,
   modelEvidenceFromSpans,
   pathToSpan,
@@ -40,6 +42,8 @@ import {
   TokenSplitLegend,
   type TokenHotspot,
 } from "./TokenHotspots";
+import { buildTokenReceipt } from "./token-receipt";
+import { TokenReceipt } from "./TokenReceipt";
 
 /**
  * The one trace/audit detail implementation.
@@ -257,12 +261,20 @@ export function TraceDetailView({
   onOpenRun,
 }: TraceDetailViewProps) {
   const [trace, setTrace] = useState<AuditTrace | null>(null);
+  const [modelPrices, setModelPrices] = useState<ModelPrices>({});
   const [run, setRun] = useState<RunHistoryEntry | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [highlighted, setHighlighted] = useState<string | null>(null);
   const [scale, setScale] = useState<"time" | "tokens">("time");
+  // The receipt answers "what did this cost"; the tree answers "what happened".
+  // The receipt leads because the tree's own figures were what misled.
+  const [detail, setDetail] = useState<"receipt" | "steps">("receipt");
+  // A Run inside an orchestration resolves to the orchestration's trace, so
+  // the pane below can hold far more than the Run named in the header. It
+  // opens on the Run to match that header and the list the reader came from.
+  const [billScope, setBillScope] = useState<"run" | "trace">("run");
   const nodeRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const pendingScroll = useRef<string | null>(null);
   const requestSequence = useRef(0);
@@ -288,6 +300,7 @@ export function TraceDetailView({
       ]);
       setRun(summary?.run ?? null);
       setTrace(result.trace);
+      setModelPrices(("modelPrices" in result ? result.modelPrices : undefined) ?? {});
       setError(null);
     } catch (cause) {
       if (requestSequence.current === requestId) {
@@ -342,22 +355,48 @@ export function TraceDetailView({
   // Token bars are scaled against the heaviest span, not the trace total, so a
   // single dominant step is visible rather than being flattened by the rest.
   const spanTokenTotals = useMemo(() => spans.map(spanTokens), [spans]);
-  const peakSpanTokens = useMemo(
-    () => spanTokenTotals.reduce<number>((peak, value) => Math.max(peak, value ?? 0), 0),
-    [spanTokenTotals],
-  );
-  const measuredSpans = useMemo(
-    () => spanTokenTotals.filter((value) => value !== null).length,
-    [spanTokenTotals],
-  );
   const tokensBySpan = useMemo(
     () => new Map(spans.map((span, index) => [span.spanId, spanTokenTotals[index] ?? null])),
     [spans, spanTokenTotals],
   );
-  const traceStepTokens = useMemo(
-    () => spanTokenTotals.reduce<number>((sum, value) => sum + (value ?? 0), 0),
-    [spanTokenTotals],
+  // Summed over charged model calls only. A Run span and its `model_turn`
+  // child report the same turn, so summing every span would double the
+  // denominator and halve every share quoted against it.
+  const countedTokens = useMemo(() => countedSpanTokens(spans), [spans]);
+  const peakSpanTokens = useMemo(
+    () => [...countedTokens.values()].reduce<number>((peak, value) => Math.max(peak, value), 0),
+    [countedTokens],
   );
+  const measuredSpans = countedTokens.size;
+  const traceStepTokens = useMemo(() => {
+    let sum = 0;
+    for (const value of countedTokens.values()) sum += value;
+    return sum;
+  }, [countedTokens]);
+  /**
+   * A span that reports counters its own descendants already account for.
+   *
+   * Drawing the figure on both is what made one 115K model call read as 230K
+   * spent. The charge belongs to the model call; the ancestor says so instead
+   * of repeating it.
+   */
+  const isRollup = (spanId: string, tokens: number | null): boolean =>
+    tokens !== null && !countedTokens.has(spanId);
+  const traceReceipt = useMemo(
+    () => buildTokenReceipt(spans, {}, modelPrices),
+    [spans, modelPrices],
+  );
+  const runReceipt = useMemo(
+    () =>
+      runId === undefined
+        ? null
+        : buildTokenReceipt(spans, { runId }, modelPrices),
+    [spans, runId, modelPrices],
+  );
+  // Only worth offering the choice when the two actually differ.
+  const scopeDiffers =
+    runReceipt !== null && runReceipt.billedTokens !== traceReceipt.billedTokens;
+  const receipt = scopeDiffers && billScope === "run" ? runReceipt : traceReceipt;
 
   useEffect(() => {
     const target = pendingScroll.current;
@@ -377,6 +416,7 @@ export function TraceDetailView({
 
   const jumpToFailing = () => {
     if (!trace?.failingStep) return;
+    setDetail("steps");
     const { spanId } = trace.failingStep;
     setExpanded((current) => new Set([...current, ...pathToSpan(trace, spanId), spanId]));
     setHighlighted(spanId);
@@ -411,6 +451,7 @@ export function TraceDetailView({
     // Only a model call is charged tokens; a tool or sandbox step reports none,
     // and saying so is more useful than printing a zero it did not spend.
     const stepTokens = tokensBySpan.get(spanId) ?? null;
+    const rollup = isRollup(spanId, stepTokens);
     return (
       <div
         key={spanId}
@@ -441,17 +482,24 @@ export function TraceDetailView({
             {formatDuration(node.event.durationMs ?? 0)}
           </span>
           <span
-            className={"trace-node-tokens" + (stepTokens === null ? " is-absent" : "")}
+            className={
+              "trace-node-tokens" +
+              (stepTokens === null ? " is-absent" : "") +
+              (rollup ? " is-rollup" : "")
+            }
             title={
               stepTokens === null
                 ? "This step reported no token counters."
-                : `${formatCount(stepTokens)} tokens, ${formatPercent(
-                    stepTokens,
-                    traceStepTokens,
-                  )} of every counted step in this trace`
+                : rollup
+                  ? `${formatCount(stepTokens)} tokens, charged on the model ` +
+                    "call beneath this step rather than twice."
+                  : `${formatCount(stepTokens)} tokens, ${formatPercent(
+                      stepTokens,
+                      traceStepTokens,
+                    )} of everything charged in this trace`
             }
           >
-            {stepTokens === null ? "—" : formatCount(stepTokens) + " tok"}
+            {stepTokens === null ? "—" : rollup ? "rolled up" : formatCount(stepTokens) + " tok"}
           </span>
         </button>
         {open && (
@@ -597,7 +645,9 @@ export function TraceDetailView({
       <>
       <AuditEvidence spans={spans} />
 
-      {modelRows.length > 0 && (
+      {/* Only worth a panel when it can disagree with itself: one model means
+          one row restating the receipt's total in a different vocabulary. */}
+      {modelRows.filter((row) => row.netNewTokens > 0).length > 1 && (
         <TokenHotspots title="Token spend by model" subject="model" rows={modelRows} />
       )}
 
@@ -631,7 +681,7 @@ export function TraceDetailView({
             {scale === "tokens" ? (
               <>
                 <span className="trace-timeline-note">
-                  {measuredSpans} of {spans.length} steps reported counters
+                  {measuredSpans} of {spans.length} steps were charged tokens
                 </span>
                 <TokenSplitLegend />
               </>
@@ -652,7 +702,11 @@ export function TraceDetailView({
                 </span>
                 <span className="trace-timeline-track">
                   {byTokens ? (
-                    stepTokens === null || peakSpanTokens === 0 ? (
+                    isRollup(span.spanId, stepTokens) ? (
+                      <span className="trace-timeline-unmeasured">
+                        charged below
+                      </span>
+                    ) : stepTokens === null || peakSpanTokens === 0 ? (
                       <span className="trace-timeline-unmeasured">not reported</span>
                     ) : (
                       <span
@@ -675,7 +729,7 @@ export function TraceDetailView({
                 </span>
                 <span className="trace-timeline-figure">
                   {byTokens
-                    ? stepTokens === null
+                    ? stepTokens === null || isRollup(span.spanId, stepTokens)
                       ? "—"
                       : formatCount(stepTokens)
                     : formatDuration(span.durationMs)}
@@ -686,14 +740,88 @@ export function TraceDetailView({
           {spans.length === 0 && <p className="usage-empty">No spans in this trace.</p>}
         </section>
 
-        <section className="trace-tree" aria-label="Spans">
-          <p className="trace-tree-note">
-            Tokens are charged per model call, so a tool or sandbox step shows
-            no figure. <span title={CACHED_TOKENS_HELP}>Cached input</span> is
-            part of the input it is quoted against, not an extra charge.
-          </p>
-          {trace.root && renderNode(trace.root, 0)}
-          {trace.orphans.map((orphan) => renderNode(orphan, 0))}
+        <section className="trace-tree" aria-label="Cost and steps">
+          <div className="trace-timeline-toolbar">
+            <div className="insights-range" role="group" aria-label="Detail">
+              <button
+                type="button"
+                className={"button" + (detail === "receipt" ? " is-active" : "")}
+                aria-pressed={detail === "receipt"}
+                onClick={() => setDetail("receipt")}
+              >
+                Receipt
+              </button>
+              <button
+                type="button"
+                className={"button" + (detail === "steps" ? " is-active" : "")}
+                aria-pressed={detail === "steps"}
+                onClick={() => setDetail("steps")}
+              >
+                Steps
+              </button>
+            </div>
+            <span className="trace-timeline-note">
+              {detail === "receipt"
+                ? "Each line is billed once. Open a line to see what it paid for."
+                : "What happened, in order."}
+            </span>
+          </div>
+          {detail === "receipt" ? (
+            <TokenReceipt
+              receipt={receipt}
+              {...(scopeDiffers
+                ? {
+                    scope: (
+                      <div className="token-receipt-scope">
+                        <div
+                          className="insights-range"
+                          role="group"
+                          aria-label="What to bill"
+                        >
+                          <button
+                            type="button"
+                            className={"button" + (billScope === "run" ? " is-active" : "")}
+                            aria-pressed={billScope === "run"}
+                            onClick={() => setBillScope("run")}
+                          >
+                            This run
+                          </button>
+                          <button
+                            type="button"
+                            className={"button" + (billScope === "trace" ? " is-active" : "")}
+                            aria-pressed={billScope === "trace"}
+                            onClick={() => setBillScope("trace")}
+                          >
+                            Whole orchestration
+                          </button>
+                        </div>
+                        <span className="token-receipt-scope-note">
+                          {billScope === "run"
+                            ? `This run's share. The orchestration it belongs to billed ${formatCount(
+                                traceReceipt.billedTokens,
+                              )} across ${traceReceipt.chains} threads.`
+                            : `Every run under this orchestration. Run ${shortId(
+                                runId ?? "",
+                              )} alone billed ${formatCount(runReceipt.billedTokens)}.`}
+                        </span>
+                      </div>
+                    ),
+                  }
+                : {})}
+            />
+          ) : (
+            <>
+              <p className="trace-tree-note">
+                Tokens are charged per model call, so a tool or sandbox step
+                shows no figure and a step whose call is nested beneath it reads
+                "rolled up" rather than repeating the charge.{" "}
+                <span title={CACHED_TOKENS_HELP}>Cached input</span> is part of
+                the input it is quoted against, not an extra charge.
+              </p>
+              {trace.root && renderNode(trace.root, 0)}
+              {trace.orphans.map((orphan) => renderNode(orphan, 0))}
+            </>
+          )}
         </section>
       </div>
       </>
