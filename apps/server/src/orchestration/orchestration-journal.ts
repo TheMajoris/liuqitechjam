@@ -245,7 +245,8 @@ function runErrorCode(
 ): OrchestrationErrorCode {
   if (
     run?.errorCode === "WEB_TOOL_PERMISSION_DENIED" ||
-    run?.errorCode === "MODEL_INFERENCE_LIMIT_EXCEEDED"
+    run?.errorCode === "MODEL_INFERENCE_LIMIT_EXCEEDED" ||
+    run?.errorCode === "MODEL_RATE_LIMITED"
   ) {
     return run.errorCode;
   }

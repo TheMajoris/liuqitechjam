@@ -314,10 +314,85 @@ export function turnStatusLabel(status: OrchestrationTurn["status"]): string {
  * Safe summaries are bounded but still model- or engine-authored, so every
  * view that shows one tests it first and falls back to its own wording.
  */
-const INTERNAL_WORDING = /\b(supervisor|mastra|langgraph|graph|workflow)\b/i;
+const INTERNAL_WORDING =
+  /\b(supervisor|mastra|langgraph|graph|workflow|container|runtime|sandbox|codex|docker|stderr|stdout|exit code|exited with)\b/i;
 
 export function isInternalWording(text: string | null | undefined): boolean {
   return INTERNAL_WORDING.test(text?.trim() ?? "");
+}
+
+/**
+ * One line naming the cause, for a turn in the transcript.
+ *
+ * `humanizeFailure` states the cause *and* what to do about it, which is right
+ * for an alert the reader lands on but wrong inside a conversation: a wall of
+ * advice under every failed turn buried the replies around it, and the same
+ * advice was already on screen twice. This states only what happened; the
+ * steps live in the Agent inspector's "What to try", one click away.
+ */
+export function briefFailure(
+  errorCode: OrchestrationErrorCode | null | undefined,
+  fallback?: string | null,
+  modelId?: string | null,
+): string {
+  const model = modelId?.trim();
+  switch (errorCode) {
+    case "MAX_STEPS_EXCEEDED":
+      return "The conversation hit its turn limit.";
+    case "AGENT_BUSY":
+      return "The Agent was already busy with other work.";
+    case "AGENT_NOT_FOUND":
+    case "AGENT_UNAVAILABLE":
+      return "The Agent is no longer available.";
+    case "AGENT_STOPPED":
+      return "The Agent was stopped before it could reply.";
+    case "RUN_TIMED_OUT":
+      return "The Agent ran out of time on this turn.";
+    case "WEB_TOOL_PERMISSION_DENIED":
+      return "Web access was denied for this Agent.";
+    case "MODEL_INFERENCE_LIMIT_EXCEEDED":
+      return model
+        ? "model " + model + " is paused — its provider inference limit was reached."
+        : "This Agent's model is paused — its provider inference limit was reached.";
+    case "MODEL_RATE_LIMITED":
+      return model
+        ? "model " + model + " was rate limited by the provider."
+        : "This Agent's model was rate limited by the provider.";
+    case "PROJECT_PERMISSION_DENIED":
+      return "This Agent is not allowed to write to the Workspace.";
+    case "RUN_FAILED":
+      return "The Agent could not complete its turn.";
+    case "RUN_CANCELLED":
+    case "ORCHESTRATION_STOPPED":
+      return "Stopped before this turn finished.";
+    case "ORCHESTRATION_INTERRUPTED":
+      return "The service restarted during this turn.";
+    case "SUPERVISOR_INVALID_RESPONSE":
+    case "SUPERVISOR_INVALID_SELECTION":
+    case "SUPERVISOR_FAILED":
+    case "SUPERVISOR_TIMED_OUT":
+    case "SUPERVISOR_UNAVAILABLE":
+      return "The next Agent could not be chosen.";
+    case "INVALID_OUTPUT":
+      return "The reply could not be passed on safely.";
+    case "INVALID_INPUT":
+      return "The server rejected this conversation's setup.";
+    case "CHECKPOINT_CAPTURE_FAILED":
+      return "The Agent finished, but its Workspace files could not be checkpointed.";
+    case "CHECKPOINT_PUBLISH_FAILED":
+      return "The checkpoint was saved but could not be recorded here.";
+    case "CHECKPOINT_RUNTIME_UNSUPPORTED":
+      return "This Workspace runtime cannot record source checkpoints.";
+    default:
+      return oneLine(fallback) ?? "Something went wrong on this turn.";
+  }
+}
+
+/** A safe fallback kept to one readable line, or nothing worth showing. */
+function oneLine(value: string | null | undefined): string | null {
+  const text = value?.trim().replace(/\s+/g, " ") ?? "";
+  if (!text || isInternalWording(text)) return null;
+  return text.length <= 120 ? text : text.slice(0, 119).trimEnd() + "…";
 }
 
 /**
@@ -346,6 +421,8 @@ export function humanizeFailure(
       return "Web access was denied. Assign this Agent a role that allows the requested web tool, then retry this turn.";
     case "MODEL_INFERENCE_LIMIT_EXCEEDED":
       return modelInferenceLimitMessage(modelId);
+    case "MODEL_RATE_LIMITED":
+      return modelRateLimitedMessage(modelId);
     case "PROJECT_PERMISSION_DENIED":
       return PROJECT_PERMISSION_DENIED_MESSAGE;
     case "RUN_FAILED":
@@ -411,6 +488,29 @@ export function modelInferenceLimitMessage(modelId?: string | null): string {
     "Model Activation settings, then retry."
   );
 }
+/**
+ * A provider refusal the runtime could only report as a rate limit.
+ *
+ * The runtime forwards the HTTP status and never the provider's error code,
+ * so a paused model and an ordinary rate limit are indistinguishable here.
+ * This names both rather than asserting the one that cannot be proven — and
+ * it is still an answer, where the reader previously got "an Agent could not
+ * complete its turn" and no cause at all.
+ */
+export const MODEL_RATE_LIMITED_MESSAGE =
+  "This Agent's model was rate limited by the provider, which can also mean " +
+  "its inference limit is reached.";
+
+/** Name the endpoint whenever the failed turn recorded one. */
+export function modelRateLimitedMessage(modelId?: string | null): string {
+  const model = modelId?.trim();
+  if (!model) return MODEL_RATE_LIMITED_MESSAGE;
+  return (
+    "model " + model + " was rate limited by the provider, which can also " +
+    "mean its inference limit is reached."
+  );
+}
+
 export const PROJECT_PERMISSION_DENIED_MESSAGE =
   "This Agent is not allowed to write to the Workspace. Add Allow Agent runs (agent.invoke) and Edit workspace files (project.write) to the Agent's role, make sure it has editable Workspace membership, then retry.";
 export const CHECKPOINT_CAPTURE_FAILED_MESSAGE =
@@ -423,6 +523,8 @@ export function humanizeAgentRunFailure(
   switch (errorCode) {
     case "MODEL_INFERENCE_LIMIT_EXCEEDED":
       return MODEL_INFERENCE_LIMIT_MESSAGE;
+    case "MODEL_RATE_LIMITED":
+      return MODEL_RATE_LIMITED_MESSAGE;
     case "WEB_TOOL_PERMISSION_DENIED":
       return "Web access was denied. Assign this Agent a role that allows the requested web tool, then retry this turn.";
     case "CHECKPOINT_CAPTURE_FAILED":

@@ -293,6 +293,7 @@ function immediateSupervisorRepeat(
   return new SupervisorError(
     "SUPERVISOR_INVALID_ROUTE",
     "Supervisor selected the same Agent consecutively after the corrective routing boundary",
+    { rule: "immediate_repeat_at_dispatch" },
   );
 }
 
@@ -417,7 +418,13 @@ export async function executeMastraOrchestrationStep(
   } catch (error) {
     if (workflowSignal.aborted || options.signal?.aborted) throw abortError(error);
     const failure = classifyFailure(error, state.mode);
-    options.onStepFailure?.({ error, errorCode: failure.errorCode });
+    options.onStepFailure?.({
+      error,
+      errorCode: failure.errorCode,
+      ...(error instanceof SupervisorError && error.rule !== undefined
+        ? { errorRule: error.rule }
+        : {}),
+    });
     return failureState(state, failure.errorCode);
   } finally {
     selectionLinked.dispose();
@@ -427,14 +434,22 @@ export async function executeMastraOrchestrationStep(
     const error = new Error("Participant selector returned an invalid decision");
     const errorCode =
       state.mode === "supervisor" ? "SUPERVISOR_INVALID_RESPONSE" : "INVALID_INPUT";
-    options.onStepFailure?.({ error, errorCode });
+    options.onStepFailure?.({
+      error,
+      errorCode,
+      errorRule: "selector_returned_invalid_decision",
+    });
     return failureState(state, errorCode);
   }
   if (decision.kind === "end") {
     if (state.mode === "supervisor") {
       if (decision.reason !== "supervisor_completed") {
         const error = new Error("Supervisor returned an invalid terminal decision");
-        options.onStepFailure?.({ error, errorCode: "SUPERVISOR_INVALID_SELECTION" });
+        options.onStepFailure?.({
+          error,
+          errorCode: "SUPERVISOR_INVALID_SELECTION",
+          errorRule: "selector_returned_invalid_terminal_decision",
+        });
         return failureState(state, "SUPERVISOR_INVALID_SELECTION");
       }
       try {
@@ -462,6 +477,7 @@ export async function executeMastraOrchestrationStep(
     options.onStepFailure?.({
       error: new Error("Participant selector returned an unconfigured participant"),
       errorCode,
+      errorRule: "selector_returned_unconfigured_participant",
     });
     return failureState(state, errorCode);
   }
@@ -470,6 +486,7 @@ export async function executeMastraOrchestrationStep(
     options.onStepFailure?.({
       error: immediateRepeat,
       errorCode: immediateRepeat.orchestrationErrorCode,
+      ...(immediateRepeat.rule === undefined ? {} : { errorRule: immediateRepeat.rule }),
     });
     return failureState(state, immediateRepeat.orchestrationErrorCode);
   }

@@ -18,7 +18,10 @@ import type {
   Orchestrator,
   OrchestrationSelectionInput,
 } from "../orchestrator.js";
-import type { OrchestrationErrorCode } from "../types.js";
+import type {
+  OrchestrationErrorCode,
+  OrchestrationFailureRule,
+} from "../types.js";
 import { mastraExecutionStateSchema } from "./agent-step.js";
 import { createMastraOrchestrationWorkflow } from "./workflow-factory.js";
 import type { MastraExecutionState } from "./types.js";
@@ -29,6 +32,7 @@ export const DEFAULT_MASTRA_AGENT_TIMEOUT_MS = 300_000;
 interface StepFailureContext {
   error: unknown;
   errorCode: OrchestrationErrorCode;
+  errorRule?: OrchestrationFailureRule;
 }
 
 interface WorkflowResultLike {
@@ -146,6 +150,33 @@ function failedState(
     completionReason: null,
     errorCode,
   };
+}
+
+/**
+ * Attach the rule that produced a failure to its result.
+ *
+ * The rule is deliberately not part of `MastraExecutionState`: the state is
+ * serialized into the workflow and resumed from, and this is evidence about
+ * one terminal outcome, not input to the next step.
+ */
+/**
+ * A failure that escaped the step boundary still knows its own rule when it
+ * is a `SupervisorError`, so read it there rather than losing the detail.
+ */
+function failureRuleFor(
+  stepFailure: StepFailureContext | undefined,
+  error: unknown,
+): OrchestrationFailureRule | undefined {
+  if (stepFailure?.errorRule !== undefined) return stepFailure.errorRule;
+  const candidate = stepFailure?.error ?? error;
+  return candidate instanceof SupervisorError ? candidate.rule : undefined;
+}
+
+function withFailureRule(
+  result: OrchestrationExecutionResult,
+  errorRule: OrchestrationFailureRule | undefined,
+): OrchestrationExecutionResult {
+  return errorRule === undefined ? result : { ...result, errorRule };
 }
 
 function validPositiveInteger(value: unknown): value is number {
@@ -314,8 +345,12 @@ export class MastraOrchestrator implements Orchestrator {
       ...(options.workspace === undefined ? {} : { workspace: options.workspace }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       ...(options.hooks === undefined ? {} : { hooks: options.hooks }),
-      onStepFailure: ({ error, errorCode }) => {
-        failureContext.stepFailure = { error, errorCode };
+      onStepFailure: ({ error, errorCode, errorRule }) => {
+        failureContext.stepFailure = {
+          error,
+          errorCode,
+          ...(errorRule === undefined ? {} : { errorRule }),
+        };
       },
       selectNextParticipant: selector,
     });
@@ -356,14 +391,20 @@ export class MastraOrchestrator implements Orchestrator {
         failureContext.stepFailure?.error ?? workflowResultError(workflowResult);
       const errorCode =
         failureContext.stepFailure?.errorCode ?? classifyFailure(error, state.mode);
-      return stateToResult(failedState(state, errorCode));
+      return withFailureRule(
+        stateToResult(failedState(state, errorCode)),
+        failureRuleFor(failureContext.stepFailure, error),
+      );
     } catch (error) {
       if (options.signal?.aborted || isAbortError(error)) throw abortError();
       const originalError = failureContext.stepFailure?.error ?? error;
       const errorCode =
         failureContext.stepFailure?.errorCode ??
         classifyFailure(originalError, state.mode);
-      return stateToResult(failedState(state, errorCode));
+      return withFailureRule(
+        stateToResult(failedState(state, errorCode)),
+        failureRuleFor(failureContext.stepFailure, originalError),
+      );
     } finally {
       options.signal?.removeEventListener("abort", onAbort);
       if (cancellation) await cancellation;

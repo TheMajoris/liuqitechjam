@@ -26,12 +26,19 @@ export interface ChildProcessExecutionOptions {
   ) => Promise<void> | void;
 }
 
+/** Retained stderr, enough to carry a startup failure and its stack head. */
+export const MAX_STDERR_TAIL_BYTES = 4_096;
+
 export interface ChildProcessExecutionResult {
   exitCode: number;
   cancelled: boolean;
   timedOut: boolean;
   /** At least one oversized stdout line was dropped before parsing. */
   outputTruncated: boolean;
+  /** Everything the child wrote to stderr, whether or not it was retained. */
+  stderrBytes: number;
+  /** The last `MAX_STDERR_TAIL_BYTES` of stderr, for classification only. */
+  stderrTail: string;
 }
 
 export interface ChildProcessExecution {
@@ -50,8 +57,14 @@ export interface ChildProcessExecution {
  * full output of every command the Agent runs back through the event stream,
  * and a turn that streams a lot is not a turn that retained a lot. The only
  * way the child can grow the parent without bound is one enormous line with
- * no newline, so that is what `maxOutputBytes` bounds. Stderr is never
- * retained and therefore never counted.
+ * no newline, so that is what `maxOutputBytes` bounds.
+ *
+ * Stderr is not parsed, but a fixed-size tail of it is kept. A container that
+ * dies before emitting a single event puts its reason there and nowhere else,
+ * and discarding it left "exited with code 1" as the whole diagnosis. The tail
+ * is a fixed ring, so it costs the same whether the child writes one line or a
+ * gigabyte, and it is classified into an enum before it reaches the audit
+ * trail — never recorded verbatim.
  */
 export function startChildProcessExecution(
   options: ChildProcessExecutionOptions,
@@ -76,6 +89,8 @@ export function startChildProcessExecution(
   }
 
   let stdoutBuffer = "";
+  let stderrTail = "";
+  let stderrBytes = 0;
   let cancelled = false;
   let timedOut = false;
   let outputTruncated = false;
@@ -140,7 +155,14 @@ export function startChildProcessExecution(
   }
 
   const consume = (chunk: Buffer | string, target: "stdout" | "stderr") => {
-    if (target !== "stdout") return;
+    if (target !== "stdout") {
+      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      stderrBytes += Buffer.byteLength(text, "utf8");
+      // Keep the tail, not the head: a runtime prints its context first and
+      // its actual failure last, and the ring must not grow with the child.
+      stderrTail = (stderrTail + text).slice(-MAX_STDERR_TAIL_BYTES);
+      return;
+    }
 
     stdoutBuffer +=
       typeof chunk === "string" ? chunk : chunk.toString("utf8");
@@ -202,6 +224,8 @@ export function startChildProcessExecution(
           cancelled,
           timedOut,
           outputTruncated,
+          stderrBytes,
+          stderrTail,
         });
       });
     },

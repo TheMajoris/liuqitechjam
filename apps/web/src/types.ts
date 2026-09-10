@@ -3,6 +3,7 @@ export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancell
 export type AgentRunErrorCode =
   | "WEB_TOOL_PERMISSION_DENIED"
   | "MODEL_INFERENCE_LIMIT_EXCEEDED"
+  | "MODEL_RATE_LIMITED"
   | "CHECKPOINT_CAPTURE_FAILED";
 
 export type PreviewStatus =
@@ -663,6 +664,7 @@ export type OrchestrationErrorCode =
   | "RUN_TIMED_OUT"
   | "WEB_TOOL_PERMISSION_DENIED"
   | "MODEL_INFERENCE_LIMIT_EXCEEDED"
+  | "MODEL_RATE_LIMITED"
   | "PROJECT_PERMISSION_DENIED"
   | "INVALID_OUTPUT"
   | "MAX_STEPS_EXCEEDED"

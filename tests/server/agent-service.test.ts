@@ -576,8 +576,15 @@ describe("Run audit spans", () => {
 
     const failed = audit.ofType("run_failed")[0];
     expect(failed?.status).toBe("failure");
-    expect(failed?.metadata).toEqual({ exitReason: "error", errorClass: "Error" });
+    // The classification is a closed-enum token, so it names the failure
+    // without carrying any of the runtime's own text or the path in it.
+    expect(failed?.metadata).toEqual({
+      exitReason: "error",
+      errorClass: "Error",
+      failureKind: "unclassified",
+    });
     expect(JSON.stringify(failed)).not.toContain("worker crashed");
+    expect(JSON.stringify(failed)).not.toContain("/secret/workspace/path");
   });
 
   it("parents runtime stream events under the same run span", async () => {

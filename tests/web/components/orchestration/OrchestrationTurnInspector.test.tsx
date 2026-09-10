@@ -235,7 +235,7 @@ describe("OrchestrationTurnInspector", () => {
       />,
     );
 
-    expect(html).not.toContain("Retry from this turn");
+    expect(html).not.toContain("Retry this turn");
   });
 
   it("offers a retry for a failed turn and warns that files are not rolled back", () => {
@@ -248,18 +248,18 @@ describe("OrchestrationTurnInspector", () => {
       />,
     );
 
-    expect(html).toContain("Retry from this turn");
-    expect(html).toContain("not rolled back");
+    expect(html).toContain("Retry this turn");
+    expect(html).toContain("nothing is rolled back");
     // The legacy retry is explicit that it reruns against the files as they
     // are now; it never claims to rewind them.
-    expect(html).toContain("using the current files");
+    expect(html).toContain("Workspace files as they are now");
     expect(html).not.toContain("continuing from the checkpoint");
     // The failure is explained in product wording, with the code kept.
     expect(html).toContain("An Agent could not complete its turn.");
     expect(html).toContain("RUN_FAILED");
   });
 
-  it("says the pending retry uses the current files", () => {
+  it("says a retry is under way while it runs", () => {
     const html = renderToStaticMarkup(
       <OrchestrationTurnInspector
         node={node({ turn: turn({ status: "failed" }) })}
@@ -270,7 +270,7 @@ describe("OrchestrationTurnInspector", () => {
       />,
     );
 
-    expect(html).toContain("Retrying this Agent turn using the current files…");
+    expect(html).toContain("Retrying this Agent turn…");
     expect(html).not.toContain("continuing from the checkpoint");
   });
 
@@ -293,7 +293,7 @@ describe("OrchestrationTurnInspector", () => {
     // The ordinal is the identity shown; the checkpoint ID never is.
     expect(html).not.toContain("cp-1");
     // A completed turn still has no legacy retry.
-    expect(html).not.toContain("Retry from this turn");
+    expect(html).not.toContain("Retry this turn");
   });
 
   it("states that no checkpoint was recorded for a completed turn on an enabled detail", () => {
@@ -380,7 +380,7 @@ describe("OrchestrationTurnInspector", () => {
       />,
     );
 
-    expect(html).not.toContain("Retry from this turn");
+    expect(html).not.toContain("Retry this turn");
   });
 
   it("will not retry a legacy turn that has no execution step", () => {
@@ -396,7 +396,7 @@ describe("OrchestrationTurnInspector", () => {
       />,
     );
 
-    expect(html).not.toContain("Retry from this turn");
+    expect(html).not.toContain("Retry this turn");
   });
 
   it("disables the retry while the conversation is still running", () => {

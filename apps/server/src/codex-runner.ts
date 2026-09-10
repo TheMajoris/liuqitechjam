@@ -7,6 +7,7 @@ import {
 import { DEFAULT_MCP_TOOL_TIMEOUT_SEC, type AppConfig } from "./config.js";
 import {
   ModelInferenceLimitExceededError,
+  ModelRateLimitedError,
   RetryableModelError,
   RunCancelledError,
 } from "./errors.js";
@@ -21,9 +22,46 @@ import type {
 } from "./types.js";
 import { reconcileLocalProcessStartup } from "./runtime-reconciliation.js";
 import type { RuntimeActionObserver } from "./audit/runtime-action-audit.js";
+import { embeddedJsonObject } from "./audit/failure-classification.js";
 
 const execFileAsync = promisify(execFile);
 const PROVIDER_INFERENCE_LIMIT_CODE = "SetLimitExceeded";
+/**
+ * The runtime's own report of a rate-limited provider response.
+ *
+ * The provider states its exact condition in an error body — for BytePlus, a
+ * `SetLimitExceeded` code meaning the model is paused — but Codex retries
+ * internally and, when it gives up, reports only what it saw at the transport:
+ * `exceeded retry limit, last status: 429 Too Many Requests`. The body never
+ * reaches us, so the status is the whole of the available evidence and a run
+ * that hits it must not degrade into an unexplained non-zero exit.
+ *
+ * Matched only against the runtime's own diagnostic and terminal events, which
+ * an Agent's output never reaches, and only with a status word in front of it
+ * so a bare number in a message cannot trip it.
+ */
+const PROVIDER_RATE_LIMIT_STATUS = /\b(?:status|code)\W{0,3}429\b|\b429\s+too\s+many\s+requests\b/i;
+
+function eventHasRateLimitStatus(event: JsonRecord): boolean {
+  const candidates =
+    event.type === "turn.failed"
+      ? [asErrorText(event.error), asErrorText(event.message)]
+      : event.type === "error"
+        ? [asErrorText(event.message), asErrorText(event.error)]
+        : [];
+  return candidates.some((text) => text !== "" && PROVIDER_RATE_LIMIT_STATUS.test(text));
+}
+
+/** A bounded string view of an error field, whether it is text or a wrapper. */
+function asErrorText(value: unknown): string {
+  const text =
+    typeof value === "string"
+      ? value
+      : isJsonRecord(value) && typeof value.message === "string"
+        ? value.message
+        : "";
+  return text.length > MAX_PROVIDER_ERROR_EVIDENCE_BYTES ? "" : text;
+}
 /** Do not retain or parse arbitrarily large provider error strings. */
 const MAX_PROVIDER_ERROR_EVIDENCE_BYTES = 32 * 1024;
 
@@ -34,6 +72,8 @@ export interface ParsedEvents {
   errors: string[];
   /** Set only from the supported structured Codex failure events. */
   modelInferenceLimitExceeded?: boolean;
+  /** The runtime reported a provider refusal whose status is a rate limit. */
+  providerRateLimited?: boolean;
   /** A completed turn suppresses a transient diagnostic error event. */
   turnCompleted?: boolean;
   /** Set when Codex reports an explicit terminal `turn.failed` event. */
@@ -64,17 +104,16 @@ function hasProviderInferenceLimitCode(
   value: unknown,
   depth = 0,
 ): boolean {
-  if (depth > 2) return false;
+  // The deepest supported chain is one hop longer than the wrapper nesting
+  // suggests: error record -> its message -> the payload embedded in that
+  // message -> the payload's own error wrapper -> the code.
+  if (depth > 3) return false;
   if (typeof value === "string") {
     if (value === PROVIDER_INFERENCE_LIMIT_CODE) return true;
     if (Buffer.byteLength(value, "utf8") > MAX_PROVIDER_ERROR_EVIDENCE_BYTES) {
       return false;
     }
-    try {
-      return hasProviderInferenceLimitCode(JSON.parse(value), depth + 1);
-    } catch {
-      return false;
-    }
+    return hasProviderInferenceLimitCode(embeddedJsonObject(value), depth + 1);
   }
   if (!isJsonRecord(value)) return false;
   if (value.code === PROVIDER_INFERENCE_LIMIT_CODE) return true;
@@ -141,6 +180,11 @@ export function finalizeCodexRun(
     if (parsed.modelInferenceLimitExceeded) {
       throw new ModelInferenceLimitExceededError();
     }
+    // Weaker evidence than the provider's own code, so it never outranks it,
+    // but far better than reporting the exit code and nothing else.
+    if (parsed.providerRateLimited) {
+      throw new ModelRateLimitedError();
+    }
     throw new Error(messages.exit);
   }
 
@@ -150,6 +194,9 @@ export function finalizeCodexRun(
   ) {
     if (parsed.modelInferenceLimitExceeded) {
       throw new ModelInferenceLimitExceededError();
+    }
+    if (parsed.providerRateLimited) {
+      throw new ModelRateLimitedError();
     }
     throw new Error("Codex reported a failed turn");
   }
@@ -322,6 +369,10 @@ export function parseCodexEventLine(
     eventHasProviderInferenceLimitCode(event)
   ) {
     parsed.modelInferenceLimitExceeded = true;
+  }
+
+  if (eventHasRateLimitStatus(event)) {
+    parsed.providerRateLimited = true;
   }
 }
 

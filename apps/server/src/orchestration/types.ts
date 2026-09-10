@@ -100,11 +100,37 @@ export type OrchestrationErrorCode =
   | "ORCHESTRATION_INTERRUPTED"
   | "WEB_TOOL_PERMISSION_DENIED"
   | "MODEL_INFERENCE_LIMIT_EXCEEDED"
+  | "MODEL_RATE_LIMITED"
   | "PROJECT_PERMISSION_DENIED"
   | "CHECKPOINT_CAPTURE_FAILED"
   | "CHECKPOINT_PUBLISH_FAILED"
   | "CHECKPOINT_RUNTIME_UNSUPPORTED"
   | "INTERNAL_ERROR";
+
+/**
+ * Which rule turned a run into its error code, for the audit trail only.
+ *
+ * An error code names the *shape* of a failure and several distinct rules
+ * roll up into one: `SUPERVISOR_INVALID_SELECTION` is reported whether the
+ * supervisor named an Agent that is not on the roster, repeated the Agent
+ * that had just spoken even after the corrective call, or tried to end a
+ * follow-up without dispatching anyone. Those need different fixes, and
+ * reading the code alone could not tell them apart.
+ *
+ * Deliberately a closed enum of engine-authored tokens: audit metadata keeps
+ * identifiers and enum-like evidence, never model text, provider bodies, or
+ * free-form explanations. Never shown on a product surface.
+ */
+export type OrchestrationFailureRule =
+  | "supervisor_selected_unconfigured_occurrence"
+  | "supervisor_repeated_agent_after_correction"
+  | "supervisor_completed_without_cycle_dispatch"
+  | "supervisor_invalid_execution_bounds"
+  | "supervisor_duplicate_participant_occurrence"
+  | "selector_returned_unconfigured_participant"
+  | "selector_returned_invalid_terminal_decision"
+  | "selector_returned_invalid_decision"
+  | "immediate_repeat_at_dispatch";
 
 export interface OrchestrationError {
   code: OrchestrationErrorCode;

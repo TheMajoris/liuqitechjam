@@ -37,6 +37,7 @@ function resolveSelection(
     throw new SupervisorError(
       "SUPERVISOR_INVALID_CONTEXT",
       "Supervisor context contains invalid execution bounds",
+      { rule: "supervisor_invalid_execution_bounds" },
     );
   }
   const ids = new Set<string>();
@@ -54,6 +55,7 @@ function resolveSelection(
       throw new SupervisorError(
         "SUPERVISOR_INVALID_CONTEXT",
         "Supervisor context contains duplicate or invalid participant occurrences",
+        { rule: "supervisor_duplicate_participant_occurrence" },
       );
     }
     ids.add(participant.id);
@@ -64,6 +66,7 @@ function resolveSelection(
       throw new SupervisorError(
         "SUPERVISOR_INVALID_ROUTE",
         "Supervisor must select an eligible Agent before completing this follow-up",
+        { rule: "supervisor_completed_without_cycle_dispatch" },
       );
     }
     const reason = sanitizeSupervisorReason(decision.reason);
@@ -82,6 +85,7 @@ function resolveSelection(
     throw new SupervisorError(
       "SUPERVISOR_INVALID_ROUTE",
       "Supervisor selected an occurrence that is not configured",
+      { rule: "supervisor_selected_unconfigured_occurrence" },
     );
   }
   const reason = sanitizeSupervisorReason(decision.reason);
@@ -173,6 +177,7 @@ export class SupervisorSelector {
       throw new SupervisorError(
         "SUPERVISOR_INVALID_ROUTE",
         "Supervisor repeated the same Agent after a corrective routing call",
+        { rule: "supervisor_repeated_agent_after_correction" },
       );
     }
     return correctedSelection;

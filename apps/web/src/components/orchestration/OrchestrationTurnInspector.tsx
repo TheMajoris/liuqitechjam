@@ -378,16 +378,16 @@ export function OrchestrationTurnInspector({
             disabled={retryPending || retryBlocked || retryDisabled}
             onClick={() => onRetry?.(turn.stepIndex as number)}
           >
-            {retryPending ? "Retrying…" : "Retry from this turn (current files)"}
+            {retryPending ? "Retrying…" : "Retry this turn"}
           </button>
           <p className="orch-inspector-note">
             {retryBlocked
               ? "Stop the conversation before retrying it."
               : retryPending
-                ? "Retrying this Agent turn using the current files…"
+                ? "Retrying this Agent turn…"
                 : retryDisabled
                   ? "Wait for the current action to finish."
-                  : "This reruns the Agent turn using the current files and continues from there. Earlier turns stay in the record. Shared Workspace files are not rolled back."}
+                  : "Reruns this turn with the Workspace files as they are now — nothing is rolled back. Earlier turns stay in the record."}
           </p>
         </section>
       )}

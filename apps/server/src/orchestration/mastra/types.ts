@@ -12,6 +12,7 @@ import type {
 import type {
   OrchestrationCompletionReason,
   OrchestrationErrorCode,
+  OrchestrationFailureRule,
   OrchestrationMode,
   OrchestrationParticipant,
 } from "../types.js";
@@ -58,6 +59,8 @@ export interface MastraOrchestrationStepOptions {
   onStepFailure?: (input: {
     error: unknown;
     errorCode: OrchestrationErrorCode;
+    /** Which rule produced the code, when the code alone cannot say. */
+    errorRule?: OrchestrationFailureRule;
   }) => void;
   /** Repository-owned, awaitable participant-selection boundary. */
   selectNextParticipant: OrchestrationParticipantSelector;
